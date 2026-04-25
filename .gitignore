@@ -1,0 +1,14 @@
+# Secrets — must never be committed. Holds the Supabase URL + anon key.
+CuCu/Config/SupabaseSecrets.plist
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+
+# Xcode build / SPM
+DerivedData/
+build/
+.swiftpm/
+
+# macOS
+.DS_Store
