@@ -33,9 +33,13 @@ struct BackgroundEffectsSheet: View {
                     effectSlider(
                         title: "Vignette",
                         binding: vignetteBinding,
-                        range: 0...1.5,
-                        step: 0.05,
-                        valueLabel: String(format: "%.2f", vignetteBinding.wrappedValue)
+                        range: 0...1,
+                        step: 0.02,
+                        // Percent label reads more naturally for the
+                        // user than the raw 0…1 number, and matches
+                        // the perceptual feel of the quadratic ramp
+                        // applied in `PageBackgroundEffects`.
+                        valueLabel: "\(Int(vignetteBinding.wrappedValue * 100))%"
                     )
                     Button(role: .destructive) {
                         blurBinding.wrappedValue = 0

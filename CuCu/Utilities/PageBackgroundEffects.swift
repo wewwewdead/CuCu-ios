@@ -46,14 +46,49 @@ enum PageBackgroundEffects {
         }
 
         if vignetteEnabled {
-            let filter = CIFilter.vignette()
+            // `CIFilter.vignette()` gives only `intensity` and
+            // `radius` — no falloff curve, so the dark-to-clear
+            // transition looks like a flat darkened ring at the
+            // edges instead of a true radial gradient.
+            // `CIFilter.vignetteEffect()` adds a `falloff` parameter
+            // that explicitly controls how gradually the corners
+            // fade in, which is the smooth-gradient feel the user
+            // is asking for.
+            let filter = CIFilter.vignetteEffect()
             filter.inputImage = ciImage
-            filter.intensity = Float(vignette)
-            // Radius controls how broad the dark corners spread. Keeping
-            // it constant (broad) produces the most photo-like falloff.
-            filter.radius = 2.0
+
+            // Anchor the effect at the image's geometric center.
+            // Without this, CoreImage uses (150, 150) by default —
+            // off-center for any image larger than 300×300, which
+            // produces a lopsided vignette.
+            filter.center = CGPoint(x: originalExtent.midX,
+                                    y: originalExtent.midY)
+
+            // Inner radius = "clear circle in the middle." Sized to
+            // the smaller of width/height so portraits and
+            // landscapes both keep a generous clean center. 30%
+            // leaves a comfortably large unaffected area; the
+            // gradient lives in the remaining 70%.
+            let minSide = min(originalExtent.width, originalExtent.height)
+            filter.radius = Float(minSide * 0.3)
+
+            // Quadratic ramp on the slider value: gives the user
+            // fine control at the low end and a clearly visible
+            // (but not crushing) effect at 100%. Clamped so legacy
+            // drafts that persisted values up to 1.5 (the old
+            // slider max) tame down to the new curve.
+            let clamped = max(0, min(1, vignette))
+            filter.intensity = Float(clamped * clamped)
+
+            // Smaller `falloff` ⇒ more gradual transition between
+            // the clear center and the dark corners. The default
+            // 0.5 produces a fairly hard band; 0.15 yields a long,
+            // smooth gradient that reads as a real photo vignette
+            // rather than a darkened frame around the edges.
+            filter.falloff = 0.15
+
             if let output = filter.outputImage {
-                ciImage = output
+                ciImage = output.cropped(to: originalExtent)
             }
         }
 
