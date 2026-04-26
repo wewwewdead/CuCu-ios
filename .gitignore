@@ -1,6 +1,11 @@
 # Secrets — must never be committed. Holds the Supabase URL + anon key.
 CuCu/Config/SupabaseSecrets.plist
 
+# Database schema + migrations live locally only. The SQL files in
+# `Supabase/` describe the production schema and intentionally stay
+# out of the public repo.
+Supabase/
+
 # Xcode user state
 xcuserdata/
 *.xcuserstate
