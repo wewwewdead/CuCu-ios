@@ -1,5 +1,12 @@
 import UIKit
 
+private struct NodeRenderSignature: Equatable {
+    var node: CanvasNode
+    var localImageModificationDate: Date?
+    var backgroundImageModificationDate: Date?
+    var galleryImageModificationDates: [Date?]
+}
+
 /// The UIKit canvas. Owns:
 ///   - a flat `[UUID: NodeRenderView]` cache keyed by node ID
 ///   - the page-background view (the canvas root's background fill)
@@ -37,7 +44,19 @@ final class CanvasEditorView: UIView {
     private var editingTextNodeID: UUID?
 
     private var renderViews: [UUID: NodeRenderView] = [:]
+    private var appliedNodeSignatures: [UUID: NodeRenderSignature] = [:]
     private var nodePanGestures: [UUID: UIPanGestureRecognizer] = [:]
+    /// Per-node long-press recognizer paired with the pan above. Long
+    /// press is the "open the inspector" shortcut: hold ~0.4s without
+    /// moving the finger and the recognizer fires once. Held in a
+    /// dictionary keyed by node ID so the prune step in `apply(...)`
+    /// can drop the recognizer for a deleted node alongside its
+    /// render view.
+    private var nodeLongPressGestures: [UUID: UILongPressGestureRecognizer] = [:]
+    /// Single-shot haptic generator. Re-prepared on every recognized
+    /// long press so the impact stays crisp; the OS otherwise lets
+    /// haptic engines wind down between uses.
+    private let editHapticGenerator = UIImpactFeedbackGenerator(style: .medium)
 
     private let overlay = SelectionOverlayView()
 
@@ -59,10 +78,9 @@ final class CanvasEditorView: UIView {
         return s
     }()
 
-    /// Holds every page node + the selection overlay. Width matches
-    /// `scrollView.frameLayoutGuide`; height is driven by
-    /// `contentHeightConstraint`, which expands as nodes move below
-    /// the visible viewport.
+    /// Holds the centered page surface plus the selection overlay. Its size
+    /// is driven by mutable constraints so the scroll view can be wider/taller
+    /// than the viewport when the page dimensions require it.
     private let contentView: UIView = {
         let v = UIView()
         v.translatesAutoresizingMaskIntoConstraints = false
@@ -70,14 +88,42 @@ final class CanvasEditorView: UIView {
         return v
     }()
 
+    /// Shadow/border wrapper for the actual profile page. Root canvas nodes
+    /// live inside `pageView`; this outer wrapper supplies the visual page
+    /// object without clipping the shadow.
+    private let pageShadowView: UIView = {
+        let v = UIView()
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.backgroundColor = .clear
+        v.layer.shadowColor = UIColor.black.cgColor
+        v.layer.shadowOpacity = 0.12
+        v.layer.shadowRadius = 14
+        v.layer.shadowOffset = CGSize(width: 0, height: 5)
+        return v
+    }()
+
+    /// The bounded profile page surface. Root nodes are positioned in this
+    /// view's coordinate space. Clipping makes page bounds explicit while the
+    /// selection overlay remains outside in `contentView`.
+    private let pageView: UIView = {
+        let v = UIView()
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.backgroundColor = uiColor(hex: ProfileDocument.defaultPageBackgroundHex)
+        v.clipsToBounds = true
+        v.layer.borderColor = UIColor.separator.cgColor
+        v.layer.borderWidth = 1
+        return v
+    }()
+
+    private var contentWidthConstraint: NSLayoutConstraint?
     /// Drives `contentView.height`. Updated by `updateContentHeight()`
-    /// based on the bottommost root node so the scrollable area
-    /// always fits the page contents (and never shrinks below the
-    /// viewport).
+    /// based on page height and viewport height.
     private var contentHeightConstraint: NSLayoutConstraint?
+    private var pageWidthConstraint: NSLayoutConstraint?
+    private var pageHeightConstraint: NSLayoutConstraint?
 
     /// Page-level background image. Sits at the very back of the subview
-    /// stack so node views render on top. Hidden when the document has
+    /// stack inside `pageView` so node views render on top. Hidden when the document has
     /// no `pageBackgroundImagePath`. `isUserInteractionEnabled = false`
     /// so it never claims taps — empty-canvas touches still reach the
     /// `CanvasEditorView`'s tap recognizer for deselect.
@@ -119,6 +165,15 @@ final class CanvasEditorView: UIView {
     /// translation deltas (UIPanGestureRecognizer reports cumulative
     /// translation since `.began` by default).
     private var dragStartFrame: CGRect = .zero
+    /// Snapshot of every descendant's frame at the start of a resize.
+    /// Used to scale children proportionally as the resized node's
+    /// bounds change — without this, resizing a container leaves its
+    /// children at fixed local positions and they get clipped /
+    /// stranded as the parent grows or shrinks. Cleared on gesture
+    /// end. Empty for resizes on leaf nodes (text, image, etc.).
+    private var dragStartDescendantFrames: [UUID: CGRect] = [:]
+    private let pageTopPadding: CGFloat = 24
+    private let pageBottomPadding: CGFloat = 48
 
     // MARK: - SwiftUI bridges
 
@@ -129,25 +184,71 @@ final class CanvasEditorView: UIView {
     /// gesture has ended (drag-end, resize-end). The caller persists.
     var onCommit: ((ProfileDocument) -> Void)?
 
+    /// Called when the user long-presses a node — a "fast path to the
+    /// inspector". The canvas has already updated its own selection
+    /// and fired a haptic before this fires; the host's job is to
+    /// surface the property inspector for the same node.
+    var onRequestEditNode: ((UUID) -> Void)?
+
+    /// When `false`, the canvas runs as a **read-only viewer**:
+    /// - No pan / long-press recognizers are attached to nodes.
+    /// - The empty-canvas tap recognizer is a no-op (no select/deselect).
+    /// - The selection overlay never shows.
+    /// - Tapping a `.link` node fires `onOpenURL` so the host can
+    ///   route the destination to Safari (or whichever URL handler).
+    /// Defaults to `true` so existing editor uses are unchanged.
+    /// Set this once at construction (`CanvasEditorContainer` does that
+    /// based on the SwiftUI parameter); flipping it at runtime would
+    /// require also re-attaching gestures, which we don't need today.
+    var isInteractive: Bool = true {
+        didSet {
+            // If a host flips this on a live view, hide the overlay
+            // immediately. New gestures will only attach the next time
+            // a render view is created — acceptable because both the
+            // editor and the viewer set this value once at init.
+            if !isInteractive {
+                overlay.isHidden = true
+            }
+        }
+    }
+
+    /// Called when the user taps a `.link` node while `isInteractive`
+    /// is `false`. The argument is the resolved URL — link bodies that
+    /// don't parse as a URL are filtered before this fires.
+    var onOpenURL: ((URL) -> Void)?
+
+    /// Called when the user taps a tile inside a `.gallery` node while
+    /// `isInteractive` is `false`. Receives the **full ordered list** of
+    /// remote URLs in the gallery plus the index of the tapped image so
+    /// the host can present a paginated lightbox. Galleries with a
+    /// mix of local and remote paths surface only the remote ones; the
+    /// index is rebased to point at the user's tap inside the filtered
+    /// list. Galleries with zero remote images fall through silently.
+    var onOpenImage: (([URL], Int) -> Void)?
+
+    /// Called when the user taps a `.container` node whose `name`
+    /// reads as a Journal Card while `isInteractive` is `false`. The
+    /// host pulls the title + body off the container's text
+    /// descendants and presents a journal-page modal. Match is
+    /// case-insensitive against `"journal card"` so user-renamed
+    /// cards (e.g. "Journal card") still trigger.
+    var onOpenJournal: ((UUID) -> Void)?
+
+    /// Called when the user taps the "View Gallery" chip on a
+    /// `.gallery` node while `isInteractive` is `false`. Receives
+    /// the gallery's full URL list so the host can present the
+    /// paginated grid (`FullGalleryView`).
+    var onOpenFullGallery: (([URL]) -> Void)?
+
 
     // MARK: - Init
 
     init() {
         super.init(frame: .zero)
         clipsToBounds = true
-        backgroundColor = uiColor(hex: ProfileDocument.blank.pageBackgroundHex)
+        backgroundColor = .secondarySystemGroupedBackground
 
-        // Background image — fixed, viewport-aligned, behind the
-        // scrollable content. Doesn't scroll with the page.
-        addSubview(backgroundImageView)
-        NSLayoutConstraint.activate([
-            backgroundImageView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            backgroundImageView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            backgroundImageView.topAnchor.constraint(equalTo: topAnchor),
-            backgroundImageView.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-
-        // Scrollable content stack: scrollView → contentView → nodes.
+        // Scrollable content stack: scrollView → contentView → page → nodes.
         addSubview(scrollView)
         scrollView.addSubview(contentView)
         NSLayoutConstraint.activate([
@@ -160,12 +261,41 @@ final class CanvasEditorView: UIView {
             contentView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
             contentView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
             contentView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
-            contentView.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
         ])
+        let w = contentView.widthAnchor.constraint(equalToConstant: ProfileDocument.defaultPageWidth)
+        w.priority = .required
+        w.isActive = true
+        contentWidthConstraint = w
         let h = contentView.heightAnchor.constraint(equalToConstant: 0)
         h.priority = .required
         h.isActive = true
         contentHeightConstraint = h
+
+        contentView.addSubview(pageShadowView)
+        pageShadowView.addSubview(pageView)
+        pageView.addSubview(backgroundImageView)
+
+        let pageW = pageShadowView.widthAnchor.constraint(equalToConstant: ProfileDocument.defaultPageWidth)
+        let pageH = pageShadowView.heightAnchor.constraint(equalToConstant: ProfileDocument.defaultPageHeight)
+        pageW.isActive = true
+        pageH.isActive = true
+        pageWidthConstraint = pageW
+        pageHeightConstraint = pageH
+
+        NSLayoutConstraint.activate([
+            pageShadowView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: pageTopPadding),
+            pageShadowView.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+
+            pageView.leadingAnchor.constraint(equalTo: pageShadowView.leadingAnchor),
+            pageView.trailingAnchor.constraint(equalTo: pageShadowView.trailingAnchor),
+            pageView.topAnchor.constraint(equalTo: pageShadowView.topAnchor),
+            pageView.bottomAnchor.constraint(equalTo: pageShadowView.bottomAnchor),
+
+            backgroundImageView.leadingAnchor.constraint(equalTo: pageView.leadingAnchor),
+            backgroundImageView.trailingAnchor.constraint(equalTo: pageView.trailingAnchor),
+            backgroundImageView.topAnchor.constraint(equalTo: pageView.topAnchor),
+            backgroundImageView.bottomAnchor.constraint(equalTo: pageView.bottomAnchor),
+        ])
 
         // Tap recognizer on `contentView` so `gesture.location(in:)`
         // is already in content coordinates (not viewport).
@@ -174,15 +304,16 @@ final class CanvasEditorView: UIView {
         contentView.addGestureRecognizer(tap)
 
         // Selection overlay lives inside `contentView` so it scrolls
-        // along with the selected node.
+        // along with the selected node while drawing above the page's clipping.
         contentView.addSubview(overlay)
         overlay.isHidden = true
         overlay.frame = .zero
 
         for handle in [overlay.topLeft, overlay.topRight, overlay.bottomLeft, overlay.bottomRight] {
             handle.referenceView = contentView
+            let corner = handle.corner
             handle.onPan = { [weak self] state, translation in
-                self?.handleResize(corner: handle.corner, state: state, translation: translation)
+                self?.handleResize(corner: corner, state: state, translation: translation)
             }
         }
 
@@ -224,7 +355,9 @@ final class CanvasEditorView: UIView {
         self.document = document
         self.selectedID = selectedID
 
-        backgroundColor = uiColor(hex: document.pageBackgroundHex)
+        backgroundColor = .secondarySystemGroupedBackground
+        pageView.backgroundColor = uiColor(hex: document.pageBackgroundHex)
+        applyPageSizing(for: document)
 
         // Page background image + effects. Three optimizations vs. the
         // straightforward sync path:
@@ -265,31 +398,33 @@ final class CanvasEditorView: UIView {
             }
             lastBackgroundSignature = (path, mtime, blur, vignette)
         }
-        sendSubviewToBack(backgroundImageView)
+        pageView.sendSubviewToBack(backgroundImageView)
 
         // Walk the live tree, ensuring each node has a render view in the
         // right superview, then prune any cached views whose IDs are gone.
-        // Root children now live inside `contentView` (the scroll view's
-        // content) so the page can grow vertically and the user can
-        // scroll down to nodes positioned past the viewport.
+        // Root children live inside `pageView`, which is the bounded profile
+        // page surface. Nested children live inside container node views.
         var liveIDs: Set<UUID> = []
 
         for childID in document.rootChildrenIDs {
-            applyNode(id: childID, parent: contentView, liveIDs: &liveIDs)
+            applyNode(id: childID, parent: pageView, liveIDs: &liveIDs)
         }
 
         // Prune orphans (deleted nodes).
         for (id, view) in renderViews where !liveIDs.contains(id) {
             view.removeFromSuperview()
             renderViews.removeValue(forKey: id)
+            appliedNodeSignatures.removeValue(forKey: id)
             nodePanGestures.removeValue(forKey: id)
+            nodeLongPressGestures.removeValue(forKey: id)
         }
 
         // Apply z-order: subviews must be ordered to match `childrenIDs`.
-        applyZOrder(parentID: nil, in: contentView)
+        applyZOrder(parentID: nil, in: pageView)
         for (id, view) in renderViews where document.nodes[id]?.type == .container {
             applyZOrder(parentID: id, in: view)
         }
+        pageView.sendSubviewToBack(backgroundImageView)
 
         // Selection overlay tracks the selected node, regardless of nesting.
         contentView.bringSubviewToFront(overlay)
@@ -317,17 +452,23 @@ final class CanvasEditorView: UIView {
             // Create or recreate (rare — only if the node type changed, which
             // we don't allow yet).
             renderViews[id]?.removeFromSuperview()
+            appliedNodeSignatures.removeValue(forKey: id)
             let fresh = makeRenderView(for: node)
             renderViews[id] = fresh
             view = fresh
             attachPanGesture(to: view)
         }
 
-        if view.superview !== parent {
+        let movedSuperview = view.superview !== parent
+        if movedSuperview {
             view.removeFromSuperview()
             parent.addSubview(view)
         }
-        view.apply(node: node)
+        let signature = renderSignature(for: node)
+        if movedSuperview || appliedNodeSignatures[id] != signature {
+            view.apply(node: node)
+            appliedNodeSignatures[id] = signature
+        }
 
         // Recurse for containers.
         if node.type == .container {
@@ -340,8 +481,12 @@ final class CanvasEditorView: UIView {
     private func expectedType(for node: CanvasNode) -> NodeRenderView.Type {
         switch node.type {
         case .container: return ContainerNodeView.self
-        case .text: return TextNodeView.self
-        case .image: return ImageNodeView.self
+        case .text:      return TextNodeView.self
+        case .image:     return ImageNodeView.self
+        case .icon:      return IconNodeView.self
+        case .divider:   return DividerNodeView.self
+        case .link:      return LinkNodeView.self
+        case .gallery:   return GalleryNodeView.self
         }
     }
 
@@ -383,7 +528,85 @@ final class CanvasEditorView: UIView {
             return view
         case .image:
             return ImageNodeView(nodeID: node.id)
+        case .icon:
+            return IconNodeView(nodeID: node.id)
+        case .divider:
+            return DividerNodeView(nodeID: node.id)
+        case .link:
+            return LinkNodeView(nodeID: node.id)
+        case .gallery:
+            let view = GalleryNodeView(nodeID: node.id)
+            // Wire per-tile + view-all callbacks only in viewer
+            // mode. Editor mode leaves both nil so the gallery's
+            // chrome looks identical to what the author drew (no
+            // chip, no tile-tap interception).
+            if !isInteractive {
+                view.onTileTapped = { [weak self] index in
+                    self?.openGalleryTile(nodeID: node.id, tappedIndex: index)
+                }
+                view.onViewAll = { [weak self] in
+                    self?.openFullGallery(nodeID: node.id)
+                }
+            }
+            return view
         }
+    }
+
+    /// Build the gallery's URL list and forward to the host's
+    /// `onOpenFullGallery` callback. Mirrors `openGalleryTile`'s
+    /// remote-only filter so the grid never tries to load a path
+    /// that points at a local-only file the viewer can't see.
+    private func openFullGallery(nodeID: UUID) {
+        guard let node = document.nodes[nodeID],
+              node.type == .gallery,
+              let paths = node.content.imagePaths,
+              !paths.isEmpty else { return }
+        let urls: [URL] = paths.compactMap { raw in
+            guard CanvasImageLoader.isRemote(raw) else { return nil }
+            return URL(string: raw)
+        }
+        guard !urls.isEmpty else { return }
+        onOpenFullGallery?(urls)
+    }
+
+    /// Resolve a tapped gallery tile to its public URL list + initial
+    /// index, then forward up to the SwiftUI host. The list is
+    /// filtered to remote URLs only (the publish flow rewrites every
+    /// path to a Supabase public URL, so for a published profile this
+    /// matches the gallery 1:1; defensive nonetheless). The tapped
+    /// index is rebased so it points at the same image inside the
+    /// filtered list.
+    private func openGalleryTile(nodeID: UUID, tappedIndex: Int) {
+        guard let node = document.nodes[nodeID],
+              node.type == .gallery,
+              let paths = node.content.imagePaths,
+              tappedIndex >= 0, tappedIndex < paths.count else { return }
+
+        var urls: [URL] = []
+        var rebasedIndex: Int = -1
+        for (i, raw) in paths.enumerated() {
+            guard CanvasImageLoader.isRemote(raw),
+                  let url = URL(string: raw) else { continue }
+            if i == tappedIndex { rebasedIndex = urls.count }
+            urls.append(url)
+        }
+        guard !urls.isEmpty else { return }
+        // If the tapped index pointed at a non-remote slot, fall back
+        // to the first remote image so the lightbox still opens at a
+        // sensible page.
+        let initial = rebasedIndex >= 0 ? rebasedIndex : 0
+        onOpenImage?(urls, initial)
+    }
+
+    private func renderSignature(for node: CanvasNode) -> NodeRenderSignature {
+        NodeRenderSignature(
+            node: node,
+            localImageModificationDate: LocalCanvasAssetStore.modificationDate(node.content.localImagePath),
+            backgroundImageModificationDate: LocalCanvasAssetStore.modificationDate(node.style.backgroundImagePath),
+            galleryImageModificationDates: (node.content.imagePaths ?? []).map {
+                LocalCanvasAssetStore.modificationDate($0)
+            }
+        )
     }
 
     private func applyZOrder(parentID: UUID?, in container: UIView) {
@@ -401,7 +624,7 @@ final class CanvasEditorView: UIView {
             containerView.bringEffectOverlaysToFront()
         }
         // Ensure the selection overlay is in front of root content.
-        if container === contentView {
+        if container === pageView {
             contentView.bringSubviewToFront(overlay)
         }
     }
@@ -409,6 +632,13 @@ final class CanvasEditorView: UIView {
     // MARK: - Gestures: select / deselect
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        // Viewer mode: nothing to select. The recognizer stays
+        // attached because it lives on `contentView` (we don't need
+        // to tear it down per render-view), but it short-circuits
+        // here so empty taps don't push spurious `selectedID` updates
+        // through to SwiftUI.
+        guard isInteractive else { return }
+
         // Tap recognizer is on `contentView`, so the location is
         // already in content coordinates — same space the node frames
         // and `applyZOrder` use, so the hit-test recursion just works.
@@ -457,7 +687,9 @@ final class CanvasEditorView: UIView {
     /// highest-z sibling wins. A point inside a container that doesn't hit
     /// any child returns the container itself.
     private func hitTestNode(at point: CGPoint) -> UUID? {
-        return hitTestNode(at: point, in: contentView, parent: nil)
+        let pagePoint = contentView.convert(point, to: pageView)
+        guard pageView.bounds.contains(pagePoint) else { return nil }
+        return hitTestNode(at: pagePoint, in: pageView, parent: nil)
     }
 
     private func hitTestNode(at point: CGPoint, in superview: UIView, parent: UUID?) -> UUID? {
@@ -489,6 +721,38 @@ final class CanvasEditorView: UIView {
     // MARK: - Gestures: drag-to-move
 
     private func attachPanGesture(to view: NodeRenderView) {
+        // Read-only viewer: skip every editor gesture. Only two
+        // node-type-specific tap recognizers ride along:
+        //   - `.link` → opens the destination URL via `onOpenURL`
+        //   - `.container` named "journal card" (case-insensitive)
+        //     → opens the journal modal via `onOpenJournal`
+        // Every other node type stays inert in viewer mode, which
+        // is what "view only" should feel like.
+        guard isInteractive else {
+            guard let node = document.nodes[view.nodeID] else { return }
+            switch node.type {
+            case .link:
+                let tap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
+                tap.numberOfTapsRequired = 1
+                view.addGestureRecognizer(tap)
+                view.isUserInteractionEnabled = true
+            case .container:
+                let trimmedName = node.name?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if trimmedName == "journal card" {
+                    let tap = UITapGestureRecognizer(
+                        target: self,
+                        action: #selector(handleJournalCardTap(_:))
+                    )
+                    tap.numberOfTapsRequired = 1
+                    view.addGestureRecognizer(tap)
+                    view.isUserInteractionEnabled = true
+                }
+            default:
+                break
+            }
+            return
+        }
+
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handleNodePan(_:)))
         pan.maximumNumberOfTouches = 1
         // Set ourselves as the delegate so we can refuse to start an
@@ -499,6 +763,93 @@ final class CanvasEditorView: UIView {
         pan.delegate = self
         view.addGestureRecognizer(pan)
         nodePanGestures[view.nodeID] = pan
+
+        // Long-press recognizer: opens the inspector for the pressed
+        // node. Defaults of `minimumPressDuration = 0.4s` and
+        // `allowableMovement = 10pt` give the user a quick "hold to
+        // edit" gesture without stealing drags — once the finger
+        // moves more than 10pt before the duration elapses, the long
+        // press fails and the pan above takes over the touch.
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleNodeLongPress(_:)))
+        longPress.minimumPressDuration = 0.4
+        longPress.allowableMovement = 10
+        longPress.numberOfTouchesRequired = 1
+        // Same delegate as pan so nested nodes follow the same
+        // "selection wins over depth, otherwise deepest wins" rule.
+        longPress.delegate = self
+        view.addGestureRecognizer(longPress)
+        nodeLongPressGestures[view.nodeID] = longPress
+    }
+
+    /// Viewer-mode handler for tap-on-journal-card. The card's
+    /// container node ID is forwarded to the SwiftUI host, which
+    /// extracts the title + body from text descendants and presents
+    /// `JournalModalView`. The canvas itself doesn't peek into
+    /// children — keeping the data extraction in the SwiftUI layer
+    /// lets `JournalContent` evolve without rebuilding the canvas.
+    @objc private func handleJournalCardTap(_ gesture: UITapGestureRecognizer) {
+        guard let view = gesture.view as? NodeRenderView else { return }
+        onOpenJournal?(view.nodeID)
+    }
+
+    /// Viewer-mode handler for tap-on-link. Pulls the URL out of the
+    /// node's content, normalises it (adds `https://` when scheme is
+    /// missing — users typing "example.com" expect the tap to work),
+    /// and hands it to the host via `onOpenURL`. No haptic here: the
+    /// host's URL opener triggers system feedback on its own.
+    @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
+        guard let view = gesture.view as? NodeRenderView,
+              let node = document.nodes[view.nodeID],
+              node.type == .link,
+              let raw = node.content.url else { return }
+        guard let url = Self.resolveLinkURL(raw) else { return }
+        onOpenURL?(url)
+    }
+
+    /// Best-effort URL resolution for a free-form `node.content.url`
+    /// string. Returns nil for empty / clearly-malformed input. A
+    /// missing scheme is filled in with `https://` so the iOS user's
+    /// muscle memory of typing "tiktok.com/@me" still routes somewhere.
+    static func resolveLinkURL(_ raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let url = URL(string: trimmed), url.scheme != nil {
+            return url
+        }
+        // Reject obviously-non-URL strings to avoid opening Safari to
+        // garbage (no dot, single token, etc.). A real URL will have
+        // at least one period in the host portion.
+        guard trimmed.contains(".") else { return nil }
+        return URL(string: "https://" + trimmed)
+    }
+
+    @objc private func handleNodeLongPress(_ gesture: UILongPressGestureRecognizer) {
+        // We only act on the single `.began` transition — long-press
+        // recognizers continue to fire `.changed` events while the
+        // finger is held, which would re-open the inspector and pulse
+        // the haptic over and over.
+        guard gesture.state == .began,
+              let view = gesture.view as? NodeRenderView else { return }
+        let id = view.nodeID
+
+        // If the pressed node isn't yet selected, end any active
+        // text-edit on a different node so the keyboard goes down
+        // before the inspector takes over.
+        if selectedID != id {
+            endActiveTextEditingIfNeeded(except: id)
+            selectedID = id
+            applyOverlayForCurrentSelection()
+            onSelectionChanged?(id)
+        }
+
+        // Single haptic per recognized press.
+        editHapticGenerator.prepare()
+        editHapticGenerator.impactOccurred()
+
+        // Hand off to the host so it can present the inspector. The
+        // canvas owns selection and the haptic; presenting modals is
+        // a SwiftUI concern.
+        onRequestEditNode?(id)
     }
 
     @objc private func handleNodePan(_ gesture: UIPanGestureRecognizer) {
@@ -536,8 +887,8 @@ final class CanvasEditorView: UIView {
             // the user can drag past the previous bottom without
             // clipping. (Children of containers are bounded by their
             // container's clipping, which is the desired behavior.)
-            if view.superview === contentView {
-                growContentHeightIfNeeded(toContain: newFrame.maxY)
+            if view.superview === pageView {
+                growPageHeightIfNeeded(toContain: newFrame.maxY)
             }
             applyOverlayForCurrentSelection()
 
@@ -546,6 +897,9 @@ final class CanvasEditorView: UIView {
             if var node = document.nodes[id] {
                 node.frame = NodeFrame(view.frame)
                 document.nodes[id] = node
+                if view.superview === pageView {
+                    commitPageHeightIfNeeded(toContain: view.frame.maxY)
+                }
                 onCommit?(document)
             }
 
@@ -565,6 +919,21 @@ final class CanvasEditorView: UIView {
         switch state {
         case .began:
             dragStartFrame = view.frame
+            // Snapshot every descendant's current frame so `.changed`
+            // can compute scaled frames from the original layout
+            // each tick. Without an absolute snapshot we'd compound
+            // floating-point error as the user drags back and forth.
+            // Frames live in each descendant's own parent coord space
+            // — every frame in the subtree scales by the same factor
+            // because every parent's bounds scale by the same factor,
+            // so a single multiplier preserves relative positions
+            // throughout.
+            dragStartDescendantFrames.removeAll()
+            for descendantID in document.subtree(rootedAt: id) where descendantID != id {
+                if let descendantView = renderViews[descendantID] {
+                    dragStartDescendantFrames[descendantID] = descendantView.frame
+                }
+            }
 
         case .changed:
             // Translation arrives in canvas-root coords. With no transforms
@@ -630,20 +999,82 @@ final class CanvasEditorView: UIView {
                 newFrame.size.height = 24
             }
             view.frame = newFrame
-            if view.superview === contentView {
-                growContentHeightIfNeeded(toContain: newFrame.maxY)
+
+            // Scale every descendant's UIView frame by the same
+            // ratio as the resize. Pure visual update during the
+            // gesture — the document is not mutated until `.ended`
+            // so SwiftUI doesn't re-render mid-drag and stomp on
+            // the in-flight frames.
+            applyDescendantScale(
+                in: dragStartDescendantFrames,
+                scaleX: dragStartFrame.width > 0 ? newFrame.width / dragStartFrame.width : 1,
+                scaleY: dragStartFrame.height > 0 ? newFrame.height / dragStartFrame.height : 1
+            )
+
+            if view.superview === pageView {
+                growPageHeightIfNeeded(toContain: newFrame.maxY)
             }
             applyOverlayForCurrentSelection()
 
         case .ended, .cancelled:
+            // Commit the resized frame plus every scaled descendant
+            // frame. Doing both before `onCommit` so SwiftUI sees a
+            // single coherent document update — partial commits would
+            // trigger an apply pass that snaps the children back to
+            // their pre-resize positions.
+            let finalScaleX = dragStartFrame.width > 0
+                ? view.frame.width / dragStartFrame.width
+                : 1
+            let finalScaleY = dragStartFrame.height > 0
+                ? view.frame.height / dragStartFrame.height
+                : 1
+
             if var node = document.nodes[id] {
                 node.frame = NodeFrame(view.frame)
                 document.nodes[id] = node
+            }
+            for (descendantID, originalFrame) in dragStartDescendantFrames {
+                guard var descendant = document.nodes[descendantID] else { continue }
+                descendant.frame = NodeFrame(CGRect(
+                    x: originalFrame.origin.x * finalScaleX,
+                    y: originalFrame.origin.y * finalScaleY,
+                    width: originalFrame.width * finalScaleX,
+                    height: originalFrame.height * finalScaleY
+                ))
+                document.nodes[descendantID] = descendant
+            }
+            dragStartDescendantFrames.removeAll()
+
+            if document.nodes[id] != nil {
+                if view.superview === pageView {
+                    commitPageHeightIfNeeded(toContain: view.frame.maxY)
+                }
                 onCommit?(document)
             }
 
         default:
             break
+        }
+    }
+
+    /// Apply uniform `(scaleX, scaleY)` to every descendant render
+    /// view's frame, anchored on the descendant's *original* frame
+    /// captured at gesture-begin. Uniform scaling across the whole
+    /// subtree works because each descendant's frame lives in its
+    /// own parent's local space, and every parent in the chain
+    /// scales by the same factor.
+    private func applyDescendantScale(in originalFrames: [UUID: CGRect],
+                                      scaleX: CGFloat,
+                                      scaleY: CGFloat) {
+        guard !originalFrames.isEmpty else { return }
+        for (descendantID, originalFrame) in originalFrames {
+            guard let descendantView = renderViews[descendantID] else { continue }
+            descendantView.frame = CGRect(
+                x: originalFrame.origin.x * scaleX,
+                y: originalFrame.origin.y * scaleY,
+                width: originalFrame.width * scaleX,
+                height: originalFrame.height * scaleY
+            )
         }
     }
 
@@ -660,12 +1091,56 @@ final class CanvasEditorView: UIView {
            cached.mtime == mtime {
             return cached.image
         }
-        guard let image = LocalCanvasAssetStore.loadUIImage(path) else {
+        // Local + remote dispatch via the shared canvas image loader.
+        // Sync path returns the bytes for local files and remote cache
+        // hits; a remote miss returns nil here. We kick off an async
+        // fetch and apply the bytes **directly** when they arrive
+        // (mirroring `ImageNodeView` / `GalleryNodeView`). The earlier
+        // version only nudged `setNeedsLayout()` and reset the
+        // signature, expecting the next `apply(document:)` pass to
+        // pick up the warm cache — but no such pass fires on its own,
+        // so the page background stayed blank until SwiftUI happened
+        // to re-emit `updateUIView` (e.g. on navigation back).
+        guard let image = CanvasImageLoader.loadSync(path) else {
             cachedBackgroundOriginal = nil
+            if CanvasImageLoader.isRemote(path) {
+                CanvasImageLoader.loadAsync(path) { [weak self] fetched in
+                    guard let self, let fetched else { return }
+                    // Race-guard: the document might have changed
+                    // (page bg cleared, swapped) while bytes were in
+                    // flight. Drop the result if the path no longer
+                    // matches the live document.
+                    guard self.document.pageBackgroundImagePath == path else { return }
+                    self.applyFetchedPageBackground(image: fetched, path: path, mtime: mtime)
+                }
+            }
             return nil
         }
         cachedBackgroundOriginal = (path, mtime, image)
         return image
+    }
+
+    /// Hook used by the async-fetch path in `cachedOrLoadBackgroundOriginal`.
+    /// Applies a freshly-fetched bitmap directly to the page-background
+    /// image view (skipping the filter pipeline when blur + vignette
+    /// are off), updates the cache, and writes the signature so the
+    /// next `apply(document:)` pass short-circuits the work entirely.
+    private func applyFetchedPageBackground(image: UIImage, path: String, mtime: Date?) {
+        cachedBackgroundOriginal = (path, mtime, image)
+
+        let blur = document.pageBackgroundBlur ?? 0
+        let vignette = document.pageBackgroundVignette ?? 0
+        backgroundImageView.isHidden = false
+        if blur <= 0.01 && vignette <= 0.01 {
+            backgroundImageView.image = image
+        } else {
+            scheduleBackgroundFilterRender(image: image, blur: blur, vignette: vignette)
+        }
+        // Background sits behind every node view; keep that layering
+        // intact since `apply(document:)` is the path that normally
+        // calls `sendSubviewToBack` for us.
+        pageView.sendSubviewToBack(backgroundImageView)
+        lastBackgroundSignature = (path, mtime, blur, vignette)
     }
 
     /// Run `PageBackgroundEffects.apply(...)` on a background queue and
@@ -703,44 +1178,90 @@ final class CanvasEditorView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        applyPageSizing(for: document)
         // Re-pin the overlay to the selected node in case bounds changed
         // (e.g., rotation or window resize on iPad).
         applyOverlayForCurrentSelection()
-        // Keep the scrollable content tall enough for both the page
-        // contents and the (possibly new) viewport height.
+    }
+
+    /// Apply document-level page dimensions to the visible page frame
+    /// and keep the scroll content wide/tall enough to show it.
+    private func applyPageSizing(for document: ProfileDocument) {
+        let pageWidth = effectivePageWidth(for: document)
+        let pageHeight = effectivePageHeight(for: document)
+        let viewportWidth = scrollView.bounds.width > 0 ? scrollView.bounds.width : bounds.width
+
+        if let constraint = pageWidthConstraint,
+           abs(constraint.constant - pageWidth) > 0.5 {
+            constraint.constant = pageWidth
+        }
+        if let constraint = pageHeightConstraint,
+           abs(constraint.constant - pageHeight) > 0.5 {
+            constraint.constant = pageHeight
+        }
+
+        let contentWidth = max(viewportWidth, pageWidth)
+        if let constraint = contentWidthConstraint,
+           abs(constraint.constant - contentWidth) > 0.5 {
+            constraint.constant = contentWidth
+        }
+
+        pageShadowView.layer.shadowPath = UIBezierPath(
+            rect: CGRect(origin: .zero, size: CGSize(width: pageWidth, height: pageHeight))
+        ).cgPath
         updateContentHeight()
     }
 
-    /// Resize `contentView` to fit either the viewport or the
-    /// bottommost root node + a small padding, whichever is taller.
-    /// Called after every `apply(...)`, every layout pass, and every
-    /// drag/resize that mutates a frame, so the scrollable area
-    /// always tracks where the user has placed nodes.
-    private func updateContentHeight() {
-        let viewport = scrollView.bounds.height
+    private func effectivePageWidth(for document: ProfileDocument) -> CGFloat {
+        max(240, CGFloat(document.pageWidth))
+    }
+
+    private func effectivePageHeight(for document: ProfileDocument) -> CGFloat {
+        let explicitHeight = max(400, CGFloat(document.pageHeight))
+        return max(explicitHeight, bottommostRootNodeY(in: document) + 60)
+    }
+
+    private func bottommostRootNodeY(in document: ProfileDocument) -> CGFloat {
         var maxY: CGFloat = 0
         for childID in document.rootChildrenIDs {
-            if let node = document.nodes[childID] {
-                maxY = max(maxY, CGFloat(node.frame.y + node.frame.height))
-            }
+            guard let node = document.nodes[childID] else { continue }
+            maxY = max(maxY, CGFloat(node.frame.y + node.frame.height))
         }
-        let bottomPadding: CGFloat = 60
-        let target = max(viewport, maxY + bottomPadding)
+        return maxY
+    }
+
+    /// Resize `contentView` to fit either the viewport or the page frame,
+    /// whichever is taller. The page itself owns the visible design bounds;
+    /// `contentView` is just scroll-space around that page.
+    private func updateContentHeight() {
+        let viewport = scrollView.bounds.height
+        let pageHeight = max(pageHeightConstraint?.constant ?? 0, effectivePageHeight(for: document))
+        let target = max(viewport, pageTopPadding + pageHeight + pageBottomPadding)
         if let constraint = contentHeightConstraint,
            abs(constraint.constant - target) > 0.5 {
             constraint.constant = target
         }
     }
 
-    /// Expand `contentView` *during* a drag / resize so the user can
-    /// keep moving a node past the previous bottom of the page
-    /// without it getting clipped. Used by `handleNodePan` and
-    /// `handleResize` `.changed` paths to grow the scrollable area
-    /// live.
-    private func growContentHeightIfNeeded(toContain frameMaxY: CGFloat) {
+    /// Expand the visible page *during* a root drag / resize so the
+    /// user can keep moving a node past the previous bottom without
+    /// losing it under clipping.
+    private func growPageHeightIfNeeded(toContain frameMaxY: CGFloat) {
         let needed = frameMaxY + 60
-        if let constraint = contentHeightConstraint, constraint.constant < needed {
+        if let constraint = pageHeightConstraint, constraint.constant < needed {
             constraint.constant = needed
+            updateContentHeight()
+        }
+    }
+
+    /// Persist auto-grown page height when a root node is committed
+    /// beyond the current document height. Old drafts still decode to
+    /// the default height, and future edits keep the user-created
+    /// bottom space after relaunch.
+    private func commitPageHeightIfNeeded(toContain frameMaxY: CGFloat) {
+        let needed = Double(frameMaxY + 60)
+        if document.pageHeight < needed {
+            document.pageHeight = needed
         }
     }
 
@@ -842,13 +1363,51 @@ extension CanvasEditorView: UIGestureRecognizerDelegate {
     /// pans on the same touch is non-deterministic, and either the
     /// ancestor or the descendant would win unpredictably.
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
-              let view = pan.view as? NodeRenderView else {
+        // Resolve the touched view and touch point uniformly for both
+        // per-node recognizers (pan + long-press). Anything else
+        // (e.g. the canvas's tap recognizer or UIScrollView's own
+        // pan) falls through to the default `true`.
+        let view: NodeRenderView?
+        let touchPoint: CGPoint
+        if let pan = gestureRecognizer as? UIPanGestureRecognizer {
+            view = pan.view as? NodeRenderView
+            touchPoint = pan.location(in: pan.view ?? self)
+        } else if let lp = gestureRecognizer as? UILongPressGestureRecognizer {
+            view = lp.view as? NodeRenderView
+            touchPoint = lp.location(in: lp.view ?? self)
+        } else {
             return true
         }
+        guard let view else { return true }
         let viewID = view.nodeID
-        let touchPoint = pan.location(in: view)
 
+        // ---------- PAN (drag-to-move) ----------
+        //
+        // Drag is gated by selection: we only let a node's pan
+        // recognizer start when that node is the currently-selected
+        // one. Why: the canvas page lives inside a `UIScrollView`,
+        // and any pan on a node that wins the touch prevents the
+        // scroll view from scrolling. Without this gate, *every*
+        // attempt to scroll the canvas accidentally dragged whatever
+        // node the finger happened to touch on the way down.
+        //
+        // The user's mental model is now the standard iOS one:
+        //   1. Tap a node → it becomes selected (no drag).
+        //   2. Press + drag the same node → it moves.
+        //   3. Press + drag elsewhere on the canvas → page scrolls.
+        //
+        // Long press (the inspector shortcut) is intentionally NOT
+        // gated by selection: the whole point is to open the editor
+        // for whatever node the user is holding. Long-press
+        // arbitration uses the existing depth + selection rules.
+        if gestureRecognizer is UIPanGestureRecognizer {
+            guard let selID = selectedID, selID == viewID else {
+                return false
+            }
+            return true
+        }
+
+        // ---------- LONG PRESS (open-inspector shortcut) ----------
         if let selID = selectedID {
             if selID == viewID {
                 // Rule 1: this view IS the selected node — always allow.
@@ -856,11 +1415,10 @@ extension CanvasEditorView: UIGestureRecognizerDelegate {
             }
             if isAncestor(selID, of: viewID) {
                 // Rule 2: the user explicitly selected an ancestor of
-                // this view. The ancestor's own pan should win.
+                // this view. The ancestor's own gesture should win.
                 return false
             }
         }
-
         // Rule 3 (default): deepest wins. Refuse if the touch lives
         // inside any descendant of this view.
         return !touchHitsDescendant(of: viewID, in: view, at: touchPoint)

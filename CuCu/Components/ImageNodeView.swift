@@ -18,6 +18,11 @@ final class ImageNodeView: NodeRenderView {
     }()
 
     private var hasImage = false
+    /// Tracks the path/URL we last attempted to render. The async
+    /// remote-fetch callback compares against this to drop stale
+    /// completions when the user has since pointed the node at a
+    /// different image.
+    private var currentPath: String?
 
     override init(nodeID: UUID) {
         super.init(nodeID: nodeID)
@@ -33,23 +38,46 @@ final class ImageNodeView: NodeRenderView {
     override func apply(node: CanvasNode) {
         super.apply(node: node)
 
-        if let path = node.content.localImagePath,
-           let image = LocalCanvasAssetStore.loadUIImage(path) {
-            imageView.image = image
-            imageView.tintColor = nil
-            imageView.backgroundColor = .clear
-            hasImage = true
-        } else {
-            // Placeholder: gray fill + centered system photo symbol so users
-            // can still see/select/resize the node when the file is gone or
-            // hasn't been written yet.
-            imageView.image = UIImage(systemName: "photo")
-            imageView.tintColor = .tertiaryLabel
-            imageView.backgroundColor = .secondarySystemFill
-            hasImage = false
-        }
+        let path = node.content.localImagePath
+        currentPath = path
+        let fit = node.style.imageFit ?? .fill
 
-        applyFit(node.style.imageFit ?? .fill)
+        if let path, let image = CanvasImageLoader.loadSync(path) {
+            // Local file or remote cache hit — paint immediately.
+            renderImage(image, fit: fit)
+        } else if let path, !path.isEmpty, CanvasImageLoader.isRemote(path) {
+            // Remote miss — show placeholder while bytes fetch, swap
+            // in when ready (only if the path is still current).
+            renderPlaceholder(fit: fit)
+            CanvasImageLoader.loadAsync(path) { [weak self] image in
+                guard let self,
+                      let image,
+                      self.currentPath == path
+                else { return }
+                self.renderImage(image, fit: fit)
+            }
+        } else {
+            renderPlaceholder(fit: fit)
+        }
+    }
+
+    private func renderImage(_ image: UIImage, fit: NodeImageFit) {
+        imageView.image = image
+        imageView.tintColor = nil
+        imageView.backgroundColor = .clear
+        hasImage = true
+        applyFit(fit)
+    }
+
+    private func renderPlaceholder(fit: NodeImageFit) {
+        // Placeholder: gray fill + centered system photo symbol so users
+        // can still see/select/resize the node when the file is gone or
+        // hasn't been written yet.
+        imageView.image = UIImage(systemName: "photo")
+        imageView.tintColor = .tertiaryLabel
+        imageView.backgroundColor = .secondarySystemFill
+        hasImage = false
+        applyFit(fit)
     }
 
     private func applyFit(_ fit: NodeImageFit) {

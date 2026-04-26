@@ -4,8 +4,8 @@ import UIKit
 /// Contextual bar shown when a node is selected on the canvas.
 ///
 /// Layout (top to bottom):
-/// 1. **Top row** — `×` to deselect, the path as inline tab-style text
-///    (faded ancestors + bold current, all tappable for navigation),
+/// 1. **Top row** — `chevron.down` to collapse, the path as inline tab-style
+///    text (faded ancestors + bold current, all tappable for navigation),
 ///    `🗑` to delete the selection.
 /// 2. **Selected tile** — color-tinted icon badge + type name + summary,
 ///    with an `…` overflow menu for layer-order / duplicate. Tap the
@@ -13,10 +13,9 @@ import UIKit
 /// 3. **Inside / At this level** — vertical list of pill rows. Each row
 ///    is a sibling or child node, tappable to switch the selection.
 ///
-/// Aesthetic: clean iOS-native — white (or `.systemBackground`) card,
-/// `secondarySystemFill` pill rows, tinted icon badges, simple sans
-/// type, generous whitespace, subtle press scale + light haptic on
-/// every tap.
+/// Aesthetic: editorial-scrapbook — cream paper card with deep ink stroke,
+/// Fraunces italic labels, fleuron divider between sections, palette-tuned
+/// node-type badges.
 struct SelectionBottomBar: View {
     let document: ProfileDocument
     let selectedID: UUID
@@ -26,6 +25,7 @@ struct SelectionBottomBar: View {
     var onDuplicate: () -> Void
     var onBringToFront: () -> Void
     var onSendBackward: () -> Void
+    var onLayers: () -> Void
     var onDelete: () -> Void
     /// Collapse the bar back into a small chevron pill. Distinct from
     /// `onSelect(nil)` (which deselects entirely) — collapse keeps the
@@ -33,13 +33,11 @@ struct SelectionBottomBar: View {
     /// stay visible.
     var onCollapse: () -> Void
 
-    @Environment(\.colorScheme) private var colorScheme
-
     var body: some View {
         if let node = document.nodes[selectedID] {
             VStack(spacing: 10) {
                 topRow(for: node)
-                separator
+                CucuFleuronDivider()
                 selectedTile(for: node)
                 if hasItemsRow(for: node) {
                     itemsSection(for: node)
@@ -47,30 +45,19 @@ struct SelectionBottomBar: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color(.systemBackground))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(.primary.opacity(0.06), lineWidth: 0.5)
-            )
-            .shadow(color: .black.opacity(colorScheme == .dark ? 0.35 : 0.08),
-                    radius: 14, x: 0, y: 4)
+            .cucuCard(corner: 20, innerRule: false, elevation: .raised)
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 
-    // MARK: - Top row (X + path tabs + trash)
+    // MARK: - Top row (collapse + path tabs + trash)
 
     private func topRow(for node: CanvasNode) -> some View {
         HStack(spacing: 6) {
-            iconButton("chevron.down", tint: .secondary) {
-                onCollapse()
-            }
-            .accessibilityLabel("Collapse")
+            iconButton("chevron.down") { onCollapse() }
+                .accessibilityLabel("Collapse")
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 0) {
@@ -90,10 +77,8 @@ struct SelectionBottomBar: View {
             }
             .frame(maxWidth: .infinity)
 
-            iconButton("trash", tint: .secondary) {
-                onDelete()
-            }
-            .accessibilityLabel("Delete selection")
+            iconButton("trash") { onDelete() }
+                .accessibilityLabel("Delete selection")
         }
     }
 
@@ -103,33 +88,29 @@ struct SelectionBottomBar: View {
             action()
         } label: {
             Text(label)
-                .font(.system(size: 14, weight: isCurrent ? .semibold : .regular))
-                .foregroundStyle(isCurrent ? Color.primary : Color.secondary.opacity(0.75))
-                // Bigger, well-defined touch target with a subtle pill so
-                // the chip can't be confused with the selected tile below.
+                .font(.cucuSerif(14, weight: isCurrent ? .bold : .regular))
+                .foregroundStyle(isCurrent ? Color.cucuInk : Color.cucuInkFaded)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.vertical, 7)
                 .background(
                     Capsule()
-                        .fill(isCurrent ? Color.primary.opacity(0.08) : Color.clear)
+                        .fill(isCurrent ? Color.cucuMossSoft : Color.clear)
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(isCurrent ? Color.cucuInk.opacity(0.55) : Color.clear,
+                                      lineWidth: 1)
                 )
                 .contentShape(Capsule())
         }
-        .buttonStyle(PressableButtonStyle())
+        .buttonStyle(CucuPressableButtonStyle())
         .disabled(isCurrent)
     }
 
     private var pathSeparator: some View {
         Text("·")
-            .font(.system(size: 14, weight: .regular))
-            .foregroundStyle(.tertiary)
-            .padding(.horizontal, 2)
-    }
-
-    private var separator: some View {
-        Rectangle()
-            .fill(.primary.opacity(0.06))
-            .frame(height: 0.5)
+            .font(.cucuSerif(14, weight: .regular))
+            .foregroundStyle(Color.cucuInkFaded)
             .padding(.horizontal, 2)
     }
 
@@ -137,14 +118,15 @@ struct SelectionBottomBar: View {
 
     private func selectedTile(for node: CanvasNode) -> some View {
         HStack(spacing: 12) {
-            iconBadge(for: node, size: 36, iconSize: 15)
+            CucuIconBadge(kind: kind(for: node), symbol: iconName(for: node),
+                          size: 36, iconSize: 15)
             VStack(alignment: .leading, spacing: 1) {
                 Text(displayName(for: node))
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.primary)
+                    .font(.cucuSerif(16, weight: .bold))
+                    .foregroundStyle(Color.cucuInk)
                 Text(subtitle(for: node))
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .font(.cucuSans(12, weight: .regular))
+                    .foregroundStyle(Color.cucuInkFaded)
                     .lineLimit(1)
             }
             // Tap on the body of the tile (icon + text area) opens the
@@ -162,32 +144,33 @@ struct SelectionBottomBar: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.primary.opacity(0.05))
+                .fill(Color.cucuCardSoft)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 1)
         )
     }
 
     private func tileMenu() -> some View {
         Menu {
-            Button {
-                tapHaptic(); onEdit()
-            } label: { Label("Edit Properties", systemImage: "slider.horizontal.3") }
-            Button {
-                tapHaptic(); onDuplicate()
-            } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
-            Button {
-                tapHaptic(); onBringToFront()
-            } label: { Label("Bring to Front", systemImage: "square.stack.3d.up") }
-            Button {
-                tapHaptic(); onSendBackward()
-            } label: { Label("Send Backward", systemImage: "square.stack.3d.down.right") }
+            Button { tapHaptic(); onEdit() }
+                label: { Label("Edit Properties", systemImage: "slider.horizontal.3") }
+            Button { tapHaptic(); onDuplicate() }
+                label: { Label("Duplicate", systemImage: "plus.square.on.square") }
+            Button { tapHaptic(); onBringToFront() }
+                label: { Label("Bring to Front", systemImage: "square.stack.3d.up") }
+            Button { tapHaptic(); onSendBackward() }
+                label: { Label("Send Backward", systemImage: "square.stack.3d.down.right") }
+            Button { tapHaptic(); onLayers() }
+                label: { Label("Layers", systemImage: "square.3.layers.3d") }
             Divider()
-            Button(role: .destructive) {
-                tapHaptic(); onDelete()
-            } label: { Label("Delete", systemImage: "trash") }
+            Button(role: .destructive) { tapHaptic(); onDelete() }
+                label: { Label("Delete", systemImage: "trash") }
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.cucuInkSoft)
                 .frame(width: 30, height: 30)
                 .contentShape(Rectangle())
         }
@@ -210,13 +193,6 @@ struct SelectionBottomBar: View {
             : siblings(of: selectedID).filter { $0 != selectedID }
         let title = isContainerWithChildren ? "Inside" : "At this level"
 
-        // Cap inline rows so the bar never dominates the screen. Up to
-        // `inlineLimit` rows render directly in the VStack — bounded by
-        // their natural height. Beyond that, switch to a ScrollView with
-        // a hard `frame(height:)` so the bar stays a fixed size.
-        // A plain ScrollView with no height bound would greedily fill
-        // the entire safeAreaInset, which is what previously made the
-        // bar take over the whole screen.
         let inlineLimit = 3
         let rowHeight: CGFloat = 52
         let scrollHeight: CGFloat = CGFloat(inlineLimit) * rowHeight + CGFloat(inlineLimit - 1) * 6
@@ -224,13 +200,12 @@ struct SelectionBottomBar: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .font(.cucuSerif(13, weight: .semibold))
+                    .foregroundStyle(Color.cucuInkSoft)
                 Spacer()
                 Text("\(ids.count)")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                    .monospacedDigit()
+                    .font(.cucuMono(11, weight: .medium))
+                    .foregroundStyle(Color.cucuInkFaded)
             }
             .padding(.horizontal, 4)
 
@@ -263,29 +238,34 @@ struct SelectionBottomBar: View {
             onSelect(id)
         } label: {
             HStack(spacing: 12) {
-                iconBadge(for: node, size: 30, iconSize: 13)
+                CucuIconBadge(kind: kind(for: node), symbol: iconName(for: node),
+                              size: 30, iconSize: 13)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(displayName(for: node))
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.primary)
+                        .font(.cucuSerif(14, weight: .semibold))
+                        .foregroundStyle(Color.cucuInk)
                     Text(rowPreview(for: node))
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .font(.cucuSans(11, weight: .regular))
+                        .foregroundStyle(Color.cucuInkFaded)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color.cucuInkFaded)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.primary.opacity(0.05))
+                    .fill(Color.cucuCardSoft)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 1)
             )
         }
-        .buttonStyle(PressableButtonStyle())
+        .buttonStyle(CucuPressableButtonStyle())
     }
 
     private func rowPreview(for node: CanvasNode) -> String {
@@ -301,6 +281,16 @@ struct SelectionBottomBar: View {
             if !hasImage { return "No image" }
             let clip = node.style.clipShape ?? .rectangle
             return clip == .circle ? "Circle" : "Rectangle"
+        case .icon:
+            return (node.style.iconStyleFamily ?? .pastelDoodle).label
+        case .divider:
+            return (node.style.dividerStyleFamily ?? .solid).label
+        case .link:
+            let url = (node.content.url ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return url.isEmpty ? (node.style.linkStyleVariant ?? .pill).label : url
+        case .gallery:
+            let count = node.content.imagePaths?.count ?? 0
+            return "\(count) image\(count == 1 ? "" : "s")"
         }
     }
 
@@ -312,41 +302,34 @@ struct SelectionBottomBar: View {
         return document.rootChildrenIDs
     }
 
-    // MARK: - Tinted icon badge
+    // MARK: - Tinted icon badge (delegated to CucuIconBadge)
 
-    private func iconBadge(for node: CanvasNode, size: CGFloat, iconSize: CGFloat) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(badgeColor(for: node).opacity(colorScheme == .dark ? 0.22 : 0.16))
-            Image(systemName: iconName(for: node))
-                .font(.system(size: iconSize, weight: .semibold))
-                .foregroundStyle(badgeColor(for: node))
-        }
-        .frame(width: size, height: size)
-    }
-
-    private func badgeColor(for node: CanvasNode) -> Color {
+    private func kind(for node: CanvasNode) -> CucuNodeKind {
         switch node.type {
-        case .container: return .indigo
-        case .text:      return .orange
-        case .image:     return .blue
+        case .container: return .container
+        case .text:      return .text
+        case .image:     return .image
+        case .icon:      return .icon
+        case .divider:   return .divider
+        case .link:      return .link
+        case .gallery:   return .gallery
         }
     }
 
-    // MARK: - Small icon button (X / trash)
+    // MARK: - Small icon button (collapse / trash)
 
-    private func iconButton(_ symbol: String, tint: HierarchicalShapeStyle, action: @escaping () -> Void) -> some View {
+    private func iconButton(_ symbol: String, action: @escaping () -> Void) -> some View {
         Button {
             tapHaptic()
             action()
         } label: {
             Image(systemName: symbol)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(tint)
+                .foregroundStyle(Color.cucuInkSoft)
                 .frame(width: 32, height: 32)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(PressableButtonStyle())
+        .buttonStyle(CucuPressableButtonStyle())
     }
 
     // MARK: - Tree helpers
@@ -368,6 +351,10 @@ struct SelectionBottomBar: View {
         case .container: return "rectangle.on.rectangle"
         case .text:      return "textformat"
         case .image:     return "photo"
+        case .icon:      return "star.fill"
+        case .divider:   return "minus"
+        case .link:      return "link"
+        case .gallery:   return "rectangle.grid.2x2"
         }
     }
 
@@ -376,13 +363,13 @@ struct SelectionBottomBar: View {
         case .container: return "Container"
         case .text:      return "Text"
         case .image:     return "Image"
+        case .icon:      return "Icon"
+        case .divider:   return "Divider"
+        case .link:      return "Link"
+        case .gallery:   return "Gallery"
         }
     }
 
-    /// Title shown to the user — the custom `name` if set, otherwise the
-    /// generic type label. Used in the path chips, the selected tile,
-    /// and the children rows so a renamed container reads consistently
-    /// everywhere it appears.
     private func displayName(for node: CanvasNode) -> String {
         if let trimmed = node.name?.trimmingCharacters(in: .whitespacesAndNewlines),
            !trimmed.isEmpty {
@@ -398,6 +385,18 @@ struct SelectionBottomBar: View {
             let preview = (node.content.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             return preview.isEmpty ? "Empty" : preview
         case .image: return imageSummary(for: node)
+        case .icon:
+            let family = (node.style.iconStyleFamily ?? .pastelDoodle).label
+            let glyph = node.content.iconName ?? "—"
+            return "\(family) · \(glyph)"
+        case .divider:
+            return (node.style.dividerStyleFamily ?? .solid).label
+        case .link:
+            let url = (node.content.url ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return url.isEmpty ? (node.style.linkStyleVariant ?? .pill).label : url
+        case .gallery:
+            let count = node.content.imagePaths?.count ?? 0
+            return "\(count) image\(count == 1 ? "" : "s")"
         }
     }
 
@@ -431,18 +430,5 @@ struct SelectionBottomBar: View {
     private func tapHaptic() {
         let g = UIImpactFeedbackGenerator(style: .light)
         g.impactOccurred(intensity: 0.6)
-    }
-}
-
-// MARK: - Pressable button style
-
-/// Subtle scale + opacity nudge on press for every chip / row / icon
-/// button — pairs with the light haptic for a satisfying tactile feel.
-private struct PressableButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
-            .opacity(configuration.isPressed ? 0.85 : 1.0)
-            .animation(.spring(response: 0.25, dampingFraction: 0.75), value: configuration.isPressed)
     }
 }

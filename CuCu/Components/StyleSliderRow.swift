@@ -10,15 +10,16 @@ struct StyleSliderRow: View {
     var format: (Double) -> String = { "\(Int($0))" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(label)
+                    .font(.cucuSerif(15, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
                 Spacer()
-                Text(format(value))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                CucuValuePill(text: format(value))
             }
             Slider(value: $value, in: range, step: step)
+                .tint(Color.cucuMoss)
         }
     }
 }

@@ -43,22 +43,27 @@ struct BackgroundEffectsSheet: View {
                         onCommit()
                     } label: {
                         Label("Reset Effects", systemImage: "arrow.counterclockwise")
+                            .font(.cucuSerif(15, weight: .semibold))
                     }
                     .disabled(
                         (blurBinding.wrappedValue <= 0.01) &&
                         (vignetteBinding.wrappedValue <= 0.01)
                     )
                 } header: {
-                    Text("Effects")
+                    CucuSectionLabel(text: "Effects")
                 } footer: {
                     Text("Edits apply directly to the canvas. Slide back to 0 to remove an effect with no quality loss.")
+                        .font(.cucuSans(12, weight: .regular))
+                        .foregroundStyle(Color.cucuInkFaded)
                 }
             }
-            .navigationTitle(title)
+            .cucuFormBackdrop()
+            .cucuSheetTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
+                        .font(.cucuSerif(16, weight: .bold))
                 }
             }
         }
@@ -88,17 +93,18 @@ struct BackgroundEffectsSheet: View {
                               range: ClosedRange<Double>,
                               step: Double.Stride,
                               valueLabel: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(title)
+                    .font(.cucuSerif(15, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
                 Spacer()
-                Text(valueLabel)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                CucuValuePill(text: valueLabel)
             }
             Slider(value: binding, in: range, step: step) { editing in
                 if !editing { onCommit() }
             }
+            .tint(Color.cucuMoss)
         }
     }
 }

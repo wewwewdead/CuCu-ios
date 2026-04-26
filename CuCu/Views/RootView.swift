@@ -1,13 +1,15 @@
 import SwiftData
 import SwiftUI
 
-/// App entry point. The product is single-document for now: the app opens
-/// straight into the canvas builder for the most recently updated draft,
-/// auto-creating one on first launch if none exists.
+/// App entry point. The product is single-document: the app opens
+/// straight into the canvas builder for the most recently updated
+/// `ProfileDraft`, auto-creating one on first launch if none exists.
 ///
-/// `ProfileDraft` is still the SwiftData record that owns `designJSON`,
-/// image asset paths, and any future publish metadata — we just don't
-/// surface a list screen.
+/// The earlier prototype showed a "drafts page" toolbar (`+` menu for
+/// blank/template, alert for failed creation, sheet for picking a
+/// template) — all of that's been removed because the product is
+/// single-doc now. The Explore entry that lived here is gone too;
+/// it's reachable from the canvas builder's own toolbar instead.
 struct RootView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \ProfileDraft.updatedAt, order: .reverse) private var drafts: [ProfileDraft]

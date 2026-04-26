@@ -8,11 +8,18 @@ struct CreativeProfileApp: App {
     /// builder is fully usable while this hydrates (or fails) silently.
     @State private var authViewModel = AuthViewModel()
 
+    init() {
+        // Register the bundled Lexend faces before any view tries to look
+        // them up via `Font.custom("Lexend-…")`. Failure to register simply
+        // falls back to the system font.
+        CucuFontRegistration.registerBundledFonts()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(authViewModel)
         }
-        .modelContainer(for: ProfileDraft.self)
+        .modelContainer(for: [ProfileDraft.self, ProfileTemplate.self])
     }
 }

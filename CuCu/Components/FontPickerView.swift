@@ -7,12 +7,16 @@ struct FontPickerView: View {
     @Binding var selection: ProfileFontName
 
     var body: some View {
-        Picker(label, selection: $selection) {
+        Picker(selection: $selection) {
             ForEach(ProfileFontName.allCases, id: \.self) { name in
-                Text(name.rawValue)
+                Text(name.rawValue.capitalized)
                     .font(.system(.body, design: name.design))
                     .tag(name)
             }
+        } label: {
+            Text(label)
+                .font(.cucuSerif(15, weight: .semibold))
+                .foregroundStyle(Color.cucuInk)
         }
     }
 }

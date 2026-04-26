@@ -38,59 +38,64 @@ struct ThemeEditorView: View {
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
                 } header: {
-                    Text("Live preview")
+                    CucuSectionLabel(text: "Live preview")
                 }
 
-                // Background lives in a single section so the color picker
-                // and the image picker sit together — previously they were
-                // split across "Colors" and "Background image" sections,
-                // which made the image button impossible to find.
-                Section("Background") {
+                Section {
                     ColorControlRow(label: "Color", hex: $theme.backgroundColorHex, supportsAlpha: false)
                     PhotosPicker(selection: $pickerItem, matching: .images) {
                         Label(
                             previewBackgroundImage == nil ? "Add image" : "Replace image",
                             systemImage: "photo.on.rectangle.angled"
                         )
+                        .font(.cucuSerif(15, weight: .semibold))
                     }
                     if previewBackgroundImage != nil {
                         Button(role: .destructive) {
-                            // Defer the file delete to Save.
                             shouldRemoveBackground = true
                             pendingImageData = nil
                             errorMessage = nil
                         } label: {
                             Label("Remove image", systemImage: "trash")
+                                .font(.cucuSerif(15, weight: .semibold))
                         }
                     }
                     if let errorMessage {
                         Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
+                            .font(.cucuSans(12, weight: .medium))
+                            .foregroundStyle(Color.cucuCherry)
                     }
+                } header: {
+                    CucuSectionLabel(text: "Background")
                 }
 
-                Section("Text") {
+                Section {
                     ColorControlRow(label: "Color", hex: $theme.defaultTextColorHex, supportsAlpha: false)
                     FontPickerView(label: "Font", selection: $theme.defaultFontName)
+                } header: {
+                    CucuSectionLabel(text: "Text")
                 }
 
-                Section("Layout") {
+                Section {
                     StyleSliderRow(label: "Page padding", value: $theme.pageHorizontalPadding, range: 0...60)
                     StyleSliderRow(label: "Block spacing", value: $theme.blockSpacing, range: 0...60)
+                } header: {
+                    CucuSectionLabel(text: "Layout")
                 }
             }
-            .navigationTitle("Theme")
+            .cucuFormBackdrop()
+            .cucuSheetTitle("Theme")
             #if os(iOS) || os(visionOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .font(.cucuSerif(16, weight: .semibold))
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { commit() }
-                        .fontWeight(.semibold)
+                        .font(.cucuSerif(16, weight: .bold))
                         .disabled(isLoading)
                 }
             }

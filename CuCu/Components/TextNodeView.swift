@@ -40,60 +40,93 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
     /// programmatic `endEditing()`). Host persists here.
     var onEditingEnded: (() -> Void)?
 
+    /// Padding constraints stored as members so `apply(node:)` can
+    /// drive their constants from `node.style.padding`. Initial
+    /// values match the historical defaults (4pt horizontal /
+    /// 2pt vertical) which keeps drafts that predate the inspector
+    /// "Padding" slider visually unchanged.
+    private var leadingPadding: NSLayoutConstraint!
+    private var trailingPadding: NSLayoutConstraint!
+    private var topPadding: NSLayoutConstraint!
+    private var bottomPadding: NSLayoutConstraint!
+
     override init(nodeID: UUID) {
         super.init(nodeID: nodeID)
         textView.delegate = self
         addSubview(textView)
-        NSLayoutConstraint.activate([
-            textView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-            textView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
-            textView.topAnchor.constraint(equalTo: topAnchor, constant: 2),
-            textView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
-        ])
+        leadingPadding = textView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
+        trailingPadding = textView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4)
+        topPadding = textView.topAnchor.constraint(equalTo: topAnchor, constant: 2)
+        bottomPadding = textView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2)
+        NSLayoutConstraint.activate([leadingPadding, trailingPadding, topPadding, bottomPadding])
     }
 
     override func apply(node: CanvasNode) {
         super.apply(node: node)
 
-        // While the user is actively typing, don't overwrite their
-        // in-flight string with the document version (we'd clobber
-        // unsaved keystrokes the moment SwiftUI re-renders for any
-        // unrelated reason).
-        let incoming = node.content.text ?? ""
-        if !textView.isFirstResponder, textView.text != incoming {
-            textView.text = incoming
-        }
-
+        // 1. Resolve every styling input up front so the attributed
+        //    string + the typingAttributes path agree on the same
+        //    values. Resolution lives in `NodeFontFamilyResolver` so
+        //    every text site (canvas + viewer + previews) speaks the
+        //    same family→UIFont logic.
         let size = CGFloat(node.style.fontSize ?? 17)
-        switch node.style.fontFamily ?? .system {
-        case .system:
-            textView.font = .systemFont(ofSize: size)
-        case .serif:
-            if let descriptor = UIFont.systemFont(ofSize: size).fontDescriptor.withDesign(.serif) {
-                textView.font = UIFont(descriptor: descriptor, size: size)
-            } else {
-                textView.font = .systemFont(ofSize: size)
-            }
-        case .rounded:
-            if let descriptor = UIFont.systemFont(ofSize: size).fontDescriptor.withDesign(.rounded) {
-                textView.font = UIFont(descriptor: descriptor, size: size)
-            } else {
-                textView.font = .systemFont(ofSize: size)
-            }
-        case .monospaced:
-            textView.font = .monospacedSystemFont(ofSize: size, weight: .regular)
-        }
+        let weight = (node.style.fontWeight ?? .regular).uiFontWeight
+        let family = node.style.fontFamily ?? .system
+        let font = family.uiFont(size: size, weight: weight)
+        let textColor: UIColor = node.style.textColorHex.map(uiColor(hex:)) ?? .label
 
-        if let hex = node.style.textColorHex {
-            textView.textColor = uiColor(hex: hex)
-        } else {
-            textView.textColor = .label
-        }
-
+        let alignment: NSTextAlignment
         switch node.style.textAlignment ?? .leading {
-        case .leading: textView.textAlignment = .left
-        case .center: textView.textAlignment = .center
-        case .trailing: textView.textAlignment = .right
+        case .leading:  alignment = .left
+        case .center:   alignment = .center
+        case .trailing: alignment = .right
+        }
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = alignment
+        paragraph.lineSpacing = max(CGFloat(node.style.lineSpacing ?? 0), 0)
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: textColor,
+            .paragraphStyle: paragraph,
+        ]
+
+        // 2. Apply the attributed text. Skipped while the user is
+        //    actively editing the in-place text view so we don't
+        //    clobber an in-flight string. New keystrokes pick up the
+        //    current attributes via `typingAttributes` below — that's
+        //    the standard UITextView pattern for "the inspector
+        //    changed font / line spacing while the keyboard is up".
+        let incoming = node.content.text ?? ""
+        if !textView.isFirstResponder {
+            textView.attributedText = NSAttributedString(string: incoming, attributes: attrs)
+        }
+        textView.typingAttributes = attrs
+
+        // The legacy property setters still matter for empty-text
+        // placeholder rendering, focus rings, and the few UIKit
+        // surfaces that read these directly instead of attributedText.
+        textView.font = font
+        textView.textColor = textColor
+        textView.textAlignment = alignment
+
+        // 3. Apply padding. `nil` falls back to the historical
+        //    4pt-horizontal / 2pt-vertical split so drafts that
+        //    predate the inspector slider keep their look. A set
+        //    value (including 0) drives uniform padding on all four
+        //    sides.
+        if let p = node.style.padding {
+            let pad = CGFloat(p)
+            leadingPadding.constant = pad
+            trailingPadding.constant = -pad
+            topPadding.constant = pad
+            bottomPadding.constant = -pad
+        } else {
+            leadingPadding.constant = 4
+            trailingPadding.constant = -4
+            topPadding.constant = 2
+            bottomPadding.constant = -2
         }
     }
 
@@ -137,5 +170,16 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
         textView.isSelectable = false
         textView.isScrollEnabled = false
         onEditingEnded?()
+    }
+}
+
+private extension NodeFontWeight {
+    var uiFontWeight: UIFont.Weight {
+        switch self {
+        case .regular: return .regular
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        }
     }
 }

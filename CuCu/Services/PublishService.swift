@@ -68,20 +68,23 @@ enum UsernameValidator {
     }
 }
 
-/// Orchestrates the full publish flow:
+/// Orchestrates the full v2 publish flow:
 ///
 ///   1. Validate username
 ///   2. Decide profileId (existing if previously published, else new UUID)
-///   3. Upload each local image asset to Storage
-///   4. Build a local-path → public-URL map
-///   5. Build a *transformed* ProfileDesign for the cloud copy
-///   6. Upsert the `profiles` row + `profile_assets` rows
-///   7. Return a PublishedProfileResult
+///   3. Walk every local asset surface in the `ProfileDocument`
+///   4. Upload each asset to Storage under
+///      `user_<userId>/profile_<profileId>/<basename>`
+///   5. Build a `localPath → publicURL` map
+///   6. Build a *transformed* ProfileDocument for the cloud copy
+///   7. Upsert the `profiles` row + `profile_assets` rows
+///   8. Return a PublishedProfileResult
 ///
-/// Local-only effects: nothing in this service mutates the local
-/// ProfileDraft / SwiftData. The caller (PublishViewModel) handles updating
+/// **Local-only effects:** nothing in this service mutates the local
+/// `ProfileDraft` / SwiftData. The caller (PublishViewModel) updates
 /// `draft.publishedProfileId/publishedUsername/lastPublishedAt` after a
-/// successful return.
+/// successful return. The local `ProfileDocument` is never mutated —
+/// the published copy lives only inside the cloud row.
 @MainActor
 struct PublishService {
     /// Phases the UI can observe while `publish(...)` runs. Surfaced through
@@ -95,11 +98,19 @@ struct PublishService {
     let user: AppUser
     let draftID: UUID
 
+    /// One asset to upload, paired with the asset_type label that lands in
+    /// `profile_assets.asset_type`. Built by walking the `ProfileDocument`'s
+    /// four asset-bearing surfaces (page bg, container bg, image node,
+    /// gallery node).
+    private struct PendingUpload: Hashable {
+        let localPath: String
+        let assetType: String
+    }
+
     func publish(
         existingProfileId: String?,
-        design: ProfileDesign,
+        document: ProfileDocument,
         username rawUsername: String,
-        displayName: String?,
         onPhaseChange: ((Phase) -> Void)? = nil
     ) async throws -> PublishedProfileResult {
         // 1. Validate
@@ -118,81 +129,73 @@ struct PublishService {
         //    across upload + DB insert (and across republishes).
         let profileId: String = existingProfileId ?? UUID().uuidString
 
-        // 3. Upload local assets, collecting (localPath → publicURL).
+        // Storage RLS compares the path's first folder component to
+        // `'user_' || auth.uid()::text`. Postgres renders a UUID as
+        // lowercase hex; Foundation's `UUID.uuidString` is uppercase
+        // (`E621E1F8-...`). Without normalisation the policy rejects
+        // every upload as an RLS violation. Lowercase here once and
+        // reuse the canonical form for the entire publish.
+        let canonicalUserId = user.id.lowercased()
+        let canonicalProfileId = profileId.lowercased()
+
+        // 3. Walk asset surfaces, deduplicate, upload.
         onPhaseChange?(.uploadingAssets)
+        let uploads = collectUploads(from: document)
         var pathMap: [String: String] = [:]
         var assetRows: [PublishedAssetRow] = []
 
-        // Block images — walk recursively so images nested inside containers
-        // are uploaded too. `imageBlocksDeep` flattens the recursion.
-        for data in design.blocks.imageBlocksDeep where !data.localImagePath.isEmpty {
-            // Skip duplicates if the same local path is referenced by more
-            // than one block (uncommon but cheap to defend against).
-            guard pathMap[data.localImagePath] == nil else { continue }
-            let storagePath = "user_\(user.id)/profile_\(profileId)/block_\(data.id.uuidString).jpg"
+        for upload in uploads {
+            // Storage path: user_<userId>/profile_<pid>/<basename>.
+            // Basename is the last component of the local relative path
+            // (`draft_<UUID>/image_<UUID>.jpg` → `image_<UUID>.jpg`),
+            // which is already deterministic per-node, so re-publishes
+            // overwrite the same object cleanly via `upsert: true`.
+            let basename = (upload.localPath as NSString).lastPathComponent
+            let storagePath = "user_\(canonicalUserId)/profile_\(canonicalProfileId)/\(basename)"
             let publicURL = try await uploadAsset(
                 client: client,
-                relativeLocalPath: data.localImagePath,
+                relativeLocalPath: upload.localPath,
                 storagePath: storagePath
             )
-            pathMap[data.localImagePath] = publicURL
+            pathMap[upload.localPath] = publicURL
             assetRows.append(PublishedAssetRow(
-                profile_id: profileId,
-                user_id: user.id,
-                local_path: data.localImagePath,
+                profile_id: canonicalProfileId,
+                user_id: canonicalUserId,
+                local_path: upload.localPath,
                 storage_path: storagePath,
                 public_url: publicURL,
-                asset_type: "image_block"
+                asset_type: upload.assetType
             ))
         }
 
-        // Background image
-        if let bgLocal = design.theme.backgroundImagePath, !bgLocal.isEmpty {
-            let storagePath = "user_\(user.id)/profile_\(profileId)/background.jpg"
-            let publicURL = try await uploadAsset(
-                client: client,
-                relativeLocalPath: bgLocal,
-                storagePath: storagePath
-            )
-            pathMap[bgLocal] = publicURL
-            assetRows.append(PublishedAssetRow(
-                profile_id: profileId,
-                user_id: user.id,
-                local_path: bgLocal,
-                storage_path: storagePath,
-                public_url: publicURL,
-                asset_type: "background"
-            ))
-        }
+        // 4-5. Transform document (pure copy; local document untouched).
+        let publishedDocument = PublishedDocumentTransformer.transform(
+            document, replacing: pathMap
+        )
 
-        // 4-5. Transform design (pure copy; local draft untouched).
-        let publishedDesign = PublishedDesignTransformer.transform(design, replacing: pathMap)
-
-        // 6. Upsert profile row.
+        // 6. Upsert profile row. UUIDs sent to Postgres in lowercase so
+        //    the row's `user_id` column matches `auth.uid()` exactly,
+        //    which is what every owner-side RLS policy compares
+        //    against (`auth.uid() = user_id`).
         onPhaseChange?(.savingProfile)
-        let profileRow = PublishedProfileRow(
-            id: profileId,
-            user_id: user.id,
+        let profileRow = PublishedProfileRowEncodable(
+            id: canonicalProfileId,
+            user_id: canonicalUserId,
             username: username,
-            display_name: displayName?.trimmingCharacters(in: .whitespacesAndNewlines),
-            design_json: publishedDesign,
+            design_json: publishedDocument,
             is_published: true,
             published_at: ISO8601DateFormatter().string(from: .now)
         )
 
-        // TODO(phase 5+): if a later step fails between profile upsert and
-        // asset-row insert, storage objects may be orphaned. The cleanup
-        // below covers the upsert-failure case only; deeper rollback would
-        // require a 2PC or a server-side transaction.
+        // If the profile upsert fails, scrub the storage objects we just
+        // wrote so the cloud doesn't accumulate orphans on retry. Failures
+        // beyond that point are non-fatal — the publish itself succeeded.
         do {
             try await client
                 .from("profiles")
                 .upsert(profileRow, onConflict: "id")
                 .execute()
         } catch {
-            // Best-effort scrub: remove anything we just uploaded so a failed
-            // publish doesn't leave dangling files. Failures here are ignored
-            // because the user is about to see the upsert error anyway.
             if !assetRows.isEmpty {
                 _ = try? await client.storage
                     .from("profile-assets")
@@ -206,7 +209,7 @@ struct PublishService {
             do {
                 try await client.from("profile_assets")
                     .delete()
-                    .eq("profile_id", value: profileId)
+                    .eq("profile_id", value: canonicalProfileId)
                     .execute()
                 try await client.from("profile_assets")
                     .insert(assetRows)
@@ -218,7 +221,7 @@ struct PublishService {
         }
 
         return PublishedProfileResult(
-            profileId: profileId,
+            profileId: canonicalProfileId,
             username: username,
             publicPath: "/@\(username)"
         )
@@ -227,22 +230,61 @@ struct PublishService {
         #endif
     }
 
+    // MARK: - Asset enumeration
+
+    /// Walk the document's four asset surfaces and collect a deduplicated
+    /// list of (path, asset_type) pairs to upload. Skips paths that
+    /// already look remote (e.g. an unedited republish where a path is
+    /// already a public URL) and empty strings.
+    private func collectUploads(from document: ProfileDocument) -> [PendingUpload] {
+        var seen = Set<String>()
+        var uploads: [PendingUpload] = []
+
+        if let p = document.pageBackgroundImagePath, !p.isEmpty,
+           !PublishedDocumentTransformer.isRemote(p), seen.insert(p).inserted {
+            uploads.append(PendingUpload(localPath: p, assetType: "page_background"))
+        }
+
+        for node in document.nodes.values {
+            if let p = node.style.backgroundImagePath, !p.isEmpty,
+               !PublishedDocumentTransformer.isRemote(p), seen.insert(p).inserted {
+                uploads.append(PendingUpload(localPath: p, assetType: "container_background"))
+            }
+            if let p = node.content.localImagePath, !p.isEmpty,
+               !PublishedDocumentTransformer.isRemote(p), seen.insert(p).inserted {
+                uploads.append(PendingUpload(localPath: p, assetType: "image_node"))
+            }
+            if let arr = node.content.imagePaths {
+                for p in arr where !p.isEmpty
+                    && !PublishedDocumentTransformer.isRemote(p)
+                    && seen.insert(p).inserted {
+                    uploads.append(PendingUpload(localPath: p, assetType: "gallery_image"))
+                }
+            }
+        }
+
+        return uploads
+    }
+
     #if canImport(Supabase)
-    /// Reads bytes for `relativeLocalPath`, uploads to `storagePath`, and
-    /// returns the public URL. Throws `.missingAsset` if the local file
-    /// is gone, `.uploadFailed` on any network/storage failure.
+    /// Reads bytes for `relativeLocalPath` (resolved through
+    /// `LocalCanvasAssetStore`), uploads to `storagePath` in the
+    /// `profile-assets` bucket, and returns the public URL. Throws
+    /// `.missingAsset` if the local file is gone, `.uploadFailed` on any
+    /// network/storage failure.
     private func uploadAsset(
         client: SupabaseClient,
         relativeLocalPath: String,
         storagePath: String
     ) async throws -> String {
-        guard let localURL = LocalAssetStore.resolveURL(relativePath: relativeLocalPath),
+        guard let localURL = LocalCanvasAssetStore.resolveURL(relativeLocalPath),
               let bytes = try? Data(contentsOf: localURL) else {
             throw PublishError.missingAsset(localPath: relativeLocalPath)
         }
         do {
             // supabase-swift exposes `upload(_:data:options:)` (path is the
             // unlabeled first argument; `path:file:options:` is deprecated).
+            // `upsert: true` makes re-publishes overwrite cleanly.
             _ = try await client.storage
                 .from("profile-assets")
                 .upload(
@@ -287,15 +329,15 @@ struct PublishService {
 
 // MARK: - Wire payloads (snake_case keys to match Postgres columns)
 
-/// Encoded as JSON for the `profiles.design_json` column. Field names map 1:1
-/// to columns; the nested `ProfileDesign` is serialized as a JSON object and
-/// stored in the `jsonb` column.
-private struct PublishedProfileRow: Encodable {
+/// Encoded as JSON for the `profiles` row. Field names map 1:1 to columns;
+/// the nested `ProfileDocument` is serialized as a JSON object and stored
+/// in the `jsonb` column so the viewer can decode it back via the same
+/// `Codable` machinery.
+private struct PublishedProfileRowEncodable: Encodable {
     let id: String
     let user_id: String
     let username: String
-    let display_name: String?
-    let design_json: ProfileDesign
+    let design_json: ProfileDocument
     let is_published: Bool
     let published_at: String
 }

@@ -1,10 +1,10 @@
 import SwiftUI
+import UIKit
 
 /// Compact "selection chip" shown at the bottom of the canvas when a
-/// node is selected but the full bottom bar isn't expanded. Just a
-/// small pill with the type icon, the node's display name, and an
-/// up-chevron — tapping anywhere on the pill expands into the full
-/// `SelectionBottomBar`.
+/// node is selected but the full bottom bar isn't expanded. The main
+/// chip expands into `SelectionBottomBar`; the trailing menu exposes
+/// common selection actions without covering the canvas.
 ///
 /// Purpose: when the user taps a node, the canvas should stay mostly
 /// visible so they can drag / position it freely. The full bar only
@@ -13,52 +13,108 @@ struct CollapsedSelectionBar: View {
     let document: ProfileDocument
     let selectedID: UUID
     var onExpand: () -> Void
-
-    @Environment(\.colorScheme) private var colorScheme
+    var onEdit: () -> Void
+    var onDuplicate: () -> Void
+    var onBringToFront: () -> Void
+    var onSendBackward: () -> Void
+    var onLayers: () -> Void
+    var onDelete: () -> Void
 
     var body: some View {
         if let node = document.nodes[selectedID] {
-            Button(action: onExpand) {
-                HStack(spacing: 10) {
-                    iconBadge(for: node)
-                    Text(displayName(for: node))
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Button(action: onExpand) {
+                    HStack(spacing: 10) {
+                        CucuIconBadge(
+                            kind: kind(for: node),
+                            symbol: iconName(for: node),
+                            size: 24,
+                            iconSize: 11
+                        )
+                        Text(displayName(for: node))
+                            .font(.cucuSerif(14, weight: .semibold))
+                            .foregroundStyle(Color.cucuInk)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 11, weight: .heavy))
+                            .foregroundStyle(Color.cucuInkSoft)
+                    }
+                    .padding(.leading, 14)
+                    .padding(.vertical, 8)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(
-                    Capsule()
-                        .fill(Color(.systemBackground))
-                )
-                .overlay(
-                    Capsule()
-                        .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
-                )
-                .shadow(color: .black.opacity(colorScheme == .dark ? 0.35 : 0.10),
-                        radius: 8, x: 0, y: 2)
+                .buttonStyle(CucuPressableButtonStyle())
+
+                Rectangle()
+                    .fill(Color.cucuInk.opacity(0.18))
+                    .frame(width: 1, height: 22)
+                    .padding(.horizontal, 2)
+
+                contextMenu
             }
-            .buttonStyle(PressableButtonStyle())
+            .padding(.trailing, 4)
+            .background(Capsule().fill(Color.cucuCard))
+            .overlay(Capsule().strokeBorder(Color.cucuInk, lineWidth: 1))
+            .shadow(color: Color.cucuInk.opacity(0.18), radius: 10, x: 0, y: 4)
             .padding(.bottom, 10)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 
+    private var contextMenu: some View {
+        Menu {
+            Button {
+                tapHaptic(); onEdit()
+            } label: {
+                Label("Edit", systemImage: "slider.horizontal.3")
+            }
+            Button {
+                tapHaptic(); onDuplicate()
+            } label: {
+                Label("Duplicate", systemImage: "plus.square.on.square")
+            }
+            Button {
+                tapHaptic(); onBringToFront()
+            } label: {
+                Label("Bring Front", systemImage: "square.stack.3d.up")
+            }
+            Button {
+                tapHaptic(); onSendBackward()
+            } label: {
+                Label("Send Back", systemImage: "square.stack.3d.down.right")
+            }
+            Button {
+                tapHaptic(); onLayers()
+            } label: {
+                Label("Layers", systemImage: "square.3.layers.3d")
+            }
+            Divider()
+            Button(role: .destructive) {
+                tapHaptic(); onDelete()
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.cucuInkSoft)
+                .frame(width: 34, height: 34)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Selection actions")
+    }
+
     // MARK: - Display
 
-    private func iconBadge(for node: CanvasNode) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(badgeColor(for: node).opacity(colorScheme == .dark ? 0.22 : 0.16))
-            Image(systemName: iconName(for: node))
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(badgeColor(for: node))
+    private func kind(for node: CanvasNode) -> CucuNodeKind {
+        switch node.type {
+        case .container: return .container
+        case .text:      return .text
+        case .image:     return .image
+        case .icon:      return .icon
+        case .divider:   return .divider
+        case .link:      return .link
+        case .gallery:   return .gallery
         }
-        .frame(width: 22, height: 22)
     }
 
     private func iconName(for node: CanvasNode) -> String {
@@ -66,14 +122,10 @@ struct CollapsedSelectionBar: View {
         case .container: return "rectangle.on.rectangle"
         case .text:      return "textformat"
         case .image:     return "photo"
-        }
-    }
-
-    private func badgeColor(for node: CanvasNode) -> Color {
-        switch node.type {
-        case .container: return .indigo
-        case .text:      return .orange
-        case .image:     return .blue
+        case .icon:      return "star.fill"
+        case .divider:   return "minus"
+        case .link:      return "link"
+        case .gallery:   return "rectangle.grid.2x2"
         }
     }
 
@@ -82,6 +134,10 @@ struct CollapsedSelectionBar: View {
         case .container: return "Container"
         case .text:      return "Text"
         case .image:     return "Image"
+        case .icon:      return "Icon"
+        case .divider:   return "Divider"
+        case .link:      return "Link"
+        case .gallery:   return "Gallery"
         }
     }
 
@@ -92,16 +148,9 @@ struct CollapsedSelectionBar: View {
         }
         return typeLabel(for: node)
     }
-}
 
-/// Subtle scale + opacity nudge on press, paired with a light haptic.
-/// Local copy so this view doesn't depend on `SelectionBottomBar`'s
-/// private button style.
-private struct PressableButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
-            .opacity(configuration.isPressed ? 0.85 : 1.0)
-            .animation(.spring(response: 0.25, dampingFraction: 0.75), value: configuration.isPressed)
+    private func tapHaptic() {
+        let g = UIImpactFeedbackGenerator(style: .light)
+        g.impactOccurred(intensity: 0.6)
     }
 }

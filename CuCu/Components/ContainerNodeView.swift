@@ -176,12 +176,59 @@ final class ContainerNodeView: NodeRenderView {
            cached.mtime == mtime {
             return cached.image
         }
-        guard let image = LocalCanvasAssetStore.loadUIImage(path) else {
+        // Local files fast-load synchronously; remote (post-publish)
+        // URLs resolve via the shared cache. A remote miss returns
+        // nil here, then the async fetch below applies the bytes
+        // directly when they arrive. (An earlier version only reset
+        // the signature + called `setNeedsLayout` — but `apply(node:)`
+        // is driven by the canvas's reconciliation pass, which doesn't
+        // re-run on its own when an async image is cached, leaving
+        // container backgrounds blank until something else triggered
+        // a re-apply.)
+        guard let image = CanvasImageLoader.loadSync(path) else {
             cachedBackgroundOriginal = nil
+            if CanvasImageLoader.isRemote(path) {
+                CanvasImageLoader.loadAsync(path) { [weak self] fetched in
+                    guard let self, let fetched else { return }
+                    // Race-guard: skip stale completions where the
+                    // container has since been pointed at a different
+                    // image (or the user scrubbed effects so blur /
+                    // vignette differ). The signature carries those
+                    // values from the last `apply(node:)`, which is
+                    // exactly what we want to compare against.
+                    guard self.lastBackgroundSignature.path == path,
+                          self.lastBackgroundSignature.mtime == mtime
+                    else { return }
+                    self.applyFetchedBackground(image: fetched, path: path, mtime: mtime)
+                }
+            }
             return nil
         }
         cachedBackgroundOriginal = (path, mtime, image)
         return image
+    }
+
+    /// Apply a freshly-fetched remote bitmap directly to the container's
+    /// background image view, skipping the filter pipeline when blur
+    /// and vignette are both off. Reads the current blur / vignette
+    /// from `lastBackgroundSignature` (which was set by the latest
+    /// `apply(node:)` pass) so we don't need a separate way to get the
+    /// node's style into this closure.
+    private func applyFetchedBackground(image: UIImage, path: String, mtime: Date?) {
+        cachedBackgroundOriginal = (path, mtime, image)
+
+        let blur = lastBackgroundSignature.blur
+        let vignette = lastBackgroundSignature.vignette
+        backgroundImageView.isHidden = false
+        if blur <= 0.01 && vignette <= 0.01 {
+            backgroundImageView.image = image
+        } else {
+            scheduleFilterRender(image: image, blur: blur, vignette: vignette)
+        }
+        // The container's render layering puts the background image at
+        // the very back so child nodes can sit on top — keep that
+        // invariant when applying out-of-band.
+        sendSubviewToBack(backgroundImageView)
     }
 
     /// Helper class — a `UIView` whose backing layer is a radial

@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fill — inspector panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:           #ececec;
+    --card:         #ffffff;
+    --hairline:     rgba(0,0,0,.08);
+    --hairline-2:   rgba(0,0,0,.12);
+
+    --text:         #141414;
+    --text-2:       #5b5b5b;
+    --text-muted:   #9a9a9a;
+
+    --toggle-on:    #2dc8a3;
+    --toggle-on-shadow: rgba(45,200,163,.35);
+    --toggle-thumb: #ffffff;
+
+    --chip-fill:    #f3deef;
+    --chip-stroke:  #d6a8d4;
+    --chip-ink:     #4f1c5b;
+
+    --accent-dot:   #df1f6a;
+
+    --sw-stroke:    rgba(0,0,0,.18);
+    --sw-stroke-strong: rgba(0,0,0,.55);
+  }
+
+  *{ box-sizing:border-box; margin:0; padding:0; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+  html,body{ height:100%; }
+
+  body{
+    font-family:"Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+    color:var(--text);
+    background:
+      radial-gradient(1200px 800px at 50% -10%, #f6f6f6, transparent 60%),
+      var(--bg);
+    min-height:100%;
+    display:flex; align-items:center; justify-content:center;
+    padding:48px 20px;
+    letter-spacing:-0.005em;
+  }
+
+  .stage{
+    width:100%; max-width:392px;
+    display:flex; flex-direction:column; align-items:stretch; gap:18px;
+  }
+
+  /* tiny caption above the card to ground it */
+  .caption{
+    font-size:12px; font-weight:600; letter-spacing:.06em;
+    text-transform:uppercase; color:var(--text-muted);
+    padding-left:6px;
+  }
+
+  .card{
+    background:var(--card);
+    border-radius:28px;
+    padding:18px 20px 6px;
+    box-shadow:
+      0 0 0 0.5px rgba(0,0,0,.04),
+      0 1px 1px rgba(0,0,0,.04),
+      0 18px 48px -16px rgba(20,20,30,.18);
+  }
+
+  /* ────────── header ────────── */
+  .head{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:6px 2px 14px;
+  }
+  .head h2{
+    font-size:22px; font-weight:700; letter-spacing:-0.015em; color:var(--text);
+  }
+
+  /* iOS-style toggle */
+  .toggle{
+    --w: 52px; --h: 31px;
+    appearance:none; -webkit-appearance:none;
+    width:var(--w); height:var(--h);
+    background:#e6e6ea;
+    border-radius:999px;
+    position:relative; cursor:pointer; outline:none;
+    transition: background .22s ease;
+    box-shadow: inset 0 0 0 0.5px rgba(0,0,0,.04);
+  }
+  .toggle::after{
+    content:""; position:absolute;
+    top:1.5px; left:1.5px;
+    width:calc(var(--h) - 3px); height:calc(var(--h) - 3px);
+    background:var(--toggle-thumb);
+    border-radius:50%;
+    box-shadow:
+      0 1px 1px rgba(0,0,0,.04),
+      0 3px 8px rgba(0,0,0,.18),
+      0 0 0 0.5px rgba(0,0,0,.04);
+    transition: left .22s cubic-bezier(.32,.72,0,1);
+  }
+  .toggle:checked{
+    background:var(--toggle-on);
+    box-shadow: inset 0 0 0 0.5px rgba(0,0,0,.06);
+  }
+  .toggle:checked::after{
+    left:calc(var(--w) - var(--h) + 1.5px);
+  }
+  .toggle:active::after{ width: calc(var(--h) - 3px + 4px); }
+
+  /* ────────── chip row ────────── */
+  .row-chips{
+    display:flex; align-items:center; gap:8px;
+    padding:0 2px 12px;
+  }
+
+  .preview{
+    flex:0 0 auto;
+    width:36px; height:36px; border-radius:50%;
+    background:
+      radial-gradient(60% 50% at 35% 30%, #ffd8b0, transparent 65%),
+      radial-gradient(60% 50% at 70% 80%, #b59cff, transparent 65%),
+      linear-gradient(135deg, #f3a3c5, #6f73e6);
+    box-shadow:
+      0 0 0 2px #fff,
+      0 0 0 3px rgba(0,0,0,.18),
+      0 4px 10px -4px rgba(0,0,0,.25);
+    position:relative;
+  }
+
+  .chip{
+    display:inline-flex; align-items:center; gap:7px;
+    height:34px; padding:0 13px 0 10px;
+    border-radius:999px;
+    background:var(--chip-fill);
+    border:1px solid var(--chip-stroke);
+    color:var(--chip-ink);
+    font-size:14.5px; font-weight:600; letter-spacing:-0.01em;
+    cursor:pointer;
+    transition: transform .12s ease, background .15s ease, border-color .15s ease;
+    white-space:nowrap;
+  }
+  .chip:hover{ background:#eccbe7; }
+  .chip:active{ transform:translateY(1px); }
+  .chip svg{ width:16px; height:16px; display:block; flex:0 0 auto; }
+
+  /* ────────── swatch row ────────── */
+  .row-sw{
+    display:flex; align-items:center; gap:10px;
+    padding:4px 2px 8px;
+    overflow:hidden;
+  }
+  .sw{
+    --sz: 32px;
+    width:var(--sz); height:var(--sz); flex:0 0 auto;
+    border-radius:50%;
+    cursor:pointer;
+    box-shadow: inset 0 0 0 1px var(--sw-stroke);
+    position:relative;
+    transition: transform .12s ease, box-shadow .15s ease;
+  }
+  .sw:hover{ transform:translateY(-1px); }
+  .sw.empty{
+    background:#fff;
+    box-shadow: inset 0 0 0 1.25px var(--sw-stroke-strong);
+  }
+  .sw.white{ background:#ffffff; box-shadow: inset 0 0 0 1px var(--sw-stroke); }
+  .sw.lime{  background:#aedb52; }
+  .sw.blue{  background:#5d8eea; }
+  .sw.navy{  background:#1d2747; }
+  .sw.pink{  background:#e9a4c4; }
+  .sw.berry{ background:#e21a64; }
+  .sw.ink{   background:#0d0d0d; }
+
+  .sw.selected::after{
+    content:""; position:absolute; inset:-4px;
+    border-radius:50%;
+    box-shadow: 0 0 0 2px #fff, 0 0 0 3.5px rgba(0,0,0,.55);
+  }
+
+  /* ────────── bottom nav ────────── */
+  .nav{
+    display:grid; grid-template-columns:repeat(4,1fr);
+    border-top:1px solid var(--hairline);
+    margin-top:6px;
+    padding-top:8px;
+    padding-bottom:10px;
+  }
+  .nav .item{
+    position:relative;
+    display:flex; flex-direction:column; align-items:center; gap:6px;
+    padding:10px 6px 12px;
+    color:var(--text-2);
+    cursor:pointer;
+    transition: color .15s ease;
+  }
+  .nav .item:hover{ color:var(--text); }
+  .nav .item .ico{
+    width:22px; height:22px; display:grid; place-items:center;
+  }
+  .nav .item .lbl{
+    font-size:13.5px; font-weight:500; letter-spacing:-0.005em;
+  }
+  .nav .item.active{ color:var(--text); }
+  .nav .item.active .lbl{ font-weight:700; }
+  .nav .item.active::after{
+    content:""; position:absolute; bottom:2px; left:50%;
+    transform:translateX(-50%);
+    width:4px; height:4px; border-radius:50%;
+    background:var(--accent-dot);
+  }
+
+  /* selection indicator under chosen tab uses the accent — kept subtle */
+  .nav .item .ico svg{ width:22px; height:22px; }
+
+  @media (prefers-reduced-motion: reduce){
+    *{ transition:none !important; }
+  }
+
+  /* keyboard focus */
+  :focus-visible{
+    outline:2px solid #5d8eea;
+    outline-offset:2px;
+    border-radius:6px;
+  }
+  .toggle:focus-visible{ outline-offset:3px; border-radius:999px; }
+  .sw:focus-visible{ outline-offset:3px; border-radius:50%; }
+</style>
+</head>
+<body>
+
+  <div class="stage">
+
+    <div class="card">
+
+      <!-- header -->
+      <div class="head">
+        <h2>Fill</h2>
+        <input class="toggle" type="checkbox" role="switch" checked aria-label="Toggle fill" />
+      </div>
+
+      <!-- chips row -->
+      <div class="row-chips">
+        <div class="preview" aria-hidden="true"></div>
+
+        <button class="chip" type="button">
+          <!-- nooks/letter glyph -->
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" rx="3.5"/>
+            <path d="M9 17V8.5L15 17V8" stroke-linecap="round"/>
+          </svg>
+          [Free]
+        </button>
+
+        <button class="chip" type="button">
+          <!-- spiral / radial -->
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M12 21c5-1.4 8-4.7 8-9s-3.5-9-8-9c-3.4 0-6 2.7-6 6 0 2.7 2 5 5 5 2.2 0 4-1.8 4-4 0-1.7-1.3-3-3-3"/>
+          </svg>
+          [90%]
+        </button>
+
+        <button class="chip" type="button">
+          <!-- halftone -->
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <defs>
+              <pattern id="dots" x="0" y="0" width="4" height="4" patternUnits="userSpaceOnUse">
+                <circle cx="2" cy="2" r="1" fill="currentColor"/>
+              </pattern>
+            </defs>
+            <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+            <circle cx="12" cy="12" r="7.5" fill="url(#dots)"/>
+          </svg>
+          [10]
+        </button>
+      </div>
+
+      <!-- swatches -->
+      <div class="row-sw" role="radiogroup" aria-label="Color">
+        <button class="sw empty"  aria-label="None"></button>
+        <button class="sw white selected" aria-label="White"></button>
+        <button class="sw lime"   aria-label="Lime"></button>
+        <button class="sw blue"   aria-label="Blue"></button>
+        <button class="sw navy"   aria-label="Navy"></button>
+        <button class="sw pink"   aria-label="Pink"></button>
+        <button class="sw berry"  aria-label="Berry"></button>
+        <button class="sw ink"    aria-label="Ink"></button>
+      </div>
+
+      <!-- bottom nav -->
+      <nav class="nav" aria-label="Inspector tabs">
+        <div class="item" role="tab">
+          <span class="ico" aria-hidden="true">
+            <!-- Aa -->
+            <svg viewBox="0 0 28 22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 19 L9 4 L15 19 M5 14 H13"/>
+              <path d="M25 9.5a4 4 0 0 0-7.5 0V15a3 3 0 0 0 5.5 0v-3.5a3 3 0 0 0-5.5 0"/>
+            </svg>
+          </span>
+          <span class="lbl">Aa</span>
+        </div>
+
+        <div class="item" role="tab">
+          <span class="ico" aria-hidden="true">
+            <!-- diamond w/ inner diamond -->
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round">
+              <path d="M12 2.5 L21.5 12 L12 21.5 L2.5 12 Z"/>
+              <path d="M12 8 L16 12 L12 16 L8 12 Z"/>
+            </svg>
+          </span>
+          <span class="lbl">&#9670;</span>
+        </div>
+
+        <div class="item" role="tab">
+          <span class="ico" aria-hidden="true">
+            <!-- x over o -->
+            <svg viewBox="0 0 30 22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+              <path d="M3 4 L13 18 M13 4 L3 18"/>
+              <circle cx="22" cy="11" r="6"/>
+            </svg>
+          </span>
+          <span class="lbl">x o</span>
+        </div>
+
+        <div class="item active" role="tab" aria-selected="true">
+          <span class="ico" aria-hidden="true">
+            <!-- BG glyph (B + G) -->
+            <svg viewBox="0 0 32 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 19 V3 H9 a4 4 0 0 1 0 8 H4 H10 a4.5 4.5 0 0 1 0 9 H3"/>
+              <path d="M28 11 a6 6 0 1 1-2-4.6 M28 7 V13 H22"/>
+            </svg>
+          </span>
+          <span class="lbl">BG</span>
+        </div>
+      </nav>
+
+    </div>
+
+  </div>
+
+  <script>
+    // swatch radio behavior
+    document.querySelectorAll('.row-sw .sw').forEach(s => {
+      s.addEventListener('click', () => {
+        document.querySelectorAll('.row-sw .sw').forEach(x => x.classList.remove('selected'));
+        s.classList.add('selected');
+      });
+    });
+    // tab switch
+    document.querySelectorAll('.nav .item').forEach(t => {
+      t.addEventListener('click', () => {
+        document.querySelectorAll('.nav .item').forEach(x => {
+          x.classList.remove('active');
+          x.removeAttribute('aria-selected');
+        });
+        t.classList.add('active');
+        t.setAttribute('aria-selected', 'true');
+      });
+    });
+  </script>
+
+</body>
+</html>

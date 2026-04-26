@@ -25,32 +25,40 @@ struct ContainerSettingsView: View {
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
                 } header: {
-                    Text("Live preview")
+                    CucuSectionLabel(text: "Live preview")
                 }
 
-                Section("Layout") {
-                    Picker("Axis", selection: $data.axis) {
+                Section {
+                    Picker(selection: $data.axis) {
                         ForEach(ContainerAxis.allCases, id: \.self) { axis in
                             Text(axis.rawValue.capitalized).tag(axis)
                         }
+                    } label: {
+                        Text("Axis").font(.cucuSerif(15, weight: .semibold)).foregroundStyle(Color.cucuInk)
                     }
                     .pickerStyle(.segmented)
 
-                    Picker("Children align", selection: $data.contentAlignment) {
+                    Picker(selection: $data.contentAlignment) {
                         ForEach(ContainerContentAlignment.allCases, id: \.self) { value in
                             Text(value.rawValue.capitalized).tag(value)
                         }
+                    } label: {
+                        Text("Children align").font(.cucuSerif(15, weight: .semibold)).foregroundStyle(Color.cucuInk)
                     }
                     .pickerStyle(.segmented)
 
                     StyleSliderRow(label: "Spacing", value: $data.spacing, range: 0...60)
+                } header: {
+                    CucuSectionLabel(text: "Layout")
                 }
 
-                Section("Shape") {
-                    Picker("Clip", selection: $data.clipShape) {
+                Section {
+                    Picker(selection: $data.clipShape) {
                         ForEach(ContainerClipShape.allCases, id: \.self) { shape in
                             Text(shape.rawValue.capitalized).tag(shape)
                         }
+                    } label: {
+                        Text("Clip").font(.cucuSerif(15, weight: .semibold)).foregroundStyle(Color.cucuInk)
                     }
                     .pickerStyle(.segmented)
 
@@ -61,34 +69,42 @@ struct ContainerSettingsView: View {
 
                     StyleSliderRow(label: "Padding", value: $data.padding, range: 0...40)
 
-                    Picker("Width", selection: $data.widthStyle) {
+                    Picker(selection: $data.widthStyle) {
                         ForEach(BlockWidthStyle.allCases, id: \.self) { style in
                             Text(style.rawValue.capitalized).tag(style)
                         }
+                    } label: {
+                        Text("Width").font(.cucuSerif(15, weight: .semibold)).foregroundStyle(Color.cucuInk)
                     }
                     .pickerStyle(.segmented)
+                } header: {
+                    CucuSectionLabel(text: "Shape")
                 }
 
-                Section("Background") {
+                Section {
                     ColorControlRow(label: "Color",
                                     hex: $data.backgroundColorHex,
                                     supportsAlpha: true)
+                } header: {
+                    CucuSectionLabel(text: "Background")
                 }
             }
-            .navigationTitle("Container")
+            .cucuFormBackdrop()
+            .cucuSheetTitle("Container")
             #if os(iOS) || os(visionOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .font(.cucuSerif(16, weight: .semibold))
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         onSave(data)
                         dismiss()
                     }
-                    .fontWeight(.semibold)
+                    .font(.cucuSerif(16, weight: .bold))
                 }
             }
         }

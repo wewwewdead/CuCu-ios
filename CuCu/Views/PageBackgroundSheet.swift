@@ -14,7 +14,7 @@ import UIKit
 struct PageBackgroundSheet: View {
     @Binding var document: ProfileDocument
 
-    var onPickImage: (Data) -> Void
+    var onPickImage: (Data) -> Bool
     var onClearImage: () -> Void
     var onCommit: () -> Void
     /// Called when the user taps "Edit Image". The host is responsible
@@ -44,35 +44,55 @@ struct PageBackgroundSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    ColorPicker("Background Color", selection: bgColorBinding.asColor())
-                        .onChange(of: bgColorBinding.wrappedValue) { _, _ in onCommit() }
+                    Stepper(value: pageWidthBinding, in: 240...640, step: 10) {
+                        valueRow(title: "Width", value: "\(Int(document.pageWidth)) px")
+                    }
+                    .onChange(of: document.pageWidth) { _, _ in onCommit() }
+
+                    Stepper(value: pageHeightBinding, in: 400...4_000, step: 50) {
+                        valueRow(title: "Height", value: "\(Int(document.pageHeight)) px")
+                    }
+                    .onChange(of: document.pageHeight) { _, _ in onCommit() }
                 } header: {
-                    Text("Color")
+                    CucuSectionLabel(text: "Page")
+                } footer: {
+                    Text("The visible profile canvas uses this fixed page size. Root content that extends below the height keeps the page expanded so existing nodes remain visible.")
+                        .font(.cucuSans(12, weight: .regular))
+                        .foregroundStyle(Color.cucuInkFaded)
+                }
+
+                Section {
+                    ColorPicker(selection: bgColorBinding.asColor()) {
+                        Text("Background Color")
+                            .font(.cucuSerif(15, weight: .semibold))
+                            .foregroundStyle(Color.cucuInk)
+                    }
+                    .onChange(of: bgColorBinding.wrappedValue) { _, _ in onCommit() }
+                } header: {
+                    CucuSectionLabel(text: "Color")
                 } footer: {
                     Text("Always applied. Shows through transparent areas of any image you add.")
+                        .font(.cucuSans(12, weight: .regular))
+                        .foregroundStyle(Color.cucuInkFaded)
                 }
 
                 Section {
                     if let path = document.pageBackgroundImagePath,
                        !path.isEmpty,
-                       let url = LocalCanvasAssetStore.resolveURL(path),
-                       let preview = UIImage(contentsOfFile: url.path) {
+                       let preview = LocalCanvasAssetStore.loadUIImage(path) {
                         currentImageRow(preview: preview)
                         replaceButton
                         Button {
-                            // Hand off to the host. It dismisses this
-                            // sheet first, then presents
-                            // `BackgroundEffectsSheet` once the
-                            // dismissal animation finishes — so the
-                            // user only ever sees one modal at a time.
                             onEditEffects()
                         } label: {
                             Label("Edit Image", systemImage: "wand.and.stars")
+                                .font(.cucuSerif(15, weight: .semibold))
                         }
                         Button(role: .destructive) {
                             onClearImage()
                         } label: {
-                            Label("Remove Image", systemImage: "trash")
+                            Label("Reset Background Image", systemImage: "trash")
+                                .font(.cucuSerif(15, weight: .semibold))
                         }
                     } else {
                         chooseButton
@@ -80,21 +100,25 @@ struct PageBackgroundSheet: View {
 
                     if let pickerError {
                         Text(pickerError)
-                            .font(.caption)
-                            .foregroundStyle(.red)
+                            .font(.cucuSans(12, weight: .medium))
+                            .foregroundStyle(Color.cucuCherry)
                     }
                 } header: {
-                    Text("Image")
+                    CucuSectionLabel(text: "Image")
                 } footer: {
                     Text("Optional. Image overlays the background color.")
+                        .font(.cucuSans(12, weight: .regular))
+                        .foregroundStyle(Color.cucuInkFaded)
                 }
 
             }
-            .navigationTitle("Page Background")
+            .cucuFormBackdrop()
+            .cucuSheetTitle("Page Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
+                        .font(.cucuSerif(16, weight: .bold))
                 }
             }
             .onChange(of: pickerSelection) { _, newItem in
@@ -134,9 +158,23 @@ struct PageBackgroundSheet: View {
                     sourceData: source.data,
                     targetAspect: pageBackgroundAspect
                 ) { croppedData in
-                    onPickImage(croppedData)
+                    if onPickImage(croppedData) {
+                        pickerError = nil
+                    } else {
+                        pickerError = "Couldn't save that image. Try another photo."
+                    }
                 }
             }
+        }
+    }
+
+    private func valueRow(title: String, value: String) -> some View {
+        HStack {
+            Text(title)
+                .font(.cucuSerif(15, weight: .semibold))
+                .foregroundStyle(Color.cucuInk)
+            Spacer()
+            CucuValuePill(text: value)
         }
     }
 
@@ -149,14 +187,15 @@ struct PageBackgroundSheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
+                        .strokeBorder(Color.cucuInk, lineWidth: 1)
                 )
             VStack(alignment: .leading, spacing: 2) {
                 Text("Image set")
-                    .font(.subheadline.weight(.medium))
+                    .font(.cucuSerif(15, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
                 Text("Tap Replace to change it")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.cucuSans(12, weight: .regular))
+                    .foregroundStyle(Color.cucuInkFaded)
             }
             Spacer()
         }
@@ -166,6 +205,7 @@ struct PageBackgroundSheet: View {
     private var chooseButton: some View {
         PhotosPicker(selection: $pickerSelection, matching: .images, photoLibrary: .shared()) {
             Label(pickerLoading ? "Loading…" : "Choose Image", systemImage: "photo")
+                .font(.cucuSerif(15, weight: .semibold))
         }
         .disabled(pickerLoading)
     }
@@ -174,6 +214,7 @@ struct PageBackgroundSheet: View {
         PhotosPicker(selection: $pickerSelection, matching: .images, photoLibrary: .shared()) {
             Label(pickerLoading ? "Loading…" : "Replace Image",
                   systemImage: "photo.on.rectangle.angled")
+                .font(.cucuSerif(15, weight: .semibold))
         }
         .disabled(pickerLoading)
     }
@@ -185,20 +226,26 @@ struct PageBackgroundSheet: View {
         )
     }
 
+    private var pageWidthBinding: Binding<Double> {
+        Binding(
+            get: { document.pageWidth },
+            set: { document.pageWidth = min(640, max(240, $0)) }
+        )
+    }
+
+    private var pageHeightBinding: Binding<Double> {
+        Binding(
+            get: { document.pageHeight },
+            set: { document.pageHeight = min(4_000, max(400, $0)) }
+        )
+    }
+
     /// Aspect ratio of the canvas where the page background will be
-    /// shown — taken from the active scene's window so the cropper's
-    /// crop window matches what the user will see on the page. Falls
-    /// back to a portrait phone aspect if no window is available.
+    /// shown. This follows the document's fixed page size so picked
+    /// backgrounds match the page frame, not the current device window.
     private var pageBackgroundAspect: CGFloat {
-        let bounds = UIApplication.shared
-            .connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first?
-            .keyWindow?
-            .bounds
-        guard let bounds, bounds.width > 0, bounds.height > 0 else {
-            return 9.0 / 19.5
-        }
-        return bounds.width / bounds.height
+        let width = max(1, CGFloat(document.pageWidth))
+        let height = max(1, CGFloat(document.pageHeight))
+        return width / height
     }
 }

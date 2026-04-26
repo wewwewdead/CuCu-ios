@@ -102,7 +102,24 @@ struct ProfileBuilderView: View {
             }
         }
         .sheet(isPresented: $isPublishing) {
-            PublishSheet(draft: draft, design: design)
+            // Legacy compile-time stub. Publish now operates on the v2
+            // `ProfileDocument` (see `ProfileCanvasBuilderView`), and the
+            // legacy `ProfileDesign` model is no longer reachable from
+            // RootView. Showing a minimal message keeps this file
+            // compiling without resurrecting the deprecated flow.
+            VStack(spacing: 12) {
+                Text("Publishing has moved to the v2 canvas.")
+                    .font(.headline)
+                Text("Open this draft from the v2 builder to publish it.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Close") { isPublishing = false }
+                    .buttonStyle(.borderedProminent)
+                    .padding(.top, 8)
+            }
+            .padding(32)
+            .presentationDetents([.medium])
         }
         .task {
             if !didLoad {

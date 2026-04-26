@@ -8,7 +8,13 @@ import Foundation
 /// gives the order of its children. Parentage is derived (see `parent(of:)`)
 /// rather than stored, so there is exactly one source of truth.
 struct ProfileDocument: Codable, Hashable {
+    static let defaultPageWidth: Double = 390
+    static let defaultPageHeight: Double = 1000
+    static let defaultPageBackgroundHex = "#F8F6F2"
+
     var id: UUID
+    var pageWidth: Double
+    var pageHeight: Double
     var pageBackgroundHex: String
     /// Optional relative path (resolved via `LocalCanvasAssetStore`) of an
     /// image rendered behind every node as the page background. When set,
@@ -28,13 +34,17 @@ struct ProfileDocument: Codable, Hashable {
     var nodes: [UUID: CanvasNode]
 
     init(id: UUID = UUID(),
-         pageBackgroundHex: String = "#F8F6F2",
+         pageWidth: Double = ProfileDocument.defaultPageWidth,
+         pageHeight: Double = ProfileDocument.defaultPageHeight,
+         pageBackgroundHex: String = ProfileDocument.defaultPageBackgroundHex,
          pageBackgroundImagePath: String? = nil,
          pageBackgroundBlur: Double? = nil,
          pageBackgroundVignette: Double? = nil,
          rootChildrenIDs: [UUID] = [],
          nodes: [UUID: CanvasNode] = [:]) {
         self.id = id
+        self.pageWidth = pageWidth
+        self.pageHeight = pageHeight
         self.pageBackgroundHex = pageBackgroundHex
         self.pageBackgroundImagePath = pageBackgroundImagePath
         self.pageBackgroundBlur = pageBackgroundBlur
@@ -44,6 +54,33 @@ struct ProfileDocument: Codable, Hashable {
     }
 
     static var blank: ProfileDocument { ProfileDocument() }
+}
+
+extension ProfileDocument {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case pageWidth
+        case pageHeight
+        case pageBackgroundHex
+        case pageBackgroundImagePath
+        case pageBackgroundBlur
+        case pageBackgroundVignette
+        case rootChildrenIDs
+        case nodes
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.pageWidth = try c.decodeIfPresent(Double.self, forKey: .pageWidth) ?? Self.defaultPageWidth
+        self.pageHeight = try c.decodeIfPresent(Double.self, forKey: .pageHeight) ?? Self.defaultPageHeight
+        self.pageBackgroundHex = try c.decodeIfPresent(String.self, forKey: .pageBackgroundHex) ?? Self.defaultPageBackgroundHex
+        self.pageBackgroundImagePath = try c.decodeIfPresent(String.self, forKey: .pageBackgroundImagePath)
+        self.pageBackgroundBlur = try c.decodeIfPresent(Double.self, forKey: .pageBackgroundBlur)
+        self.pageBackgroundVignette = try c.decodeIfPresent(Double.self, forKey: .pageBackgroundVignette)
+        self.rootChildrenIDs = try c.decodeIfPresent([UUID].self, forKey: .rootChildrenIDs) ?? []
+        self.nodes = try c.decodeIfPresent([UUID: CanvasNode].self, forKey: .nodes) ?? [:]
+    }
 }
 
 // MARK: - Tree queries

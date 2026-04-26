@@ -8,6 +8,8 @@ import UIKit
 ///     profile-canvas-assets/
 ///       draft_<draftUUID>/
 ///         image_<nodeUUID>.jpg
+///       template_<templateUUID>/
+///         image_<nodeUUID>.jpg
 ///
 /// The scene-graph JSON only ever stores the relative path
 /// (e.g. `draft_X/image_Y.jpg`). Binary bytes never enter the JSON. Filenames
@@ -28,6 +30,10 @@ enum LocalCanvasAssetStore {
     enum SaveError: Error {
         /// `ImageNormalizer` couldn't decode the source bytes or encode JPEG.
         case normalizationFailed
+        /// The source asset for a copy operation no longer exists.
+        case sourceMissing
+        /// The source asset exists but couldn't be read.
+        case readFailed(underlying: Error)
         /// The JPEG bytes were produced but couldn't be written to disk.
         case writeFailed(underlying: Error)
     }
@@ -53,6 +59,14 @@ enum LocalCanvasAssetStore {
 
     static func draftFolder(draftID: UUID, create: Bool = false) -> URL {
         let folder = rootURL.appendingPathComponent("draft_\(draftID.uuidString)", isDirectory: true)
+        if create {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        return folder
+    }
+
+    static func templateFolder(templateID: UUID, create: Bool = false) -> URL {
+        let folder = rootURL.appendingPathComponent("template_\(templateID.uuidString)", isDirectory: true)
         if create {
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
@@ -85,6 +99,7 @@ enum LocalCanvasAssetStore {
         let url = folder.appendingPathComponent(filename)
         do {
             try jpeg.write(to: url, options: .atomic)
+            LocalImageCache.shared.remove(relativePath: "draft_\(draftID.uuidString)/\(filename)")
         } catch {
             throw SaveError.writeFailed(underlying: error)
         }
@@ -117,6 +132,7 @@ enum LocalCanvasAssetStore {
         let url = folder.appendingPathComponent(filename)
         do {
             try jpeg.write(to: url, options: .atomic)
+            LocalImageCache.shared.remove(relativePath: "draft_\(draftID.uuidString)/\(filename)")
         } catch {
             throw SaveError.writeFailed(underlying: error)
         }
@@ -147,10 +163,134 @@ enum LocalCanvasAssetStore {
         let url = folder.appendingPathComponent(filename)
         do {
             try jpeg.write(to: url, options: .atomic)
+            LocalImageCache.shared.remove(relativePath: "draft_\(draftID.uuidString)/\(filename)")
         } catch {
             throw SaveError.writeFailed(underlying: error)
         }
         return "draft_\(draftID.uuidString)/\(filename)"
+    }
+
+    /// Copy an existing image-node asset to the deterministic filename for
+    /// `nodeID`. Used when duplicating image nodes so each editable node owns
+    /// its own local file while still preserving the same pixels.
+    @discardableResult
+    static func copyImage(
+        from relativePath: String,
+        draftID: UUID,
+        nodeID: UUID
+    ) throws -> String {
+        try copyExistingAsset(
+            from: relativePath,
+            toFolder: draftFolder(draftID: draftID, create: true),
+            relativeFolderName: "draft_\(draftID.uuidString)",
+            filename: "image_\(nodeID.uuidString).jpg"
+        )
+    }
+
+    /// Copy an existing image-node asset into a template-owned folder.
+    /// Templates store relative paths under `template_<UUID>/...`, so they
+    /// keep working even if the original draft is later edited or deleted.
+    @discardableResult
+    static func copyImage(
+        from relativePath: String,
+        templateID: UUID,
+        nodeID: UUID
+    ) throws -> String {
+        try copyExistingAsset(
+            from: relativePath,
+            toFolder: templateFolder(templateID: templateID, create: true),
+            relativeFolderName: "template_\(templateID.uuidString)",
+            filename: "image_\(nodeID.uuidString).jpg"
+        )
+    }
+
+    @discardableResult
+    static func copyPageBackground(
+        from relativePath: String,
+        draftID: UUID
+    ) throws -> String {
+        try copyExistingAsset(
+            from: relativePath,
+            toFolder: draftFolder(draftID: draftID, create: true),
+            relativeFolderName: "draft_\(draftID.uuidString)",
+            filename: "page_background.jpg"
+        )
+    }
+
+    @discardableResult
+    static func copyPageBackground(
+        from relativePath: String,
+        templateID: UUID
+    ) throws -> String {
+        try copyExistingAsset(
+            from: relativePath,
+            toFolder: templateFolder(templateID: templateID, create: true),
+            relativeFolderName: "template_\(templateID.uuidString)",
+            filename: "page_background.jpg"
+        )
+    }
+
+    @discardableResult
+    static func copyContainerBackground(
+        from relativePath: String,
+        draftID: UUID,
+        nodeID: UUID
+    ) throws -> String {
+        try copyExistingAsset(
+            from: relativePath,
+            toFolder: draftFolder(draftID: draftID, create: true),
+            relativeFolderName: "draft_\(draftID.uuidString)",
+            filename: "container_\(nodeID.uuidString).jpg"
+        )
+    }
+
+    @discardableResult
+    static func copyContainerBackground(
+        from relativePath: String,
+        templateID: UUID,
+        nodeID: UUID
+    ) throws -> String {
+        try copyExistingAsset(
+            from: relativePath,
+            toFolder: templateFolder(templateID: templateID, create: true),
+            relativeFolderName: "template_\(templateID.uuidString)",
+            filename: "container_\(nodeID.uuidString).jpg"
+        )
+    }
+
+    private static func copyExistingAsset(
+        from relativePath: String,
+        toFolder folder: URL,
+        relativeFolderName: String,
+        filename: String
+    ) throws -> String {
+        guard let sourceURL = resolveURL(relativePath) else {
+            throw SaveError.sourceMissing
+        }
+
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let destinationURL = folder.appendingPathComponent(filename)
+        let destinationPath = "\(relativeFolderName)/\(filename)"
+
+        if sourceURL.standardizedFileURL == destinationURL.standardizedFileURL {
+            return destinationPath
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: sourceURL)
+        } catch {
+            throw SaveError.readFailed(underlying: error)
+        }
+
+        do {
+            try data.write(to: destinationURL, options: .atomic)
+            LocalImageCache.shared.remove(relativePath: destinationPath)
+        } catch {
+            throw SaveError.writeFailed(underlying: error)
+        }
+
+        return destinationPath
     }
 
     // MARK: - Resolve / load
@@ -180,8 +320,15 @@ enum LocalCanvasAssetStore {
     /// paths, missing files, or unreadable bytes — callers should render a
     /// placeholder instead.
     static func loadUIImage(_ relativePath: String?) -> UIImage? {
-        guard let url = resolveURL(relativePath) else { return nil }
-        return UIImage(contentsOfFile: url.path)
+        guard let relativePath, !relativePath.isEmpty,
+              let url = resolveURL(relativePath) else { return nil }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let mtime = attrs?[.modificationDate] as? Date
+        return LocalImageCache.shared.image(
+            for: relativePath,
+            fileURL: url,
+            modificationDate: mtime
+        )
     }
 
     // MARK: - Delete
@@ -191,6 +338,7 @@ enum LocalCanvasAssetStore {
         guard let relativePath, !relativePath.isEmpty else { return }
         let url = rootURL.appendingPathComponent(relativePath)
         try? FileManager.default.removeItem(at: url)
+        LocalImageCache.shared.remove(relativePath: relativePath)
     }
 
     /// Remove a draft's entire asset folder. Use when deleting a draft so
@@ -198,5 +346,12 @@ enum LocalCanvasAssetStore {
     static func deleteDraftAssets(draftID: UUID) {
         let folder = draftFolder(draftID: draftID, create: false)
         try? FileManager.default.removeItem(at: folder)
+        LocalImageCache.shared.removeAll(under: "draft_\(draftID.uuidString)/")
+    }
+
+    static func deleteTemplateAssets(templateID: UUID) {
+        let folder = templateFolder(templateID: templateID, create: false)
+        try? FileManager.default.removeItem(at: folder)
+        LocalImageCache.shared.removeAll(under: "template_\(templateID.uuidString)/")
     }
 }

@@ -35,12 +35,17 @@ final class PublishViewModel {
     /// Runs the whole flow, updating `status` as it advances. Caller is
     /// responsible for persisting `publishedProfileId/Username/lastPublishedAt`
     /// onto the local ProfileDraft on success.
+    ///
+    /// The flow operates on the v2 `ProfileDocument` directly — the local
+    /// document is never mutated, only walked for asset paths. Username
+    /// is the only user-facing identifier — display name and bio fields
+    /// were removed; the canvas itself carries any "About" text the
+    /// author wants on the public page.
     func publish(
         user: AppUser,
         draft: ProfileDraft,
-        design: ProfileDesign,
-        username: String,
-        displayName: String
+        document: ProfileDocument,
+        username: String
     ) async {
         status = .validating
 
@@ -60,9 +65,8 @@ final class PublishViewModel {
         do {
             let result = try await service.publish(
                 existingProfileId: draft.publishedProfileId,
-                design: design,
+                document: document,
                 username: username,
-                displayName: displayName.isEmpty ? nil : displayName,
                 onPhaseChange: { [weak self] phase in
                     guard let self else { return }
                     switch phase {

@@ -2,10 +2,20 @@ import CoreGraphics
 import Foundation
 
 /// Node type discriminator. String-backed for forward-compatible JSON.
+///
+/// Old drafts that predate any of the new cases (`icon`, `divider`, `link`,
+/// `gallery`) cannot contain those values, so `decodeIfPresent`-driven
+/// fields elsewhere don't need a migration. New drafts that contain the new
+/// types simply won't open on an older app version — the canvas decoder
+/// would fail the type lookup and fall back to the legacy banner.
 enum NodeType: String, Codable, Hashable {
     case container
     case text
     case image
+    case icon
+    case divider
+    case link
+    case gallery
 }
 
 /// One element in the scene graph.
@@ -79,6 +89,7 @@ extension CanvasNode {
                 backgroundColorHex: nil,
                 cornerRadius: 0,
                 fontFamily: .system,
+                fontWeight: .regular,
                 fontSize: 18,
                 textColorHex: "#1C1C1E",
                 textAlignment: .leading
@@ -106,6 +117,92 @@ extension CanvasNode {
                 clipShape: .rectangle
             ),
             content: NodeContent(localImagePath: localImagePath)
+        )
+    }
+
+    /// Default styled icon node — pastel-doodle plate behind a heart so
+    /// the very first frame shows what an icon *is* without any setup
+    /// from the user. They tweak family / glyph / color from the
+    /// inspector after dropping it onto the canvas.
+    static func defaultIcon(at origin: CGPoint = CGPoint(x: 64, y: 120),
+                            size: CGSize = CGSize(width: 80, height: 80)) -> CanvasNode {
+        CanvasNode(
+            type: .icon,
+            frame: NodeFrame(x: Double(origin.x), y: Double(origin.y),
+                             width: Double(size.width), height: Double(size.height)),
+            style: NodeStyle(
+                backgroundColorHex: "#FFE3EC",
+                cornerRadius: 16,
+                borderWidth: 1.5,
+                borderColorHex: "#1A140E",
+                iconStyleFamily: .pastelDoodle,
+                tintColorHex: "#B22A4A"
+            ),
+            content: NodeContent(iconName: "heart.fill")
+        )
+    }
+
+    /// Default styled divider node — full-page-width horizontal strip
+    /// with a sparkle-chain pattern. Height is intentionally tall (28pt)
+    /// so chain glyphs have room to render legibly.
+    static func defaultDivider(at origin: CGPoint = CGPoint(x: 24, y: 200),
+                               size: CGSize = CGSize(width: 320, height: 28)) -> CanvasNode {
+        CanvasNode(
+            type: .divider,
+            frame: NodeFrame(x: Double(origin.x), y: Double(origin.y),
+                             width: Double(size.width), height: Double(size.height)),
+            style: NodeStyle(
+                backgroundColorHex: nil,
+                borderColorHex: "#B22A4A",
+                dividerStyleFamily: .sparkleChain,
+                dividerThickness: 2
+            )
+        )
+    }
+
+    /// Default styled link node — pill variant with a placeholder title
+    /// and an empty URL the user fills in from the inspector.
+    static func defaultLink(at origin: CGPoint = CGPoint(x: 32, y: 240),
+                            size: CGSize = CGSize(width: 220, height: 48)) -> CanvasNode {
+        CanvasNode(
+            type: .link,
+            frame: NodeFrame(x: Double(origin.x), y: Double(origin.y),
+                             width: Double(size.width), height: Double(size.height)),
+            style: NodeStyle(
+                backgroundColorHex: "#FBF6E9",
+                cornerRadius: 24,
+                borderWidth: 1.5,
+                borderColorHex: "#1A140E",
+                fontFamily: .system,
+                fontWeight: .semibold,
+                fontSize: 16,
+                textColorHex: "#1A140E",
+                textAlignment: .center,
+                linkStyleVariant: .pill
+            ),
+            content: NodeContent(text: "my link", url: "")
+        )
+    }
+
+    /// Default styled gallery node. Pre-populated with an empty
+    /// `imagePaths` array; the create flow writes paths in immediately
+    /// after the user picks photos.
+    static func defaultGallery(imagePaths: [String],
+                               at origin: CGPoint = CGPoint(x: 24, y: 280),
+                               size: CGSize = CGSize(width: 320, height: 240)) -> CanvasNode {
+        CanvasNode(
+            type: .gallery,
+            frame: NodeFrame(x: Double(origin.x), y: Double(origin.y),
+                             width: Double(size.width), height: Double(size.height)),
+            style: NodeStyle(
+                backgroundColorHex: nil,
+                cornerRadius: 12,
+                borderWidth: 0,
+                borderColorHex: nil,
+                galleryLayout: .grid,
+                galleryGap: 6
+            ),
+            content: NodeContent(imagePaths: imagePaths)
         )
     }
 }

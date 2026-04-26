@@ -10,33 +10,34 @@ struct EditorToolbar: View {
     var body: some View {
         HStack(spacing: 12) {
             Button(action: onEditTheme) {
-                // `.regularMaterial` + a stronger shadow so the small palette
-                // icon stays legible when the page background is a busy
-                // image (thinMaterial wasn't enough contrast against photos).
                 Image(systemName: "paintpalette")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
                     .frame(width: 46, height: 46)
-                    .background(.regularMaterial, in: Circle())
-                    .overlay(Circle().stroke(.quaternary, lineWidth: 0.5))
-                    .foregroundStyle(.primary)
-                    .shadow(color: .black.opacity(0.20), radius: 14, y: 6)
+                    .background(Circle().fill(Color.cucuCard))
+                    .overlay(Circle().strokeBorder(Color.cucuInk, lineWidth: 1))
+                    .shadow(color: Color.cucuInk.opacity(0.22), radius: 14, y: 6)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(CucuPressableButtonStyle())
             .accessibilityLabel("Edit theme")
 
             Spacer(minLength: 0)
 
             Button(action: onAddBlock) {
-                Label("Add Block", systemImage: "plus")
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 14)
-                    .background(.regularMaterial, in: Capsule(style: .continuous))
-                    .overlay(Capsule(style: .continuous).stroke(.quaternary, lineWidth: 0.5))
-                    .foregroundStyle(.primary)
-                    .shadow(color: .black.opacity(0.22), radius: 18, y: 9)
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .heavy))
+                    Text("Add Block")
+                        .font(.cucuSerif(16, weight: .bold))
+                }
+                .foregroundStyle(Color.cucuCard)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 14)
+                .background(Capsule(style: .continuous).fill(Color.cucuInk))
+                .overlay(Capsule(style: .continuous).strokeBorder(Color.cucuCherry, lineWidth: 0).padding(0))
+                .shadow(color: Color.cucuInk.opacity(0.28), radius: 18, y: 9)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(CucuPressableButtonStyle())
         }
         .padding(.horizontal, 24)
     }

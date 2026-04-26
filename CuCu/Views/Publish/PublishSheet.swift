@@ -6,7 +6,7 @@ import UIKit
 /// One sheet that handles the full publish journey:
 ///
 ///   - if not signed in   → AuthGateView
-///   - if signed in, idle → username/display-name form
+///   - if signed in, idle → username form
 ///   - while publishing   → progress
 ///   - on success         → public path + Done / Copy Path
 ///   - on failure         → message + Retry
@@ -19,11 +19,17 @@ struct PublishSheet: View {
     @Environment(AuthViewModel.self) private var auth
 
     @Bindable var draft: ProfileDraft
-    let design: ProfileDesign
+    /// V2 source-of-truth document. The publish service walks this for
+    /// asset paths and serializes the path-rewritten copy as the cloud
+    /// `design_json`. The local document is never mutated.
+    let document: ProfileDocument
+    /// Optional callback the host can use to reveal the published
+    /// profile right after a successful publish (e.g., push the
+    /// `PublishedProfileView` onto the same nav stack).
+    var onViewPublished: ((String) -> Void)? = nil
 
     @State private var publishVM = PublishViewModel()
     @State private var username: String = ""
-    @State private var displayName: String = ""
 
     var body: some View {
         NavigationStack {
@@ -62,7 +68,6 @@ struct PublishSheet: View {
         }
         .onAppear {
             username = draft.publishedUsername ?? username
-            if displayName.isEmpty { displayName = draft.title }
         }
     }
 
@@ -107,10 +112,6 @@ struct PublishSheet: View {
                 Text("Lowercase letters, numbers, and underscores. 3–30 characters.")
             }
 
-            Section("Display name (optional)") {
-                TextField("How your profile is named", text: $displayName)
-            }
-
             Section {
                 Button {
                     Task {
@@ -118,9 +119,8 @@ struct PublishSheet: View {
                         await publishVM.publish(
                             user: user,
                             draft: draft,
-                            design: design,
-                            username: username,
-                            displayName: displayName
+                            document: document,
+                            username: username
                         )
                         if case .success(let result) = publishVM.status {
                             applySuccessToDraft(result)
@@ -153,6 +153,13 @@ struct PublishSheet: View {
 
     private func publishSuccess(_ result: PublishedProfileResult) -> some View {
         VStack(spacing: 18) {
+            // Fire the success haptic on the first frame the
+            // success card is on screen — once per `result.profileId`
+            // so a re-publish to the same id doesn't double-pulse.
+            Color.clear
+                .frame(width: 0, height: 0)
+                .onAppear { CucuHaptics.success() }
+
             Spacer()
             ZStack {
                 Circle()
@@ -172,6 +179,16 @@ struct PublishSheet: View {
 
             VStack(spacing: 10) {
                 Button {
+                    onViewPublished?(result.username)
+                    dismiss()
+                } label: {
+                    Label("View Profile", systemImage: "eye")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
                     copyToClipboard(result.publicPath)
                 } label: {
                     Label("Copy path", systemImage: "doc.on.doc")
@@ -184,11 +201,10 @@ struct PublishSheet: View {
                     dismiss()
                 } label: {
                     Text("Done")
-                        .fontWeight(.semibold)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
             }
             .padding(.horizontal, 28)
             Spacer()

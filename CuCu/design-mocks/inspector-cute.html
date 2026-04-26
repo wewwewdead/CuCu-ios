@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>inspector ✿ scrapbook edition</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Caprasimo&family=Caveat:wght@500;700&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,400;1,9..144,600;1,9..144,800&family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --paper:#f4e7c9;
+    --paper-deep:#ecd9a8;
+    --paper-fleck:#d8b574;
+    --card:#fffaec;
+    --card-edge:#f5e9c3;
+    --ink:#3a1f2e;
+    --ink-soft:#704456;
+    --ink-faded:#a48996;
+    --rose:#e26a8a;
+    --rose-deep:#bf3f63;
+    --rose-soft:#fad2dd;
+    --rose-tape:#f7b9c8;
+    --sage:#8db98e;
+    --sage-soft:#d4e7c8;
+    --butter:#f0c84a;
+    --butter-soft:#fbe6a3;
+    --lavender:#bba0db;
+    --lavender-soft:#e6d8f4;
+    --coral:#ee8665;
+    --line:#3a1f2e;
+    --shadow-1: 0 1px 0 rgba(58,31,46,.08), 0 8px 22px -10px rgba(58,31,46,.18);
+    --shadow-2: 0 2px 0 var(--ink), 0 12px 32px -14px rgba(58,31,46,.32);
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased;}
+  html,body{height:100%;}
+
+  body{
+    font-family:"Quicksand", system-ui, sans-serif;
+    color:var(--ink);
+    background:
+      radial-gradient(1100px 680px at 12% -10%, #fbe7a6 0%, transparent 55%),
+      radial-gradient(900px 700px at 110% 10%, #f7c8d6 0%, transparent 55%),
+      radial-gradient(700px 600px at 50% 120%, #cfe6c7 0%, transparent 55%),
+      var(--paper);
+    overflow-x:hidden;
+    min-height:100%;
+    position:relative;
+  }
+
+  /* paper grain */
+  body::before{
+    content:"";
+    position:fixed;inset:0;
+    pointer-events:none;z-index:1;
+    opacity:.45;mix-blend-mode:multiply;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.92' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.23  0 0 0 0 0.12  0 0 0 0 0.18  0 0 0 .35 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  }
+
+  /* ruled-paper hairline */
+  body::after{
+    content:"";
+    position:fixed;inset:0;
+    pointer-events:none;z-index:1;opacity:.18;
+    background-image:linear-gradient(transparent 31px, #c08e6d 32px);
+    background-size:100% 32px;
+    mix-blend-mode:multiply;
+  }
+
+  .stage{
+    position:relative;z-index:2;
+    max-width:1180px;margin:0 auto;
+    padding:64px 40px 120px;
+  }
+
+  /* page heading */
+  .heading{
+    display:flex;flex-direction:column;align-items:flex-start;
+    gap:14px;margin-bottom:48px;position:relative;
+  }
+
+  .eyebrow{
+    font-family:"Caveat", cursive;font-size:30px;color:var(--rose-deep);
+    transform:rotate(-3deg);
+    display:inline-flex;align-items:center;gap:10px;
+  }
+  .eyebrow .dot{width:8px;height:8px;background:var(--rose);border-radius:50%;}
+
+  h1{
+    font-family:"Caprasimo", serif;
+    font-size:clamp(56px, 9vw, 132px);
+    line-height:.9;letter-spacing:-.02em;
+    color:var(--ink);
+    position:relative;
+  }
+  h1 .arc{
+    font-family:"Fraunces", serif;font-style:italic;font-weight:600;
+    color:var(--rose-deep);
+    text-decoration: underline wavy var(--rose);
+    text-underline-offset:14px;
+    text-decoration-thickness:2px;
+  }
+  h1 .small{
+    font-family:"Fraunces", serif;font-style:italic;font-weight:400;
+    color:var(--ink-soft);
+    font-size:.32em;
+    display:inline-block;transform:translateY(-.7em) rotate(-4deg);
+    margin-left:.2em;
+  }
+
+  .subtitle{
+    font-family:"Fraunces", serif;font-style:italic;
+    color:var(--ink-soft);font-size:18px;max-width:560px;
+    line-height:1.5;letter-spacing:.01em;
+    padding-left:6px;
+  }
+
+  /* sparkle decorations on page */
+  .sparkle{
+    position:absolute;pointer-events:none;color:var(--rose);
+  }
+
+  /* panel grid */
+  .panels{
+    display:grid;
+    grid-template-columns: 1fr 1fr;
+    gap:56px;
+    align-items:start;
+    margin-top:40px;
+  }
+  @media (max-width: 920px){
+    .panels{grid-template-columns:1fr;gap:80px;}
+    .stage{padding:40px 24px 100px;}
+  }
+
+  /* shared card */
+  .card{
+    position:relative;
+    background:var(--card);
+    border:2px solid var(--ink);
+    border-radius:28px;
+    box-shadow: var(--shadow-2);
+    padding:22px 22px 18px;
+  }
+  .card::before{
+    content:"";
+    position:absolute;inset:6px;
+    border:1.5px dashed rgba(58,31,46,.18);
+    border-radius:22px;
+    pointer-events:none;
+  }
+
+  /* washi tape */
+  .tape{
+    position:absolute;
+    width:128px;height:30px;
+    background:
+      repeating-linear-gradient(135deg, rgba(255,255,255,.55) 0 8px, rgba(255,255,255,0) 8px 18px),
+      var(--rose-tape);
+    border:1.5px solid rgba(58,31,46,.35);
+    border-radius:3px;
+    box-shadow: 0 4px 10px -4px rgba(58,31,46,.3);
+    opacity:.95;
+  }
+
+  .panel-1 .tape{ top:-18px; left:-22px; transform:rotate(-7deg); background-color:var(--butter-soft); }
+  .panel-2 .tape{ top:-18px; right:-18px; transform:rotate(8deg); background-color:var(--sage-soft); }
+
+  /* tilt cards */
+  .panel-1{ transform: rotate(-1.5deg); }
+  .panel-2{ transform: rotate(1.2deg); margin-top:42px; }
+
+  /* card header (Fill) */
+  .panel-head{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:6px 8px 18px;
+    border-bottom:1.5px dashed rgba(58,31,46,.22);
+    margin-bottom:18px;
+  }
+  .panel-head h2{
+    font-family:"Fraunces", serif;
+    font-style:italic;font-weight:800;
+    font-size:34px;letter-spacing:-.01em;
+    display:flex;align-items:baseline;gap:10px;
+  }
+  .panel-head h2 .glyph{
+    font-family:"Caveat", cursive;
+    color:var(--rose);font-weight:700;font-size:24px;
+    transform:translateY(-2px) rotate(-6deg);
+    display:inline-block;
+  }
+
+  /* cute toggle */
+  .toggle{
+    --w:62px;--h:32px;
+    position:relative;width:var(--w);height:var(--h);
+    background:linear-gradient(180deg, #f7b6c6, var(--rose));
+    border:2px solid var(--ink);
+    border-radius:99px;
+    cursor:pointer;
+    box-shadow: inset 0 -3px 0 rgba(58,31,46,.18), 0 3px 0 var(--ink);
+    transition:transform .15s ease;
+  }
+  .toggle::after{
+    content:"";
+    position:absolute;
+    top:50%;right:3px;transform:translateY(-50%);
+    width:24px;height:24px;border-radius:50%;
+    background:#fffcf2;
+    border:2px solid var(--ink);
+    box-shadow: inset -2px -2px 0 rgba(58,31,46,.12);
+    transition:right .2s ease;
+  }
+  .toggle .heart{
+    position:absolute;top:50%;left:11px;transform:translateY(-50%);
+    color:#fffcf2;font-family:Caveat;font-size:18px;font-weight:700;line-height:1;
+  }
+  .toggle:active{transform:translateY(1px);box-shadow:inset 0 -3px 0 rgba(58,31,46,.18), 0 1px 0 var(--ink);}
+  .toggle.off::after{ right:calc(var(--w) - 28px); }
+  .toggle.off{ background:linear-gradient(180deg,#e9e2cf,#cdc4ad); }
+  .toggle.off .heart{ display:none; }
+
+  /* chip row */
+  .chip-row{
+    display:flex;align-items:center;gap:10px;
+    padding:4px 6px 14px;flex-wrap:wrap;
+  }
+  .preview-thumb{
+    width:46px;height:46px;border-radius:50%;
+    background:
+      radial-gradient(circle at 35% 30%, #fff 0 6%, transparent 7%),
+      conic-gradient(from 220deg, var(--rose) 0 25%, var(--butter) 25% 50%, var(--sage) 50% 75%, var(--lavender) 75% 100%);
+    border:2px solid var(--ink);
+    box-shadow: 0 2px 0 var(--ink), inset 0 0 0 3px #fffcf2;
+    flex-shrink:0;
+    position:relative;
+  }
+  .preview-thumb::after{
+    content:"♡";
+    position:absolute;top:-10px;right:-8px;
+    font-family:Caveat;color:var(--rose-deep);font-size:18px;
+    transform:rotate(20deg);
+  }
+
+  .chip{
+    display:inline-flex;align-items:center;gap:8px;
+    height:38px;padding:0 14px;
+    background:var(--rose-soft);
+    border:2px solid var(--ink);
+    border-radius:99px;
+    font-family:"Fraunces", serif;font-style:italic;font-weight:600;font-size:15px;
+    color:var(--ink);
+    box-shadow: 0 2px 0 var(--ink);
+    cursor:pointer;
+    transition: transform .12s ease, box-shadow .12s ease;
+    white-space:nowrap;
+  }
+  .chip:hover{ transform:translateY(-1px); box-shadow:0 3px 0 var(--ink); }
+  .chip:active{ transform:translateY(2px); box-shadow:0 0 0 var(--ink);}
+  .chip .ic{
+    width:22px;height:22px;border-radius:50%;
+    display:inline-grid;place-items:center;
+    background:var(--card);
+    border:1.5px solid var(--ink);
+  }
+  .chip .ic svg{width:13px;height:13px;display:block;}
+  .chip .val{ font-family:"Quicksand", sans-serif;font-style:normal;font-weight:700;font-size:13px; }
+  .chip.b{ background:var(--lavender-soft); }
+  .chip.c{ background:var(--sage-soft); }
+
+  /* swatch row */
+  .swatches{
+    display:flex;align-items:center;gap:10px;
+    padding:14px 6px 8px;
+    overflow:hidden;
+  }
+  .sw{
+    --sz:34px;
+    width:var(--sz);height:var(--sz);
+    border-radius:50%;
+    border:2px solid var(--ink);
+    box-shadow: 0 2px 0 var(--ink);
+    cursor:pointer;
+    flex-shrink:0;
+    position:relative;
+    transition:transform .12s ease;
+  }
+  .sw:hover{transform:translateY(-2px) rotate(-4deg);}
+  .sw.add{
+    background:#fffcf2;
+    display:grid;place-items:center;
+    color:var(--ink);font-family:Caveat;font-size:22px;font-weight:700;line-height:1;
+  }
+  .sw.add::after{content:"+";}
+  .sw.selected::after{
+    content:"";
+    position:absolute;inset:-7px;border-radius:50%;
+    border:2px dashed var(--ink);
+    pointer-events:none;
+  }
+  .sw.cream{background:#fffcf2;}
+  .sw.lime{background:#bcdf6a;}
+  .sw.sky{background:#6e9ee3;}
+  .sw.indigo{background:#23315b;}
+  .sw.pink{background:#f3a6c0;}
+  .sw.berry{background:#e1396b;}
+  .sw.ink{background:#1a1418;}
+
+  /* tab nav (bottom of panel 1) */
+  .tab-nav{
+    display:grid;grid-template-columns:repeat(4,1fr);
+    margin-top:12px;
+    padding-top:14px;
+    border-top:1.5px dashed rgba(58,31,46,.22);
+    position:relative;
+  }
+  .tab{
+    display:flex;flex-direction:column;align-items:center;gap:6px;
+    padding:10px 4px;cursor:pointer;
+    color:var(--ink-soft);
+    transition:color .15s ease;
+    position:relative;
+  }
+  .tab:hover{color:var(--ink);}
+  .tab .ic{ width:28px;height:28px;display:grid;place-items:center; }
+  .tab .ic svg{width:24px;height:24px;}
+  .tab .lbl{
+    font-family:"Fraunces", serif;font-style:italic;font-weight:600;
+    font-size:14px;letter-spacing:.01em;
+  }
+  .tab.active{color:var(--ink);}
+  .tab.active .lbl{font-weight:800;}
+  .tab.active::after{
+    content:"";
+    position:absolute;bottom:0;left:50%;transform:translateX(-50%);
+    width:6px;height:6px;border-radius:50%;background:var(--rose-deep);
+    box-shadow:0 0 0 2px var(--card-edge);
+  }
+  .tab .glyph-label{
+    font-family:"Caprasimo", serif;font-size:18px;line-height:1;
+  }
+
+  /* ---- panel 2 (Text) ---- */
+  .tab-row{
+    display:flex;align-items:center;gap:0;
+    padding:6px 4px 18px;
+    border-bottom:1.5px dashed rgba(58,31,46,.22);
+    margin-bottom:18px;
+    position:relative;
+  }
+  .ttab{
+    flex:1;text-align:center;
+    font-family:"Fraunces", serif;font-style:italic;font-weight:600;
+    font-size:22px;color:var(--ink-faded);
+    padding:6px 0;cursor:pointer;
+    position:relative;
+  }
+  .ttab.active{
+    color:var(--ink);font-weight:800;
+    text-decoration:underline wavy var(--rose);
+    text-underline-offset:6px;
+    text-decoration-thickness:2px;
+  }
+  .ttab.close{
+    flex:0 0 44px;
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;
+    color:var(--rose-deep);
+  }
+  .ttab.close svg{width:22px;height:22px;}
+  .ttab.x{
+    flex:0 0 44px;
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;color:var(--ink);
+  }
+  .ttab.x svg{width:22px;height:22px;}
+
+  /* row item */
+  .row{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:12px 14px;
+    border-radius:18px;
+    background:#fffaec;
+    border:1.5px solid rgba(58,31,46,.18);
+    box-shadow: inset 0 -2px 0 rgba(58,31,46,.04);
+    margin-bottom:10px;
+    transition:background .15s;
+  }
+  .row.lift{
+    background:linear-gradient(180deg,#fffdf3,#fff5dc);
+    border:2px solid var(--ink);
+    box-shadow:0 2px 0 var(--ink);
+  }
+  .row:hover{ background:#fff7e0; }
+
+  .row-left{display:flex;align-items:center;gap:12px;}
+  .row-right{display:flex;align-items:center;gap:10px;}
+
+  .badge{
+    width:30px;height:30px;border-radius:9px;
+    background:linear-gradient(160deg, var(--lavender), #8c6dbe);
+    border:1.5px solid var(--ink);
+    display:grid;place-items:center;color:#fffcf2;
+    box-shadow: 0 2px 0 var(--ink);
+    font-family:"Caprasimo", serif;font-size:14px;
+  }
+  .badge.lg{width:34px;height:34px;}
+  .badge svg{width:18px;height:18px;}
+
+  .row-label{
+    font-family:"Fraunces", serif;font-style:italic;font-weight:600;
+    font-size:18px;
+  }
+  .row-italic{
+    font-family:"Fraunces", serif;font-style:italic;font-weight:400;
+    color:var(--ink);font-size:17px;
+  }
+  .grid-ic{
+    width:18px;height:18px;color:var(--ink-soft);
+    display:inline-grid;place-items:center;
+    margin-left:6px;
+  }
+  .grid-ic svg{width:18px;height:18px;}
+
+  .pill-val{
+    min-width:46px;height:32px;padding:0 14px;
+    border:2px solid var(--ink);border-radius:99px;
+    background:#fffcf2;
+    display:inline-grid;place-items:center;
+    font-family:"Caprasimo", serif;font-size:16px;color:var(--ink);
+    box-shadow:0 2px 0 var(--ink);
+  }
+
+  .content-pill{
+    display:inline-flex;align-items:center;gap:8px;
+    padding:6px 14px 6px 8px;
+    border-radius:99px;
+    background:var(--lavender-soft);
+    border:2px solid var(--ink);
+    box-shadow:0 2px 0 var(--ink);
+    font-family:"Fraunces", serif;font-style:italic;font-weight:600;
+    color:var(--ink);
+  }
+
+  /* footnote / signature */
+  .footnote{
+    margin-top:60px;text-align:center;
+    font-family:"Caveat", cursive;color:var(--ink-soft);
+    font-size:22px;transform:rotate(-1.5deg);
+  }
+
+  /* doodle stickers */
+  .sticker{
+    position:absolute;pointer-events:none;
+    filter:drop-shadow(0 4px 10px rgba(58,31,46,.18));
+  }
+  .sticker.flower{ top:-40px; right:30px; transform:rotate(14deg); width:84px; }
+  .sticker.heart{ bottom:-26px; left:24px; transform:rotate(-12deg); width:56px; }
+  .sticker.star1{ top:160px; left:-46px; transform:rotate(-8deg); width:64px; }
+  .sticker.star2{ bottom:120px; right:-38px; transform:rotate(18deg); width:52px; }
+  .sticker.swirl{ top:64px; right:-30px; transform:rotate(8deg); width:88px; }
+  .sticker.cloud{ bottom:-30px; right:40px; transform:rotate(-6deg); width:96px; }
+
+  /* loose annotation */
+  .annot{
+    position:absolute;
+    font-family:"Caveat", cursive;
+    color:var(--rose-deep);
+    font-size:24px;font-weight:700;
+    pointer-events:none;
+  }
+  .annot.a1{ top:-22px; right:120px; transform:rotate(-6deg); }
+  .annot.a2{ bottom:-44px; right:36px; transform:rotate(-4deg); }
+  .annot.a3{ top:50%; left:-70px; transform:rotate(-12deg); }
+  .annot.a4{ bottom:-46px; left:50px; transform:rotate(2deg); }
+
+  /* arrow svg helper */
+  .arrow{position:absolute;color:var(--rose-deep);pointer-events:none;}
+  .arrow.left{ top:-46px; right:108px; width:80px; transform:rotate(-10deg);}
+  .arrow.right{ bottom:-30px; left:80px; width:90px; transform:rotate(10deg);}
+  .arrow.deep{ top:108px; left:-90px; width:120px; transform:rotate(-12deg);}
+
+  /* responsive cleanup */
+  @media (max-width: 720px){
+    h1{ font-size:64px; }
+    .panel-1, .panel-2{ transform:none; }
+    .panel-1 .tape, .panel-2 .tape{ display:none; }
+  }
+</style>
+</head>
+<body>
+
+  <main class="stage">
+    <header class="heading">
+      <span class="eyebrow"><span class="dot"></span>my tiny editor &mdash; v.04 ✿</span>
+      <h1>
+        Pick your <span class="arc">prettys</span>
+        <span class="small">(it's customization, but cuter)</span>
+      </h1>
+      <p class="subtitle">A little inspector panel for fussing over fills, fonts, and the geometry of your feelings. Stick stickers on stickers.</p>
+
+      <!-- floating sparkles on heading -->
+      <svg class="sparkle" style="top:-10px;left:-26px;width:46px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2v6M12 16v6M2 12h6M16 12h6M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3"/></svg>
+      <svg class="sparkle" style="bottom:-30px;right:18%;width:34px;color:var(--butter);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2v6M12 16v6M2 12h6M16 12h6"/></svg>
+    </header>
+
+    <section class="panels">
+      <!-- ============ PANEL 1: FILL ============ -->
+      <div class="card panel-1">
+        <span class="tape"></span>
+
+        <!-- annotation -->
+        <span class="annot a1">turn me on!</span>
+        <svg class="arrow left" viewBox="0 0 100 60" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+          <path d="M4 14 C 30 4, 60 22, 88 30" stroke-dasharray="1 6"/>
+          <path d="M82 22 L92 32 L80 36" />
+        </svg>
+
+        <div class="panel-head">
+          <h2>Fill <span class="glyph">~ pretty stuff</span></h2>
+          <button class="toggle" aria-label="toggle fill" onclick="this.classList.toggle('off')">
+            <span class="heart">♡</span>
+          </button>
+        </div>
+
+        <!-- preview + chips -->
+        <div class="chip-row">
+          <span class="preview-thumb" aria-hidden="true"></span>
+
+          <button class="chip">
+            <span class="ic" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#3a1f2e" stroke-width="2"><path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h6v6h-6z"/></svg>
+            </span>
+            [Free]
+          </button>
+
+          <button class="chip b">
+            <span class="ic" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#3a1f2e" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12c4 4 14 4 18 0"/><path d="M12 3c4 4 4 14 0 18"/></svg>
+            </span>
+            <span class="val">90%</span>
+          </button>
+
+          <button class="chip c">
+            <span class="ic" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#3a1f2e" stroke-width="2"><path d="M12 3l2.5 5.3 5.8.7-4.3 4 1.1 5.7L12 16l-5.1 2.7 1.1-5.7L3.7 9l5.8-.7z"/></svg>
+            </span>
+            <span class="val">×10</span>
+          </button>
+        </div>
+
+        <!-- swatches -->
+        <div class="swatches">
+          <span class="sw add" aria-label="add color"></span>
+          <span class="sw cream selected"></span>
+          <span class="sw lime"></span>
+          <span class="sw sky"></span>
+          <span class="sw indigo"></span>
+          <span class="sw pink"></span>
+          <span class="sw berry"></span>
+          <span class="sw ink"></span>
+        </div>
+
+        <!-- bottom tab nav -->
+        <nav class="tab-nav">
+          <div class="tab" role="button">
+            <span class="ic">
+              <!-- Aa -->
+              <svg viewBox="0 0 32 24" fill="none" stroke="#704456" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 20 L9 5 L15 20 M5 15 H13"/>
+                <path d="M28 11a4 4 0 0 0-8 0v6a3 3 0 0 0 6 0v-3a3 3 0 0 0-6 0"/>
+              </svg>
+            </span>
+            <span class="lbl">Aa</span>
+          </div>
+          <div class="tab" role="button">
+            <span class="ic">
+              <!-- diamond / sparkle -->
+              <svg viewBox="0 0 24 24" fill="none" stroke="#704456" stroke-width="2" stroke-linejoin="round">
+                <path d="M12 2 L22 12 L12 22 L2 12 Z"/>
+                <path d="M12 7 L17 12 L12 17 L7 12 Z" stroke-dasharray="2 2"/>
+              </svg>
+            </span>
+            <span class="lbl">Shape</span>
+          </div>
+          <div class="tab" role="button">
+            <span class="ic">
+              <!-- xo flower -->
+              <svg viewBox="0 0 32 24" fill="none" stroke="#704456" stroke-width="2" stroke-linecap="round">
+                <path d="M4 6 L14 18 M14 6 L4 18"/>
+                <circle cx="24" cy="12" r="6"/>
+                <circle cx="24" cy="12" r="2" fill="#704456"/>
+              </svg>
+            </span>
+            <span class="lbl">x · o</span>
+          </div>
+          <div class="tab active" role="button">
+            <span class="ic">
+              <!-- BG glyph -->
+              <svg viewBox="0 0 32 24" fill="none">
+                <path d="M3 21 L3 6 H10 a5 5 0 0 1 0 10 H6" stroke="#3a1f2e" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M28 12 a5 5 0 1 1-2-4" stroke="#3a1f2e" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+                <path d="M28 8 V13 H24" stroke="#3a1f2e" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <span class="lbl">BG</span>
+          </div>
+        </nav>
+
+        <!-- stickers -->
+        <svg class="sticker flower" viewBox="0 0 100 100" aria-hidden="true">
+          <g transform="translate(50 50)">
+            <g fill="#f0c84a" stroke="#3a1f2e" stroke-width="3">
+              <ellipse cx="0" cy="-22" rx="14" ry="22"/>
+              <ellipse cx="22" cy="0" rx="22" ry="14"/>
+              <ellipse cx="0" cy="22" rx="14" ry="22"/>
+              <ellipse cx="-22" cy="0" rx="22" ry="14"/>
+            </g>
+            <circle r="10" fill="#e26a8a" stroke="#3a1f2e" stroke-width="3"/>
+            <circle r="3" cx="-3" cy="-2" fill="#fffaec"/>
+          </g>
+        </svg>
+
+        <svg class="sticker star1" viewBox="0 0 60 60" aria-hidden="true">
+          <path d="M30 4 L36 24 L56 30 L36 36 L30 56 L24 36 L4 30 L24 24 Z" fill="#bba0db" stroke="#3a1f2e" stroke-width="3" stroke-linejoin="round"/>
+          <circle cx="30" cy="30" r="3" fill="#fffaec"/>
+        </svg>
+      </div>
+
+      <!-- ============ PANEL 2: TEXT ============ -->
+      <div class="card panel-2">
+        <span class="tape"></span>
+
+        <span class="annot a2">tweak the text ✦</span>
+        <svg class="arrow right" viewBox="0 0 100 60" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+          <path d="M4 38 C 28 50, 60 30, 90 18" stroke-dasharray="1 6"/>
+          <path d="M84 12 L94 16 L88 26"/>
+        </svg>
+
+        <div class="tab-row">
+          <div class="ttab x" role="button" aria-label="close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg>
+          </div>
+          <div class="ttab">Text</div>
+          <div class="ttab active">Text</div>
+          <div class="ttab">Text</div>
+          <div class="ttab close" role="button" aria-label="trash">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14"/>
+              <path d="M10 11v6M14 11v6"/>
+            </svg>
+          </div>
+        </div>
+
+        <!-- capricorn header item -->
+        <div class="row lift">
+          <div class="row-left">
+            <span class="badge lg" aria-hidden="true">
+              <!-- capricorn glyph -->
+              <svg viewBox="0 0 24 24" fill="none" stroke="#fffaec" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M5 7c0-2 2-3 4-3s4 1 4 3v6c0 2 1 4 4 4 2 0 3-2 3-4"/>
+                <circle cx="19" cy="14" r="3"/>
+              </svg>
+            </span>
+            <span class="row-italic">Capricorn</span>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-left">
+            <span class="row-label">Padding</span>
+            <span class="grid-ic">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#704456" stroke-width="2"><circle cx="6" cy="6" r="1.6"/><circle cx="12" cy="6" r="1.6"/><circle cx="18" cy="6" r="1.6"/><circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/><circle cx="6" cy="18" r="1.6"/><circle cx="12" cy="18" r="1.6"/><circle cx="18" cy="18" r="1.6"/></svg>
+            </span>
+          </div>
+          <div class="row-right">
+            <span class="pill-val">0</span>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-left">
+            <span class="row-label">Margin</span>
+            <span class="grid-ic">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#704456" stroke-width="2"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/></svg>
+            </span>
+          </div>
+          <div class="row-right">
+            <span class="pill-val">0</span>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-left">
+            <span class="row-label">Content</span>
+          </div>
+          <div class="row-right">
+            <span class="content-pill">
+              <span class="badge" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#fffaec" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M5 7c0-2 2-3 4-3s4 1 4 3v6c0 2 1 4 4 4 2 0 3-2 3-4"/>
+                  <circle cx="19" cy="14" r="3"/>
+                </svg>
+              </span>
+              Capricorn
+            </span>
+          </div>
+        </div>
+
+        <!-- stickers -->
+        <svg class="sticker swirl" viewBox="0 0 100 100" aria-hidden="true">
+          <path d="M10 50 C 10 20, 70 20, 70 50 S 30 80, 30 50 S 60 30, 60 50" fill="none" stroke="#e26a8a" stroke-width="6" stroke-linecap="round"/>
+          <path d="M10 50 C 10 20, 70 20, 70 50 S 30 80, 30 50 S 60 30, 60 50" fill="none" stroke="#3a1f2e" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+
+        <svg class="sticker heart" viewBox="0 0 60 60" aria-hidden="true">
+          <path d="M30 52 C 4 36 4 12 18 12 C 25 12 30 18 30 22 C 30 18 35 12 42 12 C 56 12 56 36 30 52 Z" fill="#e26a8a" stroke="#3a1f2e" stroke-width="3"/>
+          <path d="M22 20 q 4 -3 8 0" fill="none" stroke="#fffaec" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+
+        <svg class="sticker cloud" viewBox="0 0 100 60" aria-hidden="true">
+          <path d="M20 42 a14 14 0 1 1 8 -26 a16 16 0 0 1 30 4 a12 12 0 0 1 8 22 Z" fill="#fffaec" stroke="#3a1f2e" stroke-width="3"/>
+          <circle cx="34" cy="32" r="2" fill="#3a1f2e"/>
+          <circle cx="50" cy="32" r="2" fill="#3a1f2e"/>
+          <path d="M38 38 q 4 4 8 0" fill="none" stroke="#3a1f2e" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </div>
+    </section>
+
+    <p class="footnote">made with love &amp; an extra spoon of sugar ✿</p>
+  </main>
+
+  <script>
+    // tab switch (panel 2)
+    document.querySelectorAll('.tab-row .ttab').forEach((t)=>{
+      t.addEventListener('click', ()=>{
+        if(t.classList.contains('close') || t.classList.contains('x')) return;
+        document.querySelectorAll('.tab-row .ttab').forEach(x=>x.classList.remove('active'));
+        t.classList.add('active');
+      });
+    });
+    // bottom nav switch (panel 1)
+    document.querySelectorAll('.tab-nav .tab').forEach((t)=>{
+      t.addEventListener('click', ()=>{
+        document.querySelectorAll('.tab-nav .tab').forEach(x=>x.classList.remove('active'));
+        t.classList.add('active');
+      });
+    });
+    // swatch select
+    document.querySelectorAll('.swatches .sw').forEach((s)=>{
+      s.addEventListener('click', ()=>{
+        if(s.classList.contains('add')) return;
+        document.querySelectorAll('.swatches .sw').forEach(x=>x.classList.remove('selected'));
+        s.classList.add('selected');
+      });
+    });
+  </script>
+
+</body>
+</html>

@@ -11,11 +11,13 @@ struct ColorControlRow: View {
 
     var body: some View {
         ColorPicker(selection: $hex.asColor(), supportsOpacity: supportsAlpha) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(label)
+                    .font(.cucuSerif(15, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
                 Text(hex.uppercased())
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+                    .font(.cucuMono(11, weight: .medium))
+                    .foregroundStyle(Color.cucuInkFaded)
             }
         }
     }
