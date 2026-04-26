@@ -7,6 +7,15 @@ import Foundation
 /// gives the order/z-stack of top-level nodes; each node's own `childrenIDs`
 /// gives the order of its children. Parentage is derived (see `parent(of:)`)
 /// rather than stored, so there is exactly one source of truth.
+///
+/// `parentIndex` is a non-Codable cache of `child -> parent` derived from
+/// the same source. It is rebuilt in `init(from:)` after decoding and
+/// kept in sync inside every parenting mutation (`insert`, `remove`,
+/// `duplicate` / `cloneSubtree`, `bringToFront`, `sendBackward`). It is
+/// excluded from Equatable/Hashable because two content-equal documents
+/// must hash and compare equal regardless of how their indexes were
+/// built — and because the index is derived, equal sources always
+/// produce equal indexes anyway.
 struct ProfileDocument: Codable, Hashable {
     static let defaultPageWidth: Double = 390
     static let defaultPageHeight: Double = 1000
@@ -33,6 +42,10 @@ struct ProfileDocument: Codable, Hashable {
     var rootChildrenIDs: [UUID]
     var nodes: [UUID: CanvasNode]
 
+    /// `child -> parent` index. Rebuilt on decode, kept in sync by every
+    /// mutation helper below. Not Codable; never serialized to disk.
+    private var parentIndex: [UUID: UUID]
+
     init(id: UUID = UUID(),
          pageWidth: Double = ProfileDocument.defaultPageWidth,
          pageHeight: Double = ProfileDocument.defaultPageHeight,
@@ -51,6 +64,7 @@ struct ProfileDocument: Codable, Hashable {
         self.pageBackgroundVignette = pageBackgroundVignette
         self.rootChildrenIDs = rootChildrenIDs
         self.nodes = nodes
+        self.parentIndex = Self.buildParentIndex(nodes: nodes)
     }
 
     static var blank: ProfileDocument { ProfileDocument() }
@@ -67,6 +81,7 @@ extension ProfileDocument {
         case pageBackgroundVignette
         case rootChildrenIDs
         case nodes
+        // `parentIndex` is intentionally absent — derived state, never persisted.
     }
 
     init(from decoder: Decoder) throws {
@@ -80,6 +95,42 @@ extension ProfileDocument {
         self.pageBackgroundVignette = try c.decodeIfPresent(Double.self, forKey: .pageBackgroundVignette)
         self.rootChildrenIDs = try c.decodeIfPresent([UUID].self, forKey: .rootChildrenIDs) ?? []
         self.nodes = try c.decodeIfPresent([UUID: CanvasNode].self, forKey: .nodes) ?? [:]
+        self.parentIndex = Self.buildParentIndex(nodes: self.nodes)
+    }
+
+    static func == (lhs: ProfileDocument, rhs: ProfileDocument) -> Bool {
+        lhs.id == rhs.id &&
+        lhs.pageWidth == rhs.pageWidth &&
+        lhs.pageHeight == rhs.pageHeight &&
+        lhs.pageBackgroundHex == rhs.pageBackgroundHex &&
+        lhs.pageBackgroundImagePath == rhs.pageBackgroundImagePath &&
+        lhs.pageBackgroundBlur == rhs.pageBackgroundBlur &&
+        lhs.pageBackgroundVignette == rhs.pageBackgroundVignette &&
+        lhs.rootChildrenIDs == rhs.rootChildrenIDs &&
+        lhs.nodes == rhs.nodes
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(pageWidth)
+        hasher.combine(pageHeight)
+        hasher.combine(pageBackgroundHex)
+        hasher.combine(pageBackgroundImagePath)
+        hasher.combine(pageBackgroundBlur)
+        hasher.combine(pageBackgroundVignette)
+        hasher.combine(rootChildrenIDs)
+        hasher.combine(nodes)
+    }
+
+    private static func buildParentIndex(nodes: [UUID: CanvasNode]) -> [UUID: UUID] {
+        var index: [UUID: UUID] = [:]
+        index.reserveCapacity(nodes.count)
+        for (parentID, node) in nodes {
+            for childID in node.childrenIDs {
+                index[childID] = parentID
+            }
+        }
+        return index
     }
 }
 
@@ -87,11 +138,17 @@ extension ProfileDocument {
 
 extension ProfileDocument {
     /// Return the parent ID of `id`, or nil if it is a root child or unknown.
-    /// Linear scan; only called from inspector/add/delete paths where N is
-    /// small and the simplicity is worth the cost.
+    /// O(1) dictionary lookup against `parentIndex`. Falls back to a linear
+    /// scan only when the index is missing an entry — that path is an
+    /// invariant violation in any post-mutation state, so we assert in
+    /// debug to surface the drift while still self-healing in release.
     func parent(of id: UUID) -> UUID? {
         if rootChildrenIDs.contains(id) { return nil }
+        if let parentID = parentIndex[id] { return parentID }
+        // Index miss. Either the node is unknown (legitimate `nil`) or
+        // the index drifted from `nodes` (a bug). Fall back to a scan.
         for (parentID, node) in nodes where node.childrenIDs.contains(id) {
+            assertionFailure("ProfileDocument.parentIndex missing entry for \(id); self-healing via scan")
             return parentID
         }
         return nil
@@ -131,8 +188,11 @@ extension ProfileDocument {
         if let parentID, var parent = nodes[parentID] {
             parent.childrenIDs.append(node.id)
             nodes[parentID] = parent
+            parentIndex[node.id] = parentID
         } else {
             rootChildrenIDs.append(node.id)
+            // Root children have no parent entry in the index.
+            parentIndex.removeValue(forKey: node.id)
         }
     }
 
@@ -141,7 +201,10 @@ extension ProfileDocument {
     mutating func remove(_ id: UUID) {
         let parentID = parent(of: id)
         let toRemove = subtree(rootedAt: id)
-        for nid in toRemove { nodes.removeValue(forKey: nid) }
+        for nid in toRemove {
+            nodes.removeValue(forKey: nid)
+            parentIndex.removeValue(forKey: nid)
+        }
 
         if let parentID, var parent = nodes[parentID] {
             parent.childrenIDs.removeAll { $0 == id }
@@ -161,6 +224,7 @@ extension ProfileDocument {
         if let parentID, var parent = nodes[parentID] {
             parent.childrenIDs.append(newRoot)
             nodes[parentID] = parent
+            parentIndex[newRoot] = parentID
         } else {
             rootChildrenIDs.append(newRoot)
         }
@@ -170,6 +234,10 @@ extension ProfileDocument {
     /// Recursively copies a subtree, regenerating IDs and remapping children.
     /// The root copy gets `offset` applied; descendants keep their original
     /// frames (relative to their parent, so the visual layout is preserved).
+    /// Each cloned descendant is registered in `parentIndex` against its
+    /// new (cloned) parent. The root copy's parent link is set by the
+    /// caller (`duplicate`) since this function doesn't know the target
+    /// parent.
     private mutating func cloneSubtree(_ sourceID: UUID, offset: CGSize) -> UUID {
         guard let source = nodes[sourceID] else { return UUID() }
         var copy = source
@@ -180,6 +248,9 @@ extension ProfileDocument {
             cloneSubtree(childID, offset: .zero)
         }
         nodes[copy.id] = copy
+        for childID in copy.childrenIDs {
+            parentIndex[childID] = copy.id
+        }
         return copy.id
     }
 
@@ -193,6 +264,7 @@ extension ProfileDocument {
             rootChildrenIDs.removeAll { $0 == id }
             rootChildrenIDs.append(id)
         }
+        // Reordering within a parent doesn't change parentage.
     }
 
     mutating func sendBackward(_ id: UUID) {
@@ -205,5 +277,6 @@ extension ProfileDocument {
         } else if let idx = rootChildrenIDs.firstIndex(of: id), idx > 0 {
             rootChildrenIDs.swapAt(idx, idx - 1)
         }
+        // Reordering within a parent doesn't change parentage.
     }
 }

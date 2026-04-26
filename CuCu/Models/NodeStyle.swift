@@ -43,6 +43,20 @@ struct NodeStyle: Codable, Hashable {
     /// `backgroundVignette` which only fades the background image.
     var containerVignette: Double?
 
+    /// Frosted-glass blur drawn **behind a text node** — samples
+    /// whatever is rendered behind the text on the canvas (page bg,
+    /// sibling nodes, parent container) and shows a blurred copy. The
+    /// text glyphs render sharp on top. `0...1` — alpha-fades a
+    /// `UIVisualEffectView` overlay sitting at the back of the text
+    /// node's subview stack.
+    ///
+    /// Intentionally separate from `containerBlur` so the user can
+    /// frost a text label without affecting any container it lives in
+    /// (and vice versa). When `> 0`, `TextNodeView` clears the text
+    /// node's own `backgroundColorHex` fill so the blur is visible
+    /// instead of being painted over.
+    var textBackdropBlur: Double?
+
     // MARK: - New-element styling
     //
     // The remaining fields are all leaf-type-specific. Each one is
@@ -103,6 +117,7 @@ struct NodeStyle: Codable, Hashable {
          backgroundVignette: Double? = nil,
          containerBlur: Double? = nil,
          containerVignette: Double? = nil,
+         textBackdropBlur: Double? = nil,
          iconStyleFamily: NodeIconStyleFamily? = nil,
          tintColorHex: String? = nil,
          dividerStyleFamily: NodeDividerStyleFamily? = nil,
@@ -128,6 +143,7 @@ struct NodeStyle: Codable, Hashable {
         self.backgroundVignette = backgroundVignette
         self.containerBlur = containerBlur
         self.containerVignette = containerVignette
+        self.textBackdropBlur = textBackdropBlur
         self.iconStyleFamily = iconStyleFamily
         self.tintColorHex = tintColorHex
         self.dividerStyleFamily = dividerStyleFamily
@@ -158,6 +174,7 @@ extension NodeStyle {
         case backgroundVignette
         case containerBlur
         case containerVignette
+        case textBackdropBlur
         case iconStyleFamily
         case tintColorHex
         case dividerStyleFamily
@@ -190,6 +207,7 @@ extension NodeStyle {
         self.backgroundVignette = try c.decodeIfPresent(Double.self, forKey: .backgroundVignette)
         self.containerBlur = try c.decodeIfPresent(Double.self, forKey: .containerBlur)
         self.containerVignette = try c.decodeIfPresent(Double.self, forKey: .containerVignette)
+        self.textBackdropBlur = try c.decodeIfPresent(Double.self, forKey: .textBackdropBlur)
         self.iconStyleFamily = try c.decodeIfPresent(NodeIconStyleFamily.self, forKey: .iconStyleFamily)
         self.tintColorHex = try c.decodeIfPresent(String.self, forKey: .tintColorHex)
         self.dividerStyleFamily = try c.decodeIfPresent(NodeDividerStyleFamily.self, forKey: .dividerStyleFamily)

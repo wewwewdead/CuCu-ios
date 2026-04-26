@@ -95,6 +95,7 @@ struct TemplateStore {
         var dividerCount = 0
         var linkCount = 0
         var galleryCount = 0
+        var carouselCount = 0
 
         for node in document.nodes.values {
             switch node.type {
@@ -105,6 +106,7 @@ struct TemplateStore {
             case .divider: dividerCount += 1
             case .link: linkCount += 1
             case .gallery: galleryCount += 1
+            case .carousel: carouselCount += 1
             }
         }
 
@@ -116,6 +118,7 @@ struct TemplateStore {
         if dividerCount > 0 { parts.append("\(dividerCount) divider\(dividerCount == 1 ? "" : "s")") }
         if linkCount > 0 { parts.append("\(linkCount) link\(linkCount == 1 ? "" : "s")") }
         if galleryCount > 0 { parts.append("\(galleryCount) galler\(galleryCount == 1 ? "y" : "ies")") }
+        if carouselCount > 0 { parts.append("\(carouselCount) carousel\(carouselCount == 1 ? "" : "s")") }
         return parts.isEmpty ? "Blank canvas" : parts.joined(separator: " · ")
     }
 }

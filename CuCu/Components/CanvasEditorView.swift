@@ -1,10 +1,85 @@
 import UIKit
 
+/// Cheap value-type fingerprint used to decide whether to re-call
+/// `NodeRenderView.apply(node:)`. Captures only the fields that affect
+/// what `apply(node:)` reads — frame, style, content, opacity, and
+/// the user-supplied name — plus the on-disk modification dates of
+/// any images referenced by the node so a file-replace forces a redraw.
+///
+/// Drops `childrenIDs`, `id`, `type`, and `zIndex` from the previous
+/// "store the whole CanvasNode" form:
+/// - `childrenIDs` does not affect this view's render — z-order is
+///   reapplied separately via `applyZOrder`, and child subviews are
+///   managed by the `applyNode` recursion.
+/// - `id` and `type` are immutable for a live node (a type change
+///   triggers a fresh `NodeRenderView` via `expectedType(for:)` and
+///   sidesteps the signature comparison entirely).
+/// - `zIndex` is not consumed by `apply(node:)`.
+///
+/// Removing those fields drops `Hashable`/`Equatable` cost on a hot
+/// path that runs once per node per `applyDocumentToCanvas`.
 private struct NodeRenderSignature: Equatable {
-    var node: CanvasNode
+    var frame: NodeFrame
+    var style: NodeStyle
+    var content: NodeContent
+    var name: String?
+    /// Included so an opacity change repaints — `apply(node:)` writes
+    /// `alpha = CGFloat(node.opacity)`, which would otherwise stick
+    /// at the previous value when nothing else in the node changed.
+    var opacity: Double
     var localImageModificationDate: Date?
     var backgroundImageModificationDate: Date?
     var galleryImageModificationDates: [Date?]
+}
+
+#if DEBUG
+/// Debug counter incremented every time `NodeRenderView.apply(node:)`
+/// fires from the canvas editor's render path. Used to verify that
+/// idle `applyDocumentToCanvas` passes (no model change) produce zero
+/// hits — see the "cheaper signature" perf step.
+enum CanvasEditorRenderStats {
+    nonisolated(unsafe) static var applyCount: Int = 0
+    static func resetApplyCount() { applyCount = 0 }
+}
+#endif
+
+/// Three-entry LRU for original (pre-filter) background bitmaps,
+/// keyed by `(path, mtime)`. The most-recently-touched entry sits at
+/// index 0; lookup moves a hit to the front, insert prepends and
+/// trims to capacity. Inserting a new entry for an existing `path`
+/// (any mtime) evicts the older same-path entry — preserves the
+/// "replace busts the cache" semantics the previous single-entry
+/// tuple relied on.
+private struct BackgroundImageLRUCache {
+    private struct Entry {
+        let path: String
+        let mtime: Date?
+        let image: UIImage
+    }
+    private var entries: [Entry] = []
+    private let capacity = 3
+
+    mutating func image(for path: String, mtime: Date?) -> UIImage? {
+        guard let idx = entries.firstIndex(where: { $0.path == path && $0.mtime == mtime }) else {
+            return nil
+        }
+        if idx > 0 {
+            let entry = entries.remove(at: idx)
+            entries.insert(entry, at: 0)
+        }
+        return entries[0].image
+    }
+
+    mutating func insert(path: String, mtime: Date?, image: UIImage) {
+        // Evict any prior entry for the same path (regardless of
+        // mtime). That keeps "replace at the same path" from leaving
+        // a stale-bytes shadow in the cache.
+        entries.removeAll { $0.path == path }
+        entries.insert(Entry(path: path, mtime: mtime, image: image), at: 0)
+        if entries.count > capacity {
+            entries.removeLast(entries.count - capacity)
+        }
+    }
 }
 
 /// The UIKit canvas. Owns:
@@ -137,12 +212,18 @@ final class CanvasEditorView: UIView {
         return v
     }()
 
-    /// Cache for the original (non-filtered) background bitmap. Keyed
+    /// LRU cache for original (non-filtered) background bitmaps. Keyed
     /// by the relative path *and* the file's modification date so a
     /// **replace** (which keeps the deterministic filename) cleanly
     /// busts the cache. Without `mtime` in the key the canvas would
     /// keep showing the old bytes after a replace.
-    private var cachedBackgroundOriginal: (path: String, mtime: Date?, image: UIImage)?
+    ///
+    /// Capacity 3 — enough for the user to bounce between two
+    /// backgrounds (current + previous) without re-decoding either,
+    /// with one slot of headroom for "tried a third, going back". The
+    /// previous single-entry tuple forced a re-decode on every
+    /// switch.
+    private var backgroundImageCache = BackgroundImageLRUCache()
 
     /// Async render coordination. CoreImage on the main thread blocks
     /// SwiftUI re-renders, which makes the blur / vignette slider stutter
@@ -392,7 +473,10 @@ final class CanvasEditorView: UIView {
                     scheduleBackgroundFilterRender(image: original, blur: blur, vignette: vignette)
                 }
             } else {
-                cachedBackgroundOriginal = nil
+                // Path went away (clear) or load failed. Don't wipe
+                // the LRU here — keeping prior entries warm is the
+                // whole point. Just hide the view; the next show
+                // will pull from cache if the same key returns.
                 backgroundImageView.image = nil
                 backgroundImageView.isHidden = true
             }
@@ -420,19 +504,44 @@ final class CanvasEditorView: UIView {
         }
 
         // Apply z-order: subviews must be ordered to match `childrenIDs`.
+        // Wrapped in a CATransaction with implicit actions disabled so
+        // every `bringSubviewToFront` / `sendSubviewToBack` inside this
+        // block coalesces into a single layout pass — on dense canvases
+        // each individual call would otherwise schedule its own
+        // `setNeedsLayout` and the layout invalidation count exploded.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         applyZOrder(parentID: nil, in: pageView)
-        for (id, view) in renderViews where document.nodes[id]?.type == .container {
-            applyZOrder(parentID: id, in: view)
+        for (id, view) in renderViews {
+            if document.nodes[id]?.type == .container {
+                applyZOrder(parentID: id, in: view)
+            } else if document.nodes[id]?.type == .carousel,
+                      let carousel = view as? CarouselNodeView {
+                applyZOrder(parentID: id, in: carousel.itemHostView)
+                carousel.updateContentSizeToFitItems()
+            }
         }
         pageView.sendSubviewToBack(backgroundImageView)
 
         // Selection overlay tracks the selected node, regardless of nesting.
         contentView.bringSubviewToFront(overlay)
+        CATransaction.commit()
         if let selectedID, let node = renderViews[selectedID] {
             overlay.isHidden = false
             overlay.frame = contentView.convert(node.bounds, from: node)
         } else {
             overlay.isHidden = true
+        }
+
+        // Suppress horizontal scrolling only while the active selection
+        // is inside that carousel. That lets a selected child node own
+        // drag-to-move, while keeping normal x-axis scrolling available
+        // when the carousel itself is selected.
+        for (id, view) in renderViews {
+            if let carousel = view as? CarouselNodeView {
+                let selectedInsideCarousel = selectedID.map { isAncestor(id, of: $0) } ?? false
+                carousel.setScrollingSuppressed(selectedInsideCarousel)
+            }
         }
 
         // Resize the scrollable content to fit the bottommost root
@@ -458,6 +567,9 @@ final class CanvasEditorView: UIView {
             view = fresh
             attachPanGesture(to: view)
         }
+        if isInteractive, nodePanGestures[id] == nil {
+            attachPanGesture(to: view)
+        }
 
         let movedSuperview = view.superview !== parent
         if movedSuperview {
@@ -468,6 +580,9 @@ final class CanvasEditorView: UIView {
         if movedSuperview || appliedNodeSignatures[id] != signature {
             view.apply(node: node)
             appliedNodeSignatures[id] = signature
+            #if DEBUG
+            CanvasEditorRenderStats.applyCount &+= 1
+            #endif
         }
 
         // Recurse for containers.
@@ -475,6 +590,15 @@ final class CanvasEditorView: UIView {
             for childID in node.childrenIDs {
                 applyNode(id: childID, parent: view, liveIDs: &liveIDs)
             }
+        } else if node.type == .carousel, let carousel = view as? CarouselNodeView {
+            // Carousel children mount directly into the strip's scroll
+            // content. Their frames are in content coordinates, so
+            // horizontal scrolling only changes what part of that child
+            // coordinate space is visible.
+            for childID in node.childrenIDs {
+                applyNode(id: childID, parent: carousel.itemHostView, liveIDs: &liveIDs)
+            }
+            carousel.updateContentSizeToFitItems()
         }
     }
 
@@ -487,6 +611,7 @@ final class CanvasEditorView: UIView {
         case .divider:   return DividerNodeView.self
         case .link:      return LinkNodeView.self
         case .gallery:   return GalleryNodeView.self
+        case .carousel:  return CarouselNodeView.self
         }
     }
 
@@ -534,6 +659,8 @@ final class CanvasEditorView: UIView {
             return DividerNodeView(nodeID: node.id)
         case .link:
             return LinkNodeView(nodeID: node.id)
+        case .carousel:
+            return CarouselNodeView(nodeID: node.id)
         case .gallery:
             let view = GalleryNodeView(nodeID: node.id)
             // Wire per-tile + view-all callbacks only in viewer
@@ -600,7 +727,11 @@ final class CanvasEditorView: UIView {
 
     private func renderSignature(for node: CanvasNode) -> NodeRenderSignature {
         NodeRenderSignature(
-            node: node,
+            frame: node.frame,
+            style: node.style,
+            content: node.content,
+            name: node.name,
+            opacity: node.opacity,
             localImageModificationDate: LocalCanvasAssetStore.modificationDate(node.content.localImagePath),
             backgroundImageModificationDate: LocalCanvasAssetStore.modificationDate(node.style.backgroundImagePath),
             galleryImageModificationDates: (node.content.imagePaths ?? []).map {
@@ -698,8 +829,13 @@ final class CanvasEditorView: UIView {
             guard let view = renderViews[id] else { continue }
             let local = superview.convert(point, to: view)
             if view.bounds.contains(local) {
-                if document.nodes[id]?.type == .container,
-                   let inner = hitTestNode(at: local, in: view, parent: id) {
+                if document.nodes[id]?.type == .carousel {
+                    if let inner = hitTestNode(at: local, in: view, parent: id) {
+                        return inner
+                    }
+                    return id
+                } else if document.nodes[id]?.type == .container,
+                          let inner = hitTestNode(at: local, in: view, parent: id) {
                     return inner
                 }
                 return id
@@ -763,6 +899,19 @@ final class CanvasEditorView: UIView {
         pan.delegate = self
         view.addGestureRecognizer(pan)
         nodePanGestures[view.nodeID] = pan
+
+        // Carousels host an internal horizontal UIScrollView whose pan
+        // recognizer would otherwise win every touch (it sits deeper
+        // in the hit-test chain than this outer pan). Tell the
+        // scrollview's pan to wait until the outer pan has had its
+        // chance — `gestureRecognizerShouldBegin` refuses the outer
+        // pan immediately when the carousel isn't selected, which
+        // unblocks strip scrolling. When the carousel is selected,
+        // the delegate chooses between scrolling the strip and moving
+        // the carousel.
+        if let carousel = view as? CarouselNodeView {
+            carousel.requireScrollPanToFail(pan)
+        }
 
         // Long-press recognizer: opens the inspector for the pressed
         // node. Defaults of `minimumPressDuration = 0.4s` and
@@ -887,21 +1036,23 @@ final class CanvasEditorView: UIView {
             // the user can drag past the previous bottom without
             // clipping. (Children of containers are bounded by their
             // container's clipping, which is the desired behavior.)
-            if view.superview === pageView {
-                growPageHeightIfNeeded(toContain: newFrame.maxY)
-            }
-            applyOverlayForCurrentSelection()
+              if view.superview === pageView {
+                  growPageHeightIfNeeded(toContain: newFrame.maxY)
+              }
+              nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
+              applyOverlayForCurrentSelection()
 
         case .ended, .cancelled:
             // Commit the new frame to the document and notify the host.
             if var node = document.nodes[id] {
                 node.frame = NodeFrame(view.frame)
                 document.nodes[id] = node
-                if view.superview === pageView {
-                    commitPageHeightIfNeeded(toContain: view.frame.maxY)
-                }
-                onCommit?(document)
-            }
+                  if view.superview === pageView {
+                      commitPageHeightIfNeeded(toContain: view.frame.maxY)
+                  }
+                  nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
+                  onCommit?(document)
+              }
 
         default:
             break
@@ -1011,10 +1162,11 @@ final class CanvasEditorView: UIView {
                 scaleY: dragStartFrame.height > 0 ? newFrame.height / dragStartFrame.height : 1
             )
 
-            if view.superview === pageView {
-                growPageHeightIfNeeded(toContain: newFrame.maxY)
-            }
-            applyOverlayForCurrentSelection()
+              if view.superview === pageView {
+                  growPageHeightIfNeeded(toContain: newFrame.maxY)
+              }
+              nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
+              applyOverlayForCurrentSelection()
 
         case .ended, .cancelled:
             // Commit the resized frame plus every scaled descendant
@@ -1046,11 +1198,12 @@ final class CanvasEditorView: UIView {
             dragStartDescendantFrames.removeAll()
 
             if document.nodes[id] != nil {
-                if view.superview === pageView {
-                    commitPageHeightIfNeeded(toContain: view.frame.maxY)
-                }
-                onCommit?(document)
-            }
+                  if view.superview === pageView {
+                      commitPageHeightIfNeeded(toContain: view.frame.maxY)
+                  }
+                  nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
+                  onCommit?(document)
+              }
 
         default:
             break
@@ -1074,11 +1227,22 @@ final class CanvasEditorView: UIView {
                 y: originalFrame.origin.y * scaleY,
                 width: originalFrame.width * scaleX,
                 height: originalFrame.height * scaleY
-            )
-        }
-    }
+              )
+          }
+      }
 
-    // MARK: - Background image cache + async filter
+      private func nearestCarouselAncestor(of view: UIView) -> CarouselNodeView? {
+          var current = view.superview
+          while let candidate = current {
+              if let carousel = candidate as? CarouselNodeView {
+                  return carousel
+              }
+              current = candidate.superview
+          }
+          return nil
+      }
+
+      // MARK: - Background image cache + async filter
 
     /// Returns the original (pre-filter) `UIImage` for `path`, decoding
     /// from disk only on a path-or-mtime change. Subsequent calls for
@@ -1086,10 +1250,8 @@ final class CanvasEditorView: UIView {
     /// difference between butter-smooth slider scrubbing and stuttering.
     /// Including `mtime` lets a same-path replace bust the cache.
     private func cachedOrLoadBackgroundOriginal(path: String, mtime: Date?) -> UIImage? {
-        if let cached = cachedBackgroundOriginal,
-           cached.path == path,
-           cached.mtime == mtime {
-            return cached.image
+        if let cached = backgroundImageCache.image(for: path, mtime: mtime) {
+            return cached
         }
         // Local + remote dispatch via the shared canvas image loader.
         // Sync path returns the bytes for local files and remote cache
@@ -1102,7 +1264,6 @@ final class CanvasEditorView: UIView {
         // so the page background stayed blank until SwiftUI happened
         // to re-emit `updateUIView` (e.g. on navigation back).
         guard let image = CanvasImageLoader.loadSync(path) else {
-            cachedBackgroundOriginal = nil
             if CanvasImageLoader.isRemote(path) {
                 CanvasImageLoader.loadAsync(path) { [weak self] fetched in
                     guard let self, let fetched else { return }
@@ -1116,7 +1277,7 @@ final class CanvasEditorView: UIView {
             }
             return nil
         }
-        cachedBackgroundOriginal = (path, mtime, image)
+        backgroundImageCache.insert(path: path, mtime: mtime, image: image)
         return image
     }
 
@@ -1126,7 +1287,7 @@ final class CanvasEditorView: UIView {
     /// are off), updates the cache, and writes the signature so the
     /// next `apply(document:)` pass short-circuits the work entirely.
     private func applyFetchedPageBackground(image: UIImage, path: String, mtime: Date?) {
-        cachedBackgroundOriginal = (path, mtime, image)
+        backgroundImageCache.insert(path: path, mtime: mtime, image: image)
 
         let blur = document.pageBackgroundBlur ?? 0
         let vignette = document.pageBackgroundVignette ?? 0
@@ -1402,6 +1563,11 @@ extension CanvasEditorView: UIGestureRecognizerDelegate {
         // arbitration uses the existing depth + selection rules.
         if gestureRecognizer is UIPanGestureRecognizer {
             guard let selID = selectedID, selID == viewID else {
+                return false
+            }
+            if let pan = gestureRecognizer as? UIPanGestureRecognizer,
+               let carousel = view as? CarouselNodeView,
+               carousel.shouldPreferScrolling(forPanVelocity: pan.velocity(in: view)) {
                 return false
             }
             return true

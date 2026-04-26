@@ -291,6 +291,9 @@ struct SelectionBottomBar: View {
         case .gallery:
             let count = node.content.imagePaths?.count ?? 0
             return "\(count) image\(count == 1 ? "" : "s")"
+        case .carousel:
+            let count = node.childrenIDs.count
+            return "\(count) page\(count == 1 ? "" : "s")"
         }
     }
 
@@ -313,6 +316,7 @@ struct SelectionBottomBar: View {
         case .divider:   return .divider
         case .link:      return .link
         case .gallery:   return .gallery
+        case .carousel:  return .carousel
         }
     }
 
@@ -355,6 +359,7 @@ struct SelectionBottomBar: View {
         case .divider:   return "minus"
         case .link:      return "link"
         case .gallery:   return "rectangle.grid.2x2"
+        case .carousel:  return "rectangle.stack"
         }
     }
 
@@ -367,6 +372,7 @@ struct SelectionBottomBar: View {
         case .divider:   return "Divider"
         case .link:      return "Link"
         case .gallery:   return "Gallery"
+        case .carousel:  return "Carousel"
         }
     }
 
@@ -397,6 +403,9 @@ struct SelectionBottomBar: View {
         case .gallery:
             let count = node.content.imagePaths?.count ?? 0
             return "\(count) image\(count == 1 ? "" : "s")"
+        case .carousel:
+            let count = node.childrenIDs.count
+            return count == 0 ? "Empty carousel" : "\(count) item\(count == 1 ? "" : "s")"
         }
     }
 
@@ -430,5 +439,16 @@ struct SelectionBottomBar: View {
     private func tapHaptic() {
         let g = UIImpactFeedbackGenerator(style: .light)
         g.impactOccurred(intensity: 0.6)
+    }
+}
+
+extension SelectionBottomBar: Equatable {
+    /// Equality on the rendering inputs only. The bar walks
+    /// ancestors / siblings / children of `selectedID` against the
+    /// full `document` tree, so document equality is the right grain.
+    /// Closures aren't compared — they capture references whose
+    /// internals stay current even when the closure value is reused.
+    static func == (lhs: SelectionBottomBar, rhs: SelectionBottomBar) -> Bool {
+        lhs.selectedID == rhs.selectedID && lhs.document == rhs.document
     }
 }

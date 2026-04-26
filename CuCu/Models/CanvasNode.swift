@@ -16,6 +16,10 @@ enum NodeType: String, Codable, Hashable {
     case divider
     case link
     case gallery
+    /// Container variant whose children render in a horizontally
+    /// scrollable strip. Child frames live in the carousel's scroll
+    /// content coordinate space.
+    case carousel
 }
 
 /// One element in the scene graph.
@@ -203,6 +207,23 @@ extension CanvasNode {
                 galleryGap: 6
             ),
             content: NodeContent(imagePaths: imagePaths)
+        )
+    }
+
+    /// Default carousel container. Children added under this node render
+    /// as x-axis scroll items rather than full-width pages.
+    static func defaultCarousel(at origin: CGPoint = CGPoint(x: 24, y: 320),
+                                size: CGSize = CGSize(width: 326, height: 128)) -> CanvasNode {
+        CanvasNode(
+            type: .carousel,
+            frame: NodeFrame(x: Double(origin.x), y: Double(origin.y),
+                             width: Double(size.width), height: Double(size.height)),
+            style: NodeStyle(
+                backgroundColorHex: "#FBF6E9",
+                cornerRadius: 18,
+                borderWidth: 1,
+                borderColorHex: "#1A140E"
+            )
         )
     }
 }

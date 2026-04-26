@@ -38,7 +38,6 @@ struct PropertyInspectorView: View {
     /// `imagePaths`. Host deletes the underlying file if no longer
     /// referenced and updates the document.
     var onRemoveGalleryImage: (UUID, Int) -> Void
-
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
@@ -227,6 +226,7 @@ struct PropertyInspectorView: View {
                 case .divider:   dividerCards(node: node)
                 case .link:      linkCards(node: node)
                 case .gallery:   galleryCards(node: node)
+                case .carousel:  carouselCards(node: node)
                 }
             }
             .padding(.horizontal, 18)
@@ -591,6 +591,13 @@ struct PropertyInspectorView: View {
             hex: bindingHex(node.id, key: \.style.backgroundColorHex, defaultHex: "#FFFFFF")
         )
         sliderCard(
+            title: "Backdrop Blur",
+            binding: bindingTextBackdropBlur(node.id),
+            range: 0...1,
+            step: 0.01,
+            valueLabel: "\(Int(bindingTextBackdropBlur(node.id).wrappedValue * 100))%"
+        )
+        sliderCard(
             title: "Padding",
             binding: bindingPadding(node.id),
             range: 0...60,
@@ -917,6 +924,62 @@ struct PropertyInspectorView: View {
         )
     }
 
+    // MARK: - Carousel cards
+
+    @ViewBuilder
+    private func carouselCards(node: CanvasNode) -> some View {
+        textFieldCard(
+            title: "Name",
+            text: bindingName(node.id),
+            placeholder: "e.g. Quotes"
+        )
+        // Frame styling (background / corner / border / opacity)
+        // mirrors the container card stack — same controls behave
+        // the same way on a carousel's outer frame.
+        colorCard(
+            title: "Background",
+            hex: bindingHex(node.id, key: \.style.backgroundColorHex, defaultHex: "#FBF6E9")
+        )
+        sliderCard(
+            title: "Corner Radius",
+            binding: binding(node.id, key: \.style.cornerRadius),
+            range: 0...64,
+            step: 1,
+            valueLabel: "\(Int(binding(node.id, key: \.style.cornerRadius).wrappedValue))"
+        )
+        sliderCard(
+            title: "Border Width",
+            binding: binding(node.id, key: \.style.borderWidth),
+            range: 0...8,
+            step: 0.5,
+            valueLabel: String(format: "%.1f", binding(node.id, key: \.style.borderWidth).wrappedValue)
+        )
+        colorCard(
+            title: "Border",
+            hex: bindingHex(node.id, key: \.style.borderColorHex, defaultHex: "#1A140E")
+        )
+        sliderCard(
+            title: "Opacity",
+            binding: binding(node.id, key: \.opacity),
+            range: 0...1,
+            step: 0.01,
+            valueLabel: "\(Int(binding(node.id, key: \.opacity).wrappedValue * 100))%"
+        )
+        // Backdrop blur — frosted-glass effect that samples whatever
+        // sits behind the carousel on the canvas. Reuses the
+        // `containerBlur` field; per-node, so it can't drift onto a
+        // sibling container or text node. The carousel's bg fill is
+        // hidden automatically when blur > 0 (see `CarouselNodeView`)
+        // so the blur is actually visible.
+        sliderCard(
+            title: "Blur",
+            binding: bindingOptionalDouble(node.id, key: \.style.containerBlur),
+            range: 0...1,
+            step: 0.05,
+            valueLabel: "\(Int(bindingOptionalDouble(node.id, key: \.style.containerBlur).wrappedValue * 100))%"
+        )
+    }
+
     /// PhotosPicker that appends to the gallery's `imagePaths`. Multi-
     /// selection up to 12 images at a time so the user can build a
     /// gallery in one go.
@@ -1065,6 +1128,7 @@ struct PropertyInspectorView: View {
         case .divider:   return .divider
         case .link:      return .link
         case .gallery:   return .gallery
+        case .carousel:  return .carousel
         }
     }
 
@@ -1077,6 +1141,7 @@ struct PropertyInspectorView: View {
         case .divider:   return "minus"
         case .link:      return "link"
         case .gallery:   return "rectangle.grid.2x2"
+        case .carousel:  return "rectangle.stack"
         }
     }
 
@@ -1089,6 +1154,7 @@ struct PropertyInspectorView: View {
         case .divider:   return "Divider"
         case .link:      return "Link"
         case .gallery:   return "Gallery"
+        case .carousel:  return "Carousel"
         }
     }
 
@@ -1430,6 +1496,22 @@ struct PropertyInspectorView: View {
             set: { newValue in
                 guard var node = document.nodes[id] else { return }
                 node.style.padding = newValue
+                document.nodes[id] = node
+            }
+        )
+    }
+
+    /// Frosted-glass blur drawn behind a text node's glyphs. `0...1`
+    /// in the slider; persisted as `nil` for ~0 so the JSON stays
+    /// minimal (and the renderer treats nil as "no blur"). Distinct
+    /// field from `containerBlur` so editing a container's blur
+    /// never alters the text inside it, and vice versa.
+    private func bindingTextBackdropBlur(_ id: UUID) -> Binding<Double> {
+        Binding(
+            get: { document.nodes[id]?.style.textBackdropBlur ?? 0 },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.style.textBackdropBlur = newValue > 0.01 ? newValue : nil
                 document.nodes[id] = node
             }
         )

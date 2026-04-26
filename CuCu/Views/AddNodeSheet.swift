@@ -51,6 +51,9 @@ struct AddNodeSheet: View {
     enum Destination: Equatable {
         case page
         case container
+        /// User has a `.carousel` selected — new nodes become items in
+        /// that horizontal strip.
+        case carousel
     }
 
     var destination: Destination
@@ -136,6 +139,14 @@ struct AddNodeSheet: View {
                                     : "Multiple photos in a grid, row, or collage.")
                     }
                     .disabled(pickerLoading)
+
+                    Button {
+                        onPickType(.carousel)
+                        dismiss()
+                    } label: {
+                        rowLabel(symbol: "rectangle.stack", title: "Carousel",
+                                subtitle: "A horizontal strip for text, images, and other items.")
+                    }
                 } header: {
                     CucuSectionLabel(text: "Social / Profile")
                 }
@@ -283,7 +294,7 @@ struct AddNodeSheet: View {
     private var destinationHeader: some View {
         Section {
             HStack(spacing: 10) {
-                Image(systemName: destination == .container ? "rectangle.on.rectangle" : "doc")
+                Image(systemName: destinationSymbol)
                     .foregroundStyle(Color.cucuInkSoft)
                     .font(.system(size: 16, weight: .semibold))
                     .frame(width: 28, height: 28)
@@ -293,13 +304,29 @@ struct AddNodeSheet: View {
                         .tracking(2)
                         .foregroundStyle(Color.cucuInkFaded)
                         .textCase(.uppercase)
-                    Text(destination == .container ? "Selected Container" : "Page")
+                    Text(destinationLabel)
                         .font(.cucuSerif(15, weight: .semibold))
                         .foregroundStyle(Color.cucuInk)
                 }
                 Spacer()
             }
             .padding(.vertical, 2)
+        }
+    }
+
+    private var destinationSymbol: String {
+        switch destination {
+        case .container:    return "rectangle.on.rectangle"
+        case .carousel:     return "rectangle.stack"
+        case .page:         return "doc"
+        }
+    }
+
+    private var destinationLabel: String {
+        switch destination {
+        case .container:    return "Selected Container"
+        case .carousel:     return "Carousel"
+        case .page:         return "Page"
         }
     }
 

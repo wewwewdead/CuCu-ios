@@ -163,6 +163,8 @@ struct LayersPanelView: View {
             return title.isEmpty ? "Link" : title
         case .gallery:
             return "Gallery"
+        case .carousel:
+            return "Carousel"
         }
     }
 
@@ -193,6 +195,9 @@ struct LayersPanelView: View {
             let count = node.content.imagePaths?.count ?? 0
             let layout = (node.style.galleryLayout ?? .grid).label
             return "\(layout) · \(count) image\(count == 1 ? "" : "s")"
+        case .carousel:
+            let count = node.childrenIDs.count
+            return count == 0 ? "Empty carousel" : "\(count) item\(count == 1 ? "" : "s")"
         }
     }
 
@@ -205,6 +210,7 @@ struct LayersPanelView: View {
         case .divider: return "minus"
         case .link: return "link"
         case .gallery: return "rectangle.grid.2x2"
+        case .carousel: return "rectangle.stack"
         }
     }
 
@@ -217,6 +223,7 @@ struct LayersPanelView: View {
         case .divider: return .gray
         case .link: return .green
         case .gallery: return .teal
+        case .carousel: return .purple
         }
     }
 }
@@ -230,4 +237,21 @@ private struct LayerRow: Identifiable {
     let detail: String
 
     var id: UUID { nodeID }
+}
+
+extension LayersPanelView: Equatable {
+    /// The panel walks the entire tree to build its rows, so the
+    /// rendering inputs are the document and the current selection.
+    /// `selectedID` is a binding here, so we compare its
+    /// wrapped value rather than the binding itself (Binding isn't
+    /// Equatable). The button actions are closures and stay
+    /// out of equality — they capture references that read live
+    /// state when invoked.
+    static func == (lhs: LayersPanelView, rhs: LayersPanelView) -> Bool {
+        // `selectedID` is `@Binding`, so `lhs.selectedID` already
+        // resolves to the wrapped `UUID?` (property-wrapper semantics
+        // unwrap automatically; the `Binding` itself is reachable
+        // only via `$` or `_selectedID`).
+        lhs.selectedID == rhs.selectedID && lhs.document == rhs.document
+    }
 }

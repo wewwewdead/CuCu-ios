@@ -135,3 +135,15 @@ struct CanvasEmptyStateView: View {
         }
     }
 }
+
+extension CanvasEmptyStateView: Equatable {
+    /// The empty-state view's only inputs are closures, which we
+    /// don't compare — they capture references that stay current.
+    /// Returning `true` means SwiftUI never re-evaluates the body
+    /// once the view is mounted; the staggered-reveal animations
+    /// are driven by `@State` flags inside the view, which are
+    /// preserved across cached renders.
+    static func == (lhs: CanvasEmptyStateView, rhs: CanvasEmptyStateView) -> Bool {
+        true
+    }
+}

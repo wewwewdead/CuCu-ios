@@ -114,6 +114,7 @@ struct CollapsedSelectionBar: View {
         case .divider:   return .divider
         case .link:      return .link
         case .gallery:   return .gallery
+        case .carousel:  return .carousel
         }
     }
 
@@ -126,6 +127,7 @@ struct CollapsedSelectionBar: View {
         case .divider:   return "minus"
         case .link:      return "link"
         case .gallery:   return "rectangle.grid.2x2"
+        case .carousel:  return "rectangle.stack"
         }
     }
 
@@ -138,6 +140,7 @@ struct CollapsedSelectionBar: View {
         case .divider:   return "Divider"
         case .link:      return "Link"
         case .gallery:   return "Gallery"
+        case .carousel:  return "Carousel"
         }
     }
 
@@ -152,5 +155,15 @@ struct CollapsedSelectionBar: View {
     private func tapHaptic() {
         let g = UIImpactFeedbackGenerator(style: .light)
         g.impactOccurred(intensity: 0.6)
+    }
+}
+
+extension CollapsedSelectionBar: Equatable {
+    /// The chip body reads `document.nodes[selectedID]`'s display
+    /// name + type — so an unchanged selection over an unchanged
+    /// document is a no-op render. Closures aren't compared (they
+    /// capture references that stay current).
+    static func == (lhs: CollapsedSelectionBar, rhs: CollapsedSelectionBar) -> Bool {
+        lhs.selectedID == rhs.selectedID && lhs.document == rhs.document
     }
 }

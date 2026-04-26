@@ -32,6 +32,21 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
         return t
     }()
 
+    /// Backdrop-filter blur drawn behind the text glyphs. Mirrors the
+    /// pattern in `ContainerNodeView` — a `UIVisualEffectView` with
+    /// `.systemUltraThinMaterial` sits at the back of this view's
+    /// subview stack and samples whatever is rendered behind the node
+    /// on the canvas. Alpha ramps in from `style.textBackdropBlur`.
+    /// `isUserInteractionEnabled = false` so taps still fall through
+    /// to the textView (and its single-tap-to-edit behavior) on top.
+    private let blurOverlay: UIVisualEffectView = {
+        let v = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+        v.isUserInteractionEnabled = false
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.alpha = 0
+        return v
+    }()
+
     /// Fired on every keystroke so the document can stay in sync with
     /// the textView's content. The host must NOT trigger SwiftData
     /// commits here — that's what `onEditingEnded` is for.
@@ -53,7 +68,18 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
     override init(nodeID: UUID) {
         super.init(nodeID: nodeID)
         textView.delegate = self
+        // Blur sits at the back of the subview stack so the text
+        // renders sharp on top of the frosted backdrop. Pinned to the
+        // node's bounds so the layer's corner radius / clip
+        // (configured by the base class) crops the blur correctly.
+        addSubview(blurOverlay)
         addSubview(textView)
+        NSLayoutConstraint.activate([
+            blurOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
+            blurOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
+            blurOverlay.topAnchor.constraint(equalTo: topAnchor),
+            blurOverlay.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
         leadingPadding = textView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
         trailingPadding = textView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4)
         topPadding = textView.topAnchor.constraint(equalTo: topAnchor, constant: 2)
@@ -128,6 +154,25 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
             topPadding.constant = 2
             bottomPadding.constant = -2
         }
+
+        // 4. Backdrop blur. Quadratic alpha ramp matches the
+        //    container path so the slider has the same gentle low-end
+        //    feel — slider 0.1 → alpha 0.01, 0.5 → 0.25, 1.0 → 1.0.
+        //    When blur > 0 we clear the node's own background fill
+        //    (which `super.apply` just set from `backgroundColorHex`)
+        //    so the frosted glass actually shows through instead of
+        //    being painted over by an opaque color. The bg color is
+        //    re-applied on the next pass when the slider is dialed
+        //    back to 0 because `super.apply` runs every call.
+        let textBlur = max(0, min(1, node.style.textBackdropBlur ?? 0))
+        blurOverlay.alpha = CGFloat(textBlur * textBlur)
+        if textBlur > 0.01 {
+            backgroundColor = .clear
+        }
+        // Re-anchor at the back in case any subview reorder happened
+        // outside this view's control. Cheap; a no-op if already at
+        // index 0.
+        sendSubviewToBack(blurOverlay)
     }
 
     // MARK: - Edit lifecycle
