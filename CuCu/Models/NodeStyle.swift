@@ -256,6 +256,7 @@ enum NodeFontFamily: String, Codable, CaseIterable, Hashable {
     case caprasimo            // chunky cute serif
     case yesevaOne            // elegant cute serif
     case abrilFatface         // bold display serif
+    case fraunces             // editorial italic-leaning serif
 
     // Bundled bubbly / blocky display
     case fredoka              // rounded chunky
@@ -272,6 +273,23 @@ enum NodeFontFamily: String, Codable, CaseIterable, Hashable {
 
     // Bundled retro
     case pressStart2P         // pixel
+}
+
+extension NodeFontFamily {
+    /// Forward-compatible decoder. The synthesized String-rawValue
+    /// `init(from:)` would throw `DecodingError.dataCorrupted` on an
+    /// unknown raw value, which means a draft saved on a future
+    /// build that adds a new font case fails to load on an older
+    /// binary. Treating unknown values as `.system` lets the rest
+    /// of the document continue to render — the user just sees the
+    /// system font on that one node until they reopen on a newer
+    /// build. Encoder stays the synthesized rawValue path so old
+    /// binaries don't *write* `"system"` over a future case they
+    /// happened to round-trip through memory.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = NodeFontFamily(rawValue: raw) ?? .system
+    }
 }
 
 enum NodeFontWeight: String, Codable, CaseIterable, Hashable {

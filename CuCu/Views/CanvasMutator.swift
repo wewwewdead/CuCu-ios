@@ -19,6 +19,20 @@ struct CanvasMutator {
     let draft: ProfileDraft
     let store: DraftStore
     let context: ModelContext
+    let rootPageIndex: Int
+
+    /// Reads the AppStorage default-font key (written by
+    /// `applyTheme`). Used by `addNode(.text)` so newly-created text
+    /// adopts the most recently-applied theme's display font. Returns
+    /// `.system` when the key isn't set or the stored raw value
+    /// doesn't decode to a known case (e.g. a future font case
+    /// stored on a newer build, then read on an older binary —
+    /// matches the forward-compat fallback in `NodeFontFamily.init(from:)`).
+    static var themeDefaultFont: NodeFontFamily {
+        let raw = UserDefaults.standard.string(forKey: CucuTheme.defaultFontStorageKey)
+        return raw.flatMap { NodeFontFamily(rawValue: $0) } ?? .system
+    }
+
     // MARK: - Add
 
     /// Insert a brand-new node of `type` under the currently-selected
@@ -27,16 +41,23 @@ struct CanvasMutator {
     /// are noops here on purpose so the switch stays exhaustive.
     func addNode(of type: NodeType) {
         let parentID = parentForInsertion()
-        let node: CanvasNode
+        let pageIndex = targetPageIndex(parentID: parentID)
+        var node: CanvasNode
         switch type {
         case .container:
             node = isCarousel(parentID)
                 ? carouselContainerItem(parentID: parentID)
                 : .defaultContainer()
         case .text:
-            node = isCarousel(parentID)
+            var draft = isCarousel(parentID)
                 ? carouselTextItem(parentID: parentID)
-                : .defaultText()
+                : CanvasNode.defaultText()
+            // Seed the new node's font from the active theme's
+            // default. Existing nodes are intentionally untouched
+            // by `applyTheme`; this is the future-tense half of
+            // that contract — fresh text adopts the theme face.
+            draft.style.fontFamily = Self.themeDefaultFont
+            node = draft
         case .image:     return
         case .icon:
             node = isCarousel(parentID)
@@ -55,13 +76,20 @@ struct CanvasMutator {
         case .gallery:   return
         case .carousel:
             let carousel = CanvasNode.defaultCarousel()
-            document.wrappedValue.insert(carousel, under: parentID)
+            document.wrappedValue.insert(carousel, under: parentID, onPage: pageIndex)
             selectedID.wrappedValue = carousel.id
             store.updateDocument(draft, document: document.wrappedValue)
             CucuHaptics.soft()
             return
         }
-        document.wrappedValue.insert(node, under: parentID)
+        if let parentID,
+           let origin = originForChildNextToText(
+                parentID: parentID,
+                childSize: CGSize(width: node.frame.width, height: node.frame.height)) {
+            node.frame.x = Double(origin.x)
+            node.frame.y = Double(origin.y)
+        }
+        document.wrappedValue.insert(node, under: parentID, onPage: pageIndex)
         selectedID.wrappedValue = node.id
         store.updateDocument(draft, document: document.wrappedValue)
         CucuHaptics.soft()
@@ -73,6 +101,7 @@ struct CanvasMutator {
     @discardableResult
     func addImageNode(from data: Data) -> Bool {
         let parentID = parentForInsertion()
+        let pageIndex = targetPageIndex(parentID: parentID)
         let nodeID = UUID()
         do {
             let path = try LocalCanvasAssetStore.saveImage(
@@ -88,7 +117,14 @@ struct CanvasMutator {
                 )
                 : CanvasNode.defaultImage(localImagePath: path)
             node.id = nodeID
-            document.wrappedValue.insert(node, under: parentID)
+            if let parentID,
+               let origin = originForChildNextToText(
+                    parentID: parentID,
+                    childSize: CGSize(width: node.frame.width, height: node.frame.height)) {
+                node.frame.x = Double(origin.x)
+                node.frame.y = Double(origin.y)
+            }
+            document.wrappedValue.insert(node, under: parentID, onPage: pageIndex)
             selectedID.wrappedValue = nodeID
             store.updateDocument(draft, document: document.wrappedValue)
             CucuHaptics.soft()
@@ -107,6 +143,7 @@ struct CanvasMutator {
     @discardableResult
     func addAvatarNode(from data: Data) -> Bool {
         let parentID = parentForInsertion()
+        let pageIndex = targetPageIndex(parentID: parentID)
         let nodeID = UUID()
         do {
             let path = try LocalCanvasAssetStore.saveImage(
@@ -134,7 +171,7 @@ struct CanvasMutator {
             // uses inside the hero preset.
             node.style.borderColorHex = "#FFFFFF"
             node.style.borderWidth = 2
-            document.wrappedValue.insert(node, under: parentID)
+            document.wrappedValue.insert(node, under: parentID, onPage: pageIndex)
             selectedID.wrappedValue = nodeID
             store.updateDocument(draft, document: document.wrappedValue)
             CucuHaptics.soft()
@@ -153,6 +190,7 @@ struct CanvasMutator {
     @discardableResult
     func addGalleryNode(from imageBytesList: [Data]) -> Bool {
         let parentID = parentForInsertion()
+        let pageIndex = targetPageIndex(parentID: parentID)
 
         var savedPaths: [String] = []
         for bytes in imageBytesList {
@@ -177,7 +215,7 @@ struct CanvasMutator {
                 size: CGSize(width: 160, height: 104)
             )
             : CanvasNode.defaultGallery(imagePaths: savedPaths)
-        document.wrappedValue.insert(node, under: parentID)
+        document.wrappedValue.insert(node, under: parentID, onPage: pageIndex)
         selectedID.wrappedValue = node.id
         store.updateDocument(draft, document: document.wrappedValue)
         return true
@@ -245,6 +283,13 @@ struct CanvasMutator {
             )
             node.content.localImagePath = path
             document.wrappedValue.nodes[nodeID] = node
+            // Same-path overwrite: the node's stored fields are
+            // byte-identical to before (deterministic filename), so
+            // SwiftUI's `==` would compare equal and skip re-render.
+            // Bump the render revision to force structural inequality
+            // so `updateUIView` fires and the canvas rebinds the new
+            // bytes — see `ProfileDocument.renderRevision`.
+            document.wrappedValue.renderRevision &+= 1
             store.updateDocument(draft, document: document.wrappedValue)
             return true
         } catch {
@@ -257,6 +302,56 @@ struct CanvasMutator {
     private func isCarousel(_ parentID: UUID?) -> Bool {
         guard let parentID else { return false }
         return document.wrappedValue.nodes[parentID]?.type == .carousel
+    }
+
+    /// When a new child is inserted under a text node, position it
+    /// just to the right of the rendered text instead of at the type's
+    /// hard-coded default origin (which usually overlaps the text or
+    /// falls outside the parent's bounds entirely). Returns `nil` when
+    /// the parent isn't a text node — the caller falls back to the
+    /// default origin in that case.
+    ///
+    /// Width is measured against the parent text's `font + content`,
+    /// matching what `TextNodeView` will actually paint. Weight is
+    /// pinned to `.regular` because the resolver's full weight bridge
+    /// lives inside `TextNodeView` (private extension); the resulting
+    /// width drift between weights is small enough that the placement
+    /// still reads as "next to the text" — and the user can drag it.
+    private func originForChildNextToText(parentID: UUID,
+                                          childSize: CGSize) -> CGPoint? {
+        guard let parent = document.wrappedValue.nodes[parentID],
+              parent.type == .text else { return nil }
+
+        let text = parent.content.text ?? ""
+        let fontSize = CGFloat(parent.style.fontSize ?? 17)
+        let family = parent.style.fontFamily ?? .system
+        let font = family.uiFont(size: fontSize, weight: .regular)
+
+        // `TextNodeView` paints with 4pt leading/trailing padding;
+        // mirror that so the child clears the rendered glyphs.
+        let textInsetX: CGFloat = 4
+        let availableWidth = max(0, CGFloat(parent.frame.width) - textInsetX * 2)
+        let bounds = (text as NSString).boundingRect(
+            with: CGSize(width: availableWidth,
+                         height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin],
+            attributes: [.font: font],
+            context: nil
+        )
+        let renderedWidth = ceil(bounds.width)
+
+        // Place the child a 6pt gap past the text. Cap to the parent's
+        // right edge so the new child stays inside the text node's
+        // frame — if the text already fills the bounds, the child
+        // butts up against the trailing edge and the user can drag.
+        let gap: CGFloat = 6
+        let parentWidth = CGFloat(parent.frame.width)
+        let parentHeight = CGFloat(parent.frame.height)
+        let preferredX = textInsetX + renderedWidth + gap
+        let maxX = max(0, parentWidth - childSize.width)
+        let x = min(preferredX, maxX)
+        let y = max(0, (parentHeight - childSize.height) / 2)
+        return CGPoint(x: x, y: y)
     }
 
     private func nextCarouselItemOrigin(parentID: UUID?, size: CGSize) -> CGPoint {
@@ -327,6 +422,8 @@ struct CanvasMutator {
             )
             node.style.backgroundImagePath = path
             document.wrappedValue.nodes[nodeID] = node
+            // Same-path overwrite — see `replaceImage` for context.
+            document.wrappedValue.renderRevision &+= 1
             store.updateDocument(draft, document: document.wrappedValue)
             return true
         } catch {
@@ -348,17 +445,55 @@ struct CanvasMutator {
 
     // MARK: - Page background
 
-    /// Save picked image bytes as the page background and update the
-    /// document's `pageBackgroundImagePath`. Filename is fixed per draft
+    /// Save picked image bytes as a page background and update that page's
+    /// `backgroundImagePath`. Filename is fixed per draft
     /// (`page_background.jpg`) so replacing always overwrites cleanly.
+    ///
+    /// When the upload represents a *new* image — first upload, a
+    /// path change, or a same-path replace whose file mtime advanced
+    /// — reset the per-image effect knobs (`backgroundImageOpacity`,
+    /// `backgroundBlur`, `backgroundVignette`) to their defaults so a
+    /// dialed-in 30% opacity from a prior photo doesn't silently
+    /// apply to a freshly-uploaded one. `backgroundPatternKey` is
+    /// *not* reset — it's a page-level decoration independent of the
+    /// image.
+    ///
+    /// We stat the previous file pre-write rather than carrying mtime
+    /// on `PageStyle`. The latter would force a Codable migration for
+    /// a value the rest of the app doesn't read, and `LocalCanvasAssetStore`
+    /// already exposes `modificationDate(_:)` for this exact purpose
+    /// (the canvas's own bg-image cache uses it to bust on replace).
     @discardableResult
-    func setPageBackgroundImage(_ data: Data) -> Bool {
+    func setPageBackgroundImage(_ data: Data, pageIndex: Int) -> Bool {
         do {
+            guard let index = safePageIndex(pageIndex) else { return false }
+            let previousPath = document.wrappedValue.pages[index].backgroundImagePath
+            let previousMtime = LocalCanvasAssetStore.modificationDate(previousPath)
             let path = try LocalCanvasAssetStore.savePageBackground(
                 data,
-                draftID: draft.id
+                draftID: draft.id,
+                pageID: index == 0 ? nil : document.wrappedValue.pages[index].id
             )
-            document.wrappedValue.pageBackgroundImagePath = path
+            document.wrappedValue.pages[index].backgroundImagePath = path
+            let currentMtime = LocalCanvasAssetStore.modificationDate(path)
+            let pathChanged = path != previousPath
+            let mtimeAdvanced = previousMtime != currentMtime
+            if pathChanged || mtimeAdvanced {
+                // `nil` carries the "use default" signal in `PageStyle`
+                // — the canvas treats absent values as opacity 1, no
+                // blur, no vignette. Setting nil rather than 1.0 / 0
+                // keeps the JSON shape identical to a fresh draft.
+                document.wrappedValue.pages[index].backgroundImageOpacity = nil
+                document.wrappedValue.pages[index].backgroundBlur = nil
+                document.wrappedValue.pages[index].backgroundVignette = nil
+                // Force structural inequality on same-path replace —
+                // see `replaceImage` for context. Without this, a
+                // user who never dialed the effect knobs sees the
+                // nil-resets above as a no-op and SwiftUI suppresses
+                // the re-render even though the bytes on disk changed.
+                document.wrappedValue.renderRevision &+= 1
+            }
+            document.wrappedValue.syncLegacyFieldsFromFirstPage()
             store.updateDocument(draft, document: document.wrappedValue)
             return true
         } catch {
@@ -366,13 +501,37 @@ struct CanvasMutator {
         }
     }
 
+    /// One-shot apply of a `CucuTheme`. Walks every page and writes
+    /// `backgroundHex` + `backgroundPatternKey`; resets the per-image
+    /// effect knobs (opacity, blur, vignette) so a previous theme's
+    /// tuning doesn't bleed into this one — same logic as the
+    /// image-swap reset in `setPageBackgroundImage`. The theme's
+    /// `defaultDisplayFont` is written into a UserDefaults key shared
+    /// with `@AppStorage(CucuTheme.defaultFontStorageKey)`, where
+    /// new text-node creation will pick it up.
+    ///
+    /// Deliberately does **not** mutate `backgroundImagePath` (a
+    /// theme is page chrome — if the user has a photo set, the
+    /// theme's bg colour shows through transparent pixels and the
+    /// pattern overlays the photo, which is the existing layered-
+    /// canvas behaviour) and does **not** walk node styles to
+    /// retro-apply the theme font (existing text keeps its current
+    /// font; only future-tense nodes pick up the theme).
+    func applyTheme(_ theme: CucuTheme) {
+        theme.apply(to: &document.wrappedValue)
+        store.updateDocument(draft, document: document.wrappedValue)
+        CucuHaptics.success()
+    }
+
     /// Clear the page background image — delete the file and unset the
     /// path so the canvas renders only the color again.
-    func clearPageBackgroundImage() {
-        if let path = document.wrappedValue.pageBackgroundImagePath {
+    func clearPageBackgroundImage(pageIndex: Int) {
+        guard let index = safePageIndex(pageIndex) else { return }
+        if let path = document.wrappedValue.pages[index].backgroundImagePath {
             LocalCanvasAssetStore.delete(relativePath: path)
         }
-        document.wrappedValue.pageBackgroundImagePath = nil
+        document.wrappedValue.pages[index].backgroundImagePath = nil
+        document.wrappedValue.syncLegacyFieldsFromFirstPage()
         store.updateDocument(draft, document: document.wrappedValue)
     }
 
@@ -521,7 +680,8 @@ struct CanvasMutator {
     }
 
     static func assetPathIsReferenced(_ path: String, in document: ProfileDocument) -> Bool {
-        if document.pageBackgroundImagePath == path {
+        if document.pages.contains(where: { $0.backgroundImagePath == path }) ||
+            document.pageBackgroundImagePath == path {
             return true
         }
         return document.nodes.values.contains { node in
@@ -551,9 +711,37 @@ struct CanvasMutator {
             return sid
         case .carousel:
             return sid
+        case .text:
+            // Text nodes accept children too — drop an icon, image,
+            // or any other element onto a text node and it nests
+            // inside, absolutely positioned over the text region.
+            // The text view paints first, children layer above via
+            // standard subview stacking. Pair this with the
+            // recursion arm in `applyNode` (text branch) so the
+            // canvas actually renders the children.
+            return sid
         default:
             return carouselAncestor(containing: sid)
         }
+    }
+
+    private func safePageIndex(_ requestedIndex: Int) -> Int? {
+        guard !document.wrappedValue.pages.isEmpty else { return nil }
+        return document.wrappedValue.pages.indices.contains(requestedIndex) ? requestedIndex : 0
+    }
+
+    private func targetPageIndex(parentID: UUID?) -> Int {
+        if let parentID, let pageIndex = document.wrappedValue.pageContaining(parentID) {
+            return pageIndex
+        }
+        if let selectedID = selectedID.wrappedValue,
+           let pageIndex = document.wrappedValue.pageContaining(selectedID) {
+            return pageIndex
+        }
+        guard !document.wrappedValue.pages.isEmpty else { return 0 }
+        return document.wrappedValue.pages.indices.contains(rootPageIndex)
+            ? rootPageIndex
+            : max(0, document.wrappedValue.pages.count - 1)
     }
 
     /// Return the carousel that owns `id`, or nil when the selected node

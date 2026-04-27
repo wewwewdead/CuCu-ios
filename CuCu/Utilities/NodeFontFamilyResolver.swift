@@ -23,6 +23,7 @@ extension NodeFontFamily {
         case .caprasimo:        return "Caprasimo"
         case .yesevaOne:        return "Yeseva One"
         case .abrilFatface:     return "Abril Fatface"
+        case .fraunces:         return "Fraunces"
         case .fredoka:          return "Fredoka"
         case .modak:            return "Modak"
         case .bungee:           return "Bungee"
@@ -43,7 +44,7 @@ extension NodeFontFamily {
         switch self {
         case .system, .serif, .rounded, .monospaced:
             return .system
-        case .caprasimo, .yesevaOne, .abrilFatface:
+        case .caprasimo, .yesevaOne, .abrilFatface, .fraunces:
             return .display
         case .fredoka, .modak, .bungee:
             return .bubbly
@@ -80,6 +81,10 @@ extension NodeFontFamily {
         case .caprasimo:        return "Caprasimo-Regular"
         case .yesevaOne:        return "YesevaOne-Regular"
         case .abrilFatface:     return "AbrilFatface-Regular"
+        // Per-node Fraunces falls back to the regular cut. Bold /
+        // italic variants are reachable via `Font.cucuEditorial` for
+        // the editor chrome — see `CucuDesignSystem.swift`.
+        case .fraunces:         return "Fraunces-Regular"
         case .fredoka:          return "Fredoka"            // variable face
         case .modak:            return "Modak-Regular"
         case .bungee:           return "Bungee-Regular"

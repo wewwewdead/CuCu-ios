@@ -15,6 +15,7 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
     @Bindable var sheets: CanvasSheetCoordinator
     let mutator: CanvasMutator
     let addDestination: AddNodeSheet.Destination
+    let editingPageIndex: Int
     let onSaveTemplate: (String) -> Bool
     let onApplyTemplate: (ProfileTemplate) -> Bool
 
@@ -33,7 +34,8 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
                             document: $document,
                             selectedID: $selectedID,
                             draft: draft,
-                            store: mutator.store
+                            store: mutator.store,
+                            rootPageIndex: editingPageIndex
                         )
                     }
                 )
@@ -84,8 +86,9 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
             ) {
                 PageBackgroundSheet(
                     document: $document,
-                    onPickImage: { data in mutator.setPageBackgroundImage(data) },
-                    onClearImage: { mutator.clearPageBackgroundImage() },
+                    pageIndex: editingPageIndex,
+                    onPickImage: { data in mutator.setPageBackgroundImage(data, pageIndex: editingPageIndex) },
+                    onClearImage: { mutator.clearPageBackgroundImage(pageIndex: editingPageIndex) },
                     onCommit: { mutator.store.updateDocument(draft, document: document) },
                     onEditEffects: { sheets.requestEditPageEffects() }
                 )
@@ -121,16 +124,29 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
+            .sheet(isPresented: $sheets.showThemePickerSheet) {
+                ThemePickerSheet(mutator: mutator, document: document)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            }
             .sheet(isPresented: $sheets.showBackgroundEffectsSheet) {
                 BackgroundEffectsSheet(
                     title: "Edit Page Image",
                     blur: Binding(
-                        get: { document.pageBackgroundBlur },
-                        set: { document.pageBackgroundBlur = $0 }
+                        get: { page(at: editingPageIndex).backgroundBlur },
+                        set: { newValue in
+                            updatePage(at: editingPageIndex) { page in
+                                page.backgroundBlur = newValue
+                            }
+                        }
                     ),
                     vignette: Binding(
-                        get: { document.pageBackgroundVignette },
-                        set: { document.pageBackgroundVignette = $0 }
+                        get: { page(at: editingPageIndex).backgroundVignette },
+                        set: { newValue in
+                            updatePage(at: editingPageIndex) { page in
+                                page.backgroundVignette = newValue
+                            }
+                        }
                     ),
                     onCommit: { mutator.store.updateDocument(draft, document: document) }
                 )
@@ -211,6 +227,19 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
                     }
                 )
             }
+    }
+
+    private func page(at index: Int) -> PageStyle {
+        guard document.pages.indices.contains(index) else {
+            return document.pages.first ?? PageStyle()
+        }
+        return document.pages[index]
+    }
+
+    private func updatePage(at index: Int, _ update: (inout PageStyle) -> Void) {
+        guard document.pages.indices.contains(index) else { return }
+        update(&document.pages[index])
+        document.syncLegacyFieldsFromFirstPage()
     }
 
     /// Two-way binding into a container node's `style.backgroundBlur`.

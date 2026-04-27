@@ -240,6 +240,13 @@ struct PublishService {
         var seen = Set<String>()
         var uploads: [PendingUpload] = []
 
+        for page in document.pages {
+            if let p = page.backgroundImagePath, !p.isEmpty,
+               !PublishedDocumentTransformer.isRemote(p), seen.insert(p).inserted {
+                uploads.append(PendingUpload(localPath: p, assetType: "page_background"))
+            }
+        }
+
         if let p = document.pageBackgroundImagePath, !p.isEmpty,
            !PublishedDocumentTransformer.isRemote(p), seen.insert(p).inserted {
             uploads.append(PendingUpload(localPath: p, assetType: "page_background"))

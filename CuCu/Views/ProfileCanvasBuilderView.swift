@@ -33,6 +33,8 @@ struct ProfileCanvasBuilderView: View {
 
     @State private var document: ProfileDocument = .blank
     @State private var selectedID: UUID?
+    @State private var editingPageIndex: Int = 0
+    @State private var pendingDeletePageIndex: Int?
     @State private var legacyDraft: Bool = false
     @State private var titleDraft: String = ""
     @State private var sheets = CanvasSheetCoordinator()
@@ -68,7 +70,8 @@ struct ProfileCanvasBuilderView: View {
             selectedID: $selectedID,
             draft: draft,
             store: resolvedStore,
-            context: context
+            context: context,
+            rootPageIndex: editingPageIndex
         )
     }
 
@@ -110,7 +113,7 @@ struct ProfileCanvasBuilderView: View {
     /// without the other; an empty test that only checked one would
     /// leak through and hide the prompt.
     private var canvasIsEmpty: Bool {
-        document.rootChildrenIDs.isEmpty && document.nodes.isEmpty
+        document.pages.allSatisfy { $0.rootChildrenIDs.isEmpty } && document.nodes.isEmpty
     }
 
     var body: some View {
@@ -126,6 +129,15 @@ struct ProfileCanvasBuilderView: View {
                     onCommit: { doc in
                         document = doc
                         resolvedStore.updateDocument(draft, document: doc)
+                    },
+                    onAddPage: { appendPage() },
+                    onDeletePageRequested: { index in
+                        guard index > 0, document.pages.indices.contains(index), document.pages.count > 1 else { return }
+                        editingPageIndex = index
+                        pendingDeletePageIndex = index
+                    },
+                    onEditingPageChanged: { index in
+                        editingPageIndex = index
                     },
                     onRequestEditNode: { id in
                         // Long-press shortcut: open the existing
@@ -213,6 +225,16 @@ struct ProfileCanvasBuilderView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent(sheets: sheets) }
+        // Edge-to-edge: tint the toolbar to the focused page's bg
+        // colour so the status-bar / toolbar strip blends straight
+        // into the page below it. No seam between the chrome and the
+        // canvas; the editor reads as one continuous surface like the
+        // published profile does. `.toolbarColorScheme` adapts the
+        // toolbar buttons + title for legibility on dark page bgs
+        // (e.g. Dusk Diary) — light icons on dark, dark on light.
+        .toolbarBackground(focusedPageBackgroundColor, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(focusedPageIsDark ? .dark : .light, for: .navigationBar)
         .modifier(CanvasBuilderSheetsModifier(
             document: $document,
             selectedID: $selectedID,
@@ -220,6 +242,7 @@ struct ProfileCanvasBuilderView: View {
             sheets: sheets,
             mutator: mutator,
             addDestination: addDestination,
+            editingPageIndex: editingPageIndex,
             onSaveTemplate: { name in mutator.saveTemplate(named: name) },
             onApplyTemplate: { template in
                 mutator.applyTemplate(template) {
@@ -273,6 +296,23 @@ struct ProfileCanvasBuilderView: View {
             Button("OK", role: .cancel) { unpublishErrorMessage = nil }
         } message: {
             Text(unpublishErrorMessage ?? "")
+        }
+        .alert(
+            deletePageAlertTitle,
+            isPresented: Binding(
+                get: { pendingDeletePageIndex != nil },
+                set: { if !$0 { pendingDeletePageIndex = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) { pendingDeletePageIndex = nil }
+            Button("Delete Page", role: .destructive) {
+                if let index = pendingDeletePageIndex {
+                    deletePage(at: index)
+                }
+                pendingDeletePageIndex = nil
+            }
+        } message: {
+            Text(deletePageAlertMessage)
         }
         .onAppear {
             // Cache the draft store once for the lifetime of this view.
@@ -347,6 +387,13 @@ struct ProfileCanvasBuilderView: View {
                 Button("Page Settings", systemImage: "photo.on.rectangle.angled") {
                     sheets.showPageBackgroundSheet = true
                 }
+                if canDeleteEditingPage {
+                    Button("Delete Page \(editingPageIndex + 1)…",
+                           systemImage: "trash",
+                           role: .destructive) {
+                        pendingDeletePageIndex = editingPageIndex
+                    }
+                }
                 Button("Layers", systemImage: "square.3.layers.3d") { sheets.showLayersSheet = true }
                 Divider()
                 Button("Duplicate", systemImage: "plus.square.on.square") { mutator.duplicateSelected() }
@@ -363,6 +410,9 @@ struct ProfileCanvasBuilderView: View {
                 }
                 Button("Apply Template", systemImage: "square.on.square") {
                     sheets.showApplyTemplateSheet = true
+                }
+                Button("Theme…", systemImage: "paintpalette") {
+                    sheets.showThemePickerSheet = true
                 }
                 Divider()
                 if let published = draft.publishedUsername, !published.isEmpty {
@@ -422,6 +472,7 @@ struct ProfileCanvasBuilderView: View {
                 .padding(.horizontal, 32)
             Button("Start fresh canvas") {
                 document = .blank
+                editingPageIndex = 0
                 legacyDraft = false
                 resolvedStore.updateDocument(draft, document: document)
             }
@@ -437,6 +488,7 @@ struct ProfileCanvasBuilderView: View {
         switch CanvasDocumentCodec.decode(draft.designJSON) {
         case .document(let doc):
             document = doc
+            editingPageIndex = 0
             legacyDraft = false
         case .legacy:
             // Don't overwrite. Show banner; user opts in to blank canvas.
@@ -445,9 +497,101 @@ struct ProfileCanvasBuilderView: View {
             // Brand-new or wiped — seed a blank doc and persist so subsequent
             // launches go straight to .document.
             document = .blank
+            editingPageIndex = 0
             legacyDraft = false
             resolvedStore.updateDocument(draft, document: document)
         }
+    }
+
+    // MARK: - Pages
+
+    private var canDeleteEditingPage: Bool {
+        // Page 1 is the durable landing page for old viewers and cannot be
+        // deleted. Later pages can be removed when more than one page exists.
+        document.pages.count > 1 && editingPageIndex > 0
+    }
+
+    /// Hex of the currently-focused page's background. Falls back to
+    /// the document's legacy `pageBackgroundHex` when the editing
+    /// index isn't a valid page (transient state during page deletion
+    /// / template swap). Drives the toolbar tint so the editor chrome
+    /// reads as part of the page rather than a system bar floating
+    /// above it.
+    private var focusedPageBackgroundHex: String {
+        let pages = document.pages
+        let index = max(0, min(editingPageIndex, pages.count - 1))
+        guard pages.indices.contains(index) else { return document.pageBackgroundHex }
+        return pages[index].backgroundHex
+    }
+
+    /// Toolbar fill colour, derived from the focused page bg.
+    private var focusedPageBackgroundColor: Color {
+        Color(hex: focusedPageBackgroundHex)
+    }
+
+    /// True when the focused page has a low-luminance background
+    /// (e.g. the Dusk Diary theme). The toolbar flips to dark mode
+    /// in that case so its title + buttons + status-bar glyphs read
+    /// as light-on-dark instead of disappearing into the chrome.
+    /// Same Rec. 709 luminance check as `ThemePickerSheet.isDark`.
+    private var focusedPageIsDark: Bool {
+        let trimmed = focusedPageBackgroundHex.hasPrefix("#")
+            ? String(focusedPageBackgroundHex.dropFirst())
+            : focusedPageBackgroundHex
+        guard trimmed.count == 6 || trimmed.count == 8,
+              let value = UInt32(trimmed.prefix(6), radix: 16) else { return false }
+        let r = Double((value >> 16) & 0xFF) / 255
+        let g = Double((value >> 8) & 0xFF) / 255
+        let b = Double(value & 0xFF) / 255
+        let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return lum < 0.5
+    }
+
+    private func appendPage() {
+        document.appendPage(inheritingFrom: document.pages.count - 1)
+        editingPageIndex = max(0, document.pages.count - 1)
+        resolvedStore.updateDocument(draft, document: document)
+        try? context.save()
+        CucuHaptics.success()
+    }
+
+    private func deletePage(at index: Int) {
+        guard document.pages.indices.contains(index), index > 0, document.pages.count > 1 else { return }
+        let removedIDs = Set(document.pages[index].rootChildrenIDs.flatMap { document.subtree(rootedAt: $0) })
+        var removedAssetPaths = document.pages[index].rootChildrenIDs.reduce(into: Set<String>()) { paths, rootID in
+            paths.formUnion(CanvasMutator.assetPaths(inSubtreeRootedAt: rootID, document: document))
+        }
+        if let backgroundPath = document.pages[index].backgroundImagePath, !backgroundPath.isEmpty {
+            removedAssetPaths.insert(backgroundPath)
+        }
+        document.removePage(at: index)
+        for path in removedAssetPaths where !CanvasMutator.assetPathIsReferenced(path, in: document) {
+            LocalCanvasAssetStore.delete(relativePath: path)
+        }
+        if let selectedID, removedIDs.contains(selectedID) {
+            self.selectedID = nil
+        }
+        editingPageIndex = min(editingPageIndex, max(0, document.pages.count - 1))
+        resolvedStore.updateDocument(draft, document: document)
+        try? context.save()
+        CucuHaptics.delete()
+    }
+
+    private var deletePageAlertTitle: String {
+        guard let index = pendingDeletePageIndex else { return "Delete page?" }
+        return "Delete page \(index + 1)?"
+    }
+
+    private var deletePageAlertMessage: String {
+        guard let index = pendingDeletePageIndex,
+              document.pages.indices.contains(index) else {
+            return "This can't be undone."
+        }
+        let count = Set(document.pages[index].rootChildrenIDs.flatMap { document.subtree(rootedAt: $0) }).count
+        if count == 0 {
+            return "This blank page will be removed. This can't be undone."
+        }
+        return "Delete page \(index + 1) and its \(count) node\(count == 1 ? "" : "s")? This can't be undone."
     }
 
     // MARK: - Reset / Unpublish
@@ -515,6 +659,7 @@ struct ProfileCanvasBuilderView: View {
         LocalCanvasAssetStore.deleteDraftAssets(draftID: draft.id)
         document = .blank
         selectedID = nil
+        editingPageIndex = 0
         legacyDraft = false
         sheets.showInspector = false
         sheets.showLayersSheet = false

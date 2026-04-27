@@ -302,7 +302,10 @@ struct SelectionBottomBar: View {
            let parent = document.nodes[parentID] {
             return parent.childrenIDs
         }
-        return document.rootChildrenIDs
+        if let pageIndex = document.pageContaining(id) {
+            return document.children(of: nil, onPage: pageIndex)
+        }
+        return document.children(of: nil)
     }
 
     // MARK: - Tinted icon badge (delegated to CucuIconBadge)

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Color tokens
 //
@@ -47,6 +48,45 @@ extension Color {
     static let cucuShell      = Color(cucuRGB: 0xE9A4B3)
     static let cucuBone       = Color(cucuRGB: 0xF4ECDB)
     static let cucuCoal       = Color(cucuRGB: 0x0F0A07)
+
+    // Soft accent halo behind active swatches / chips. Sits a step
+    // lighter than `cucuRose` and reads as the "you picked this"
+    // glow rather than a chip surface in its own right.
+    static let cucuAccentSoft = Color(cucuRGB: 0xF1D4D9)
+    // Pale watercolour blue — reserved for the future "ocean" theme
+    // and as the chip / divider tone for any cobalt-tinted card.
+    static let cucuSky        = Color(cucuRGB: 0xD9E5F5)
+}
+
+// MARK: - UIColor bridge
+//
+// UIKit-side mirrors of the design tokens. Mirrors rather than
+// `UIColor(Color.cucu…)` conversions so callers in pure-UIKit
+// surfaces (canvas overlays, page chrome) don't pull in SwiftUI's
+// runtime resolution path. The hex values are the source of truth
+// in the SwiftUI declarations above; this layer only restates them.
+
+private extension UIColor {
+    convenience init(cucuRGB rgb: UInt32) {
+        let r = CGFloat((rgb >> 16) & 0xFF) / 255
+        let g = CGFloat((rgb >> 8) & 0xFF) / 255
+        let b = CGFloat(rgb & 0xFF) / 255
+        self.init(red: r, green: g, blue: b, alpha: 1)
+    }
+}
+
+extension UIColor {
+    static let cucuPaper      = UIColor(cucuRGB: 0xF2F0E7)
+    static let cucuPaperDeep  = UIColor(cucuRGB: 0xE7E3D6)
+    static let cucuCard       = UIColor(cucuRGB: 0xFBF9F2)
+    static let cucuCardSoft   = UIColor(cucuRGB: 0xEEEAE0)
+    static let cucuInk        = UIColor(cucuRGB: 0x1A140E)
+    static let cucuInkSoft    = UIColor(cucuRGB: 0x4A3F31)
+    static let cucuInkFaded   = UIColor(cucuRGB: 0x8C8067)
+    static let cucuCherry     = UIColor(cucuRGB: 0xB22A4A)
+    static let cucuMoss       = UIColor(cucuRGB: 0x4A7D4D)
+    static let cucuRose       = UIColor(cucuRGB: 0xEFD9DA)
+    static let cucuAccentSoft = UIColor(cucuRGB: 0xF1D4D9)
 }
 
 // MARK: - Fonts
@@ -69,6 +109,30 @@ extension Font {
 
     static func cucuMono(_ size: CGFloat, weight: Weight = .regular) -> Font {
         Font.system(size: size, weight: weight, design: .monospaced)
+    }
+
+    /// Editorial italic-leaning serif for the inspector chrome,
+    /// theme-sheet headings, and any other "this is editorial copy"
+    /// surface. Routes to the bundled Fraunces 9pt static instances
+    /// — only Regular / Bold × Roman / Italic exist, so weight is
+    /// rounded into one of those four. If registration silently
+    /// failed, `Font.custom` falls back to the system font.
+    static func cucuEditorial(_ size: CGFloat,
+                              weight: Weight = .regular,
+                              italic: Bool = false) -> Font {
+        let isBold: Bool
+        switch weight {
+        case .black, .heavy, .bold, .semibold: isBold = true
+        default:                               isBold = false
+        }
+        let face: String
+        switch (isBold, italic) {
+        case (true, true):   face = "Fraunces-BoldItalic"
+        case (true, false):  face = "Fraunces-Bold"
+        case (false, true):  face = "Fraunces-Italic"
+        case (false, false): face = "Fraunces-Regular"
+        }
+        return Font.custom(face, size: size)
     }
 
     /// Resolve a `Font.Weight` to the matching Lexend face name. If

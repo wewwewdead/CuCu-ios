@@ -17,6 +17,15 @@ struct CanvasEditorContainer: UIViewRepresentable {
     /// Called on gesture-end commits. Caller persists to `ProfileDraft`.
     var onCommit: (ProfileDocument) -> Void
 
+    /// Editor-only callback from the dashed affordance below the page stack.
+    var onAddPage: (() -> Void)? = nil
+
+    /// Editor-only callback from per-page chrome. Host confirms deletion.
+    var onDeletePageRequested: ((Int) -> Void)? = nil
+
+    /// Reports which page the host's page settings UI should target.
+    var onEditingPageChanged: ((Int) -> Void)? = nil
+
     /// Called when the user long-presses a node — the canvas already
     /// updated its own selection and fired a haptic; the host's job
     /// is to present the property inspector for that node.
@@ -47,9 +56,13 @@ struct CanvasEditorContainer: UIViewRepresentable {
     /// list so the host can present the paginated grid.
     var onOpenFullGallery: (([URL]) -> Void)? = nil
 
+    /// Viewer-only page scope. nil renders the full editable page stack.
+    var viewerPageIndex: Int? = nil
+
     func makeUIView(context: Context) -> CanvasEditorView {
         let view = CanvasEditorView()
         view.isInteractive = isInteractive
+        view.viewerPageIndex = viewerPageIndex
         view.onSelectionChanged = { id in
             // Avoid feedback loops: only push if it actually changed.
             if selectedID != id {
@@ -62,6 +75,15 @@ struct CanvasEditorContainer: UIViewRepresentable {
         }
         view.onRequestEditNode = { id in
             onRequestEditNode?(id)
+        }
+        view.onAddPage = {
+            onAddPage?()
+        }
+        view.onDeletePageRequested = { index in
+            onDeletePageRequested?(index)
+        }
+        view.onEditingPageChanged = { index in
+            onEditingPageChanged?(index)
         }
         view.onOpenURL = { url in
             onOpenURL?(url)
@@ -88,6 +110,16 @@ struct CanvasEditorContainer: UIViewRepresentable {
         // editor nor the viewer currently does.
         view.onRequestEditNode = { id in
             onRequestEditNode?(id)
+        }
+        view.viewerPageIndex = viewerPageIndex
+        view.onAddPage = {
+            onAddPage?()
+        }
+        view.onDeletePageRequested = { index in
+            onDeletePageRequested?(index)
+        }
+        view.onEditingPageChanged = { index in
+            onEditingPageChanged?(index)
         }
         view.onOpenURL = { url in
             onOpenURL?(url)

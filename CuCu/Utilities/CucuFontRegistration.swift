@@ -21,6 +21,15 @@ enum CucuFontRegistration {
         "Lexend-SemiBold",
         "Lexend-Bold",
 
+        // Editorial display — italic-leaning serif that carries the
+        // "scrapbook editorial" tone of the inspector and theme sheet.
+        // Static instances at the 9pt optical size; weight / italic
+        // selected by name through `Font.cucuEditorial`.
+        "Fraunces-Regular",
+        "Fraunces-Bold",
+        "Fraunces-Italic",
+        "Fraunces-BoldItalic",
+
         // Cute / artsy display faces — see `NodeFontFamily`
         "Caprasimo-Regular",
         "YesevaOne-Regular",

@@ -1,14 +1,11 @@
 import SwiftUI
 
-/// Modal font picker for `NodeFontFamily`. Replaces the inline `Menu`
-/// approach (which became a 17-row scroll once the cute / artsy faces
-/// landed) with a sectioned list where each row previews the font in
-/// the actual face — far easier to pick "the one that feels right"
-/// when names alone don't tell the user what Caprasimo vs Yeseva One
-/// vs Lobster will look like on their canvas.
-///
-/// Sections come from `NodeFontFamily.Category` so future faces drop
-/// into the right group automatically by tagging their `.category`.
+/// Modal font picker for `NodeFontFamily`. Each tile previews the
+/// family in its own face — "Aa" centered, the family name in a
+/// mono caption underneath — so the user can pick "the one that
+/// feels right" without hunting names. Mirrors the mockup's
+/// `TextInspector` typeface grid; categories stay as section
+/// headers so 17+ faces remain browseable.
 struct FontPickerSheet: View {
     @Binding var selection: NodeFontFamily
     /// Fired right after `selection` is updated. Mirrors the
@@ -18,24 +15,24 @@ struct FontPickerSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    private let columns = [
+        GridItem(.adaptive(minimum: 92), spacing: 10)
+    ]
+
     var body: some View {
         NavigationStack {
-            List {
-                ForEach(NodeFontFamily.Category.allCases, id: \.self) { category in
-                    Section {
-                        ForEach(NodeFontFamily.allCases.filter { $0.category == category }, id: \.self) { family in
-                            row(for: family)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 18, pinnedViews: []) {
+                    ForEach(NodeFontFamily.Category.allCases, id: \.self) { category in
+                        let families = NodeFontFamily.allCases.filter { $0.category == category }
+                        if !families.isEmpty {
+                            section(label: category.label, families: families)
                         }
-                    } header: {
-                        Text(category.label)
-                            .font(.cucuSerif(13, weight: .bold))
-                            .foregroundStyle(Color.cucuInk)
-                            .textCase(nil)
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
             }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
             .background(Color.cucuPaper.ignoresSafeArea())
             .cucuSheetTitle("Font")
             #if os(iOS) || os(visionOS)
@@ -54,50 +51,57 @@ struct FontPickerSheet: View {
     }
 
     @ViewBuilder
-    private func row(for family: NodeFontFamily) -> some View {
+    private func section(label: String, families: [NodeFontFamily]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label.uppercased())
+                .font(.cucuMono(9, weight: .semibold))
+                .tracking(2)
+                .foregroundStyle(Color.cucuInkFaded)
+                .padding(.horizontal, 4)
+
+            LazyVGrid(columns: columns, spacing: 10) {
+                ForEach(families, id: \.self) { family in
+                    tile(for: family)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func tile(for family: NodeFontFamily) -> some View {
         let isSelected = family == selection
         Button {
             selection = family
             onCommit()
             dismiss()
         } label: {
-            HStack(spacing: 14) {
-                // Live preview: the family's own name rendered in its
-                // own font. Two-tier sample — "Aa" big + the family
-                // name smaller — covers both letterform identity and
-                // glyph variety in one row.
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Aa")
-                        .font(family.swiftUIFont(size: 26, weight: .semibold))
-                        .foregroundStyle(Color.cucuInk)
-                    Text(family.displayName)
-                        .font(family.swiftUIFont(size: 13, weight: .regular))
-                        .foregroundStyle(Color.cucuInkSoft)
-                        .lineLimit(1)
-                }
-                .frame(width: 116, alignment: .leading)
-
-                // Display name in the *current* design system font
-                // (Lexend) so the user can read it consistently
-                // even if the previewed face is hard to scan in
-                // small UI sizes (e.g. Press Start 2P, Modak).
-                Text(family.displayName)
-                    .font(.cucuSans(15, weight: .medium))
-                    .foregroundStyle(Color.cucuInk)
+            VStack(spacing: 4) {
+                Text("Aa")
+                    .font(family.swiftUIFont(size: 30, weight: .semibold))
+                    .foregroundStyle(isSelected ? Color.cucuCard : Color.cucuInk)
                     .lineLimit(1)
-
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 14, weight: .heavy))
-                        .foregroundStyle(Color.cucuBurgundy)
-                }
+                Text(family.displayName.uppercased())
+                    .font(.cucuMono(8.5, weight: .semibold))
+                    .tracking(1.6)
+                    .foregroundStyle(isSelected ? Color.cucuCard.opacity(0.85) : Color.cucuInkSoft)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity)
+            .frame(height: 78)
+            .padding(.horizontal, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isSelected ? Color.cucuInk : Color.cucuCardSoft)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(
+                        isSelected ? Color.cucuInk : Color.cucuInkRule,
+                        lineWidth: 1
+                    )
+            )
         }
-        .buttonStyle(.plain)
-        .listRowBackground(isSelected ? Color.cucuRose.opacity(0.4) : Color.cucuCard)
+        .buttonStyle(CucuPressableButtonStyle())
     }
 }

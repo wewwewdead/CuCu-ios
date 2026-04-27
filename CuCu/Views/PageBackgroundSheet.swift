@@ -6,13 +6,14 @@ import UIKit
 /// optional image that overlays the color. Users can pick either, both,
 /// or neither.
 ///
-/// The color is bound directly to `document.pageBackgroundHex`. The image
+/// The color is bound directly to the current `document.pages[pageIndex]`. The image
 /// flow is more involved: the `PhotosPickerItem` is loaded as `Data` then
 /// handed to the host (`ProfileCanvasBuilderView`) which writes it to disk
 /// via `LocalCanvasAssetStore.savePageBackground` and updates the
-/// document's `pageBackgroundImagePath`.
+/// page's `backgroundImagePath`.
 struct PageBackgroundSheet: View {
     @Binding var document: ProfileDocument
+    let pageIndex: Int
 
     var onPickImage: (Data) -> Bool
     var onClearImage: () -> Void
@@ -47,16 +48,14 @@ struct PageBackgroundSheet: View {
                     Stepper(value: pageWidthBinding, in: 240...640, step: 10) {
                         valueRow(title: "Width", value: "\(Int(document.pageWidth)) px")
                     }
-                    .onChange(of: document.pageWidth) { _, _ in onCommit() }
 
                     Stepper(value: pageHeightBinding, in: 400...4_000, step: 50) {
-                        valueRow(title: "Height", value: "\(Int(document.pageHeight)) px")
+                        valueRow(title: "Height", value: "\(Int(currentPage.height)) px")
                     }
-                    .onChange(of: document.pageHeight) { _, _ in onCommit() }
                 } header: {
-                    CucuSectionLabel(text: "Page")
+                    CucuSectionLabel(text: "Page \(safePageIndex + 1)")
                 } footer: {
-                    Text("The visible profile canvas uses this fixed page size. Root content that extends below the height keeps the page expanded so existing nodes remain visible.")
+                    Text("The visible profile canvas uses this fixed page size. Content can extend past the bottom, but the page will not auto-grow.")
                         .font(.cucuSans(12, weight: .regular))
                         .foregroundStyle(Color.cucuInkFaded)
                 }
@@ -67,7 +66,6 @@ struct PageBackgroundSheet: View {
                             .font(.cucuSerif(15, weight: .semibold))
                             .foregroundStyle(Color.cucuInk)
                     }
-                    .onChange(of: bgColorBinding.wrappedValue) { _, _ in onCommit() }
                 } header: {
                     CucuSectionLabel(text: "Color")
                 } footer: {
@@ -77,11 +75,22 @@ struct PageBackgroundSheet: View {
                 }
 
                 Section {
-                    if let path = document.pageBackgroundImagePath,
+                    patternGrid
+                } header: {
+                    CucuSectionLabel(text: "Pattern")
+                } footer: {
+                    Text("Optional. Tiled patterns and gradient washes render above the background color and below your photo. Pick None to use color only.")
+                        .font(.cucuSans(12, weight: .regular))
+                        .foregroundStyle(Color.cucuInkFaded)
+                }
+
+                Section {
+                    if let path = currentPage.backgroundImagePath,
                        !path.isEmpty,
                        let preview = LocalCanvasAssetStore.loadUIImage(path) {
                         currentImageRow(preview: preview)
                         replaceButton
+                        imageOpacitySlider
                         Button {
                             onEditEffects()
                         } label: {
@@ -106,7 +115,7 @@ struct PageBackgroundSheet: View {
                 } header: {
                     CucuSectionLabel(text: "Image")
                 } footer: {
-                    Text("Optional. Image overlays the background color.")
+                    Text("Optional. Image overlays the background color and pattern.")
                         .font(.cucuSans(12, weight: .regular))
                         .foregroundStyle(Color.cucuInkFaded)
                 }
@@ -219,24 +228,120 @@ struct PageBackgroundSheet: View {
         .disabled(pickerLoading)
     }
 
+    /// Nine-tile grid: "None" + the eight `CanvasBackgroundPattern`
+    /// presets. Each tile previews the pattern on top of the page's
+    /// current bg color so the user can preview the combination
+    /// before committing.
+    private var patternGrid: some View {
+        let columns = [GridItem(.adaptive(minimum: 80), spacing: 8)]
+        return VStack(alignment: .leading, spacing: 8) {
+            LazyVGrid(columns: columns, spacing: 8) {
+                patternTile(for: nil)
+                ForEach(CanvasBackgroundPattern.allCases, id: \.self) { pattern in
+                    patternTile(for: pattern)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .listRowBackground(Color.clear)
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+    }
+
+    @ViewBuilder
+    private func patternTile(for pattern: CanvasBackgroundPattern?) -> some View {
+        let active = currentPattern == pattern
+        let bgColor = Color(hex: currentPage.backgroundHex)
+        Button {
+            mutateCurrentPage { $0.backgroundPatternKey = pattern?.rawValue }
+            onCommit()
+        } label: {
+            VStack(spacing: 5) {
+                ZStack {
+                    Rectangle()
+                        .fill(bgColor)
+                    if let pattern {
+                        pattern.overlay()
+                    } else {
+                        Text("—")
+                            .font(.cucuMono(14, weight: .semibold))
+                            .foregroundStyle(Color.cucuInkFaded)
+                    }
+                }
+                .frame(height: 50)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(active ? Color.cucuInk : Color.cucuInkRule,
+                                      lineWidth: active ? 1.5 : 1)
+                )
+                Text((pattern?.label ?? "None"))
+                    .font(.cucuMono(8.5, weight: .semibold))
+                    .tracking(1.4)
+                    .foregroundStyle(active ? Color.cucuInk : Color.cucuInkSoft)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+        }
+        .buttonStyle(CucuPressableButtonStyle())
+    }
+
+    private var imageOpacitySlider: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Image Opacity")
+                    .font(.cucuSerif(15, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
+                Spacer()
+                CucuValuePill(text: "\(Int((imageOpacityBinding.wrappedValue) * 100))%")
+            }
+            Slider(value: imageOpacityBinding, in: 0...1, step: 0.05) { editing in
+                if !editing { onCommit() }
+            }
+            .tint(Color.cucuCherry)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var currentPattern: CanvasBackgroundPattern? {
+        CanvasBackgroundPattern(key: currentPage.backgroundPatternKey)
+    }
+
+    private var imageOpacityBinding: Binding<Double> {
+        Binding(
+            get: { currentPage.backgroundImageOpacity ?? 1.0 },
+            set: { newValue in
+                mutateCurrentPage { $0.backgroundImageOpacity = newValue }
+            }
+        )
+    }
+
     private var bgColorBinding: Binding<String> {
         Binding(
-            get: { document.pageBackgroundHex },
-            set: { document.pageBackgroundHex = $0 }
+            get: { currentPage.backgroundHex },
+            set: { newValue in
+                mutateCurrentPage { $0.backgroundHex = newValue }
+                onCommit()
+            }
         )
     }
 
     private var pageWidthBinding: Binding<Double> {
         Binding(
             get: { document.pageWidth },
-            set: { document.pageWidth = min(640, max(240, $0)) }
+            set: {
+                document.pageWidth = min(640, max(240, $0))
+                onCommit()
+            }
         )
     }
 
     private var pageHeightBinding: Binding<Double> {
         Binding(
-            get: { document.pageHeight },
-            set: { document.pageHeight = min(4_000, max(400, $0)) }
+            get: { currentPage.height },
+            set: { newValue in
+                mutateCurrentPage { $0.height = min(4_000, max(400, newValue)) }
+                onCommit()
+            }
         )
     }
 
@@ -245,7 +350,23 @@ struct PageBackgroundSheet: View {
     /// backgrounds match the page frame, not the current device window.
     private var pageBackgroundAspect: CGFloat {
         let width = max(1, CGFloat(document.pageWidth))
-        let height = max(1, CGFloat(document.pageHeight))
+        let height = max(1, CGFloat(currentPage.height))
         return width / height
+    }
+
+    private var safePageIndex: Int {
+        guard document.pages.indices.contains(pageIndex) else { return 0 }
+        return pageIndex
+    }
+
+    private var currentPage: PageStyle {
+        guard document.pages.indices.contains(safePageIndex) else { return PageStyle() }
+        return document.pages[safePageIndex]
+    }
+
+    private func mutateCurrentPage(_ update: (inout PageStyle) -> Void) {
+        guard document.pages.indices.contains(safePageIndex) else { return }
+        update(&document.pages[safePageIndex])
+        document.syncLegacyFieldsFromFirstPage()
     }
 }

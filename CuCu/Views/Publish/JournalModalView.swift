@@ -139,16 +139,6 @@ struct JournalModalView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text("✦")
-                        .font(.cucuSerif(13, weight: .regular))
-                        .foregroundStyle(Color.cucuRoseStroke)
-                    Text("journal entry")
-                        .font(.cucuMono(10, weight: .medium))
-                        .tracking(2)
-                        .textCase(.uppercase)
-                        .foregroundStyle(Color.cucuInkSoft)
-                }
                 if let date = content.dateLabel {
                     Text(date)
                         .font(.cucuMono(10, weight: .medium))

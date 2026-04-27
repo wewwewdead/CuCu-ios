@@ -28,7 +28,8 @@ enum CanvasPresetBuilder {
                                  document: Binding<ProfileDocument>,
                                  selectedID: Binding<UUID?>,
                                  draft: ProfileDraft,
-                                 store: DraftStore) {
+                                 store: DraftStore,
+                                 rootPageIndex: Int) {
         let parentID: UUID? = {
             if let sid = selectedID.wrappedValue,
                document.wrappedValue.nodes[sid]?.type == .container {
@@ -36,8 +37,13 @@ enum CanvasPresetBuilder {
             }
             return nil
         }()
-        let tree = makeSectionPreset(preset, parentID: parentID, document: document.wrappedValue)
-        insertPresetTree(tree, under: parentID, into: &document.wrappedValue)
+        let tree = makeSectionPreset(
+            preset,
+            parentID: parentID,
+            document: document.wrappedValue,
+            rootPageIndex: rootPageIndex
+        )
+        insertPresetTree(tree, under: parentID, onPage: rootPageIndex, into: &document.wrappedValue)
         selectedID.wrappedValue = tree.node.id
         store.updateDocument(draft, document: document.wrappedValue)
         CucuHaptics.soft()
@@ -47,18 +53,20 @@ enum CanvasPresetBuilder {
     /// node so the parent index stays in sync as the tree is unrolled.
     static func insertPresetTree(_ tree: PresetNodeTree,
                                  under parentID: UUID?,
+                                 onPage pageIndex: Int,
                                  into document: inout ProfileDocument) {
-        document.insert(tree.node, under: parentID)
+        document.insert(tree.node, under: parentID, onPage: pageIndex)
         for child in tree.children {
-            insertPresetTree(child, under: tree.node.id, into: &document)
+            insertPresetTree(child, under: tree.node.id, onPage: pageIndex, into: &document)
         }
     }
 
     static func makeSectionPreset(_ preset: CanvasSectionPreset,
                                   parentID: UUID?,
-                                  document: ProfileDocument) -> PresetNodeTree {
+                                  document: ProfileDocument,
+                                  rootPageIndex: Int = 0) -> PresetNodeTree {
         let width = presetWidth(parentID: parentID, document: document)
-        let origin = presetOrigin(parentID: parentID, document: document)
+        let origin = presetOrigin(parentID: parentID, document: document, rootPageIndex: rootPageIndex)
 
         switch preset {
         case .hero:      return makeHeroPreset(origin: origin, width: width)
@@ -76,12 +84,13 @@ enum CanvasPresetBuilder {
         return 326
     }
 
-    static func presetOrigin(parentID: UUID?, document: ProfileDocument) -> CGPoint {
+    static func presetOrigin(parentID: UUID?, document: ProfileDocument, rootPageIndex: Int = 0) -> CGPoint {
         if parentID != nil {
             return CGPoint(x: 16, y: 16)
         }
 
-        let bottom = document.rootChildrenIDs
+        let pageIndex = document.pages.indices.contains(rootPageIndex) ? rootPageIndex : max(0, document.pages.count - 1)
+        let bottom = document.children(of: nil, onPage: pageIndex)
             .compactMap { document.nodes[$0] }
             .map { $0.frame.y + $0.frame.height }
             .max() ?? 56

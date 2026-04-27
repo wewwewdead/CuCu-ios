@@ -18,9 +18,11 @@ struct LayersPanelView: View {
         NavigationStack {
             List {
                 Section {
-                    rootRow
-                    ForEach(layerRows) { row in
-                        layerRow(row)
+                    ForEach(document.pages.indices, id: \.self) { pageIndex in
+                        pageRow(pageIndex)
+                        ForEach(layerRows(onPage: pageIndex)) { row in
+                            layerRow(row)
+                        }
                     }
                 } header: {
                     Text("Hierarchy")
@@ -61,8 +63,9 @@ struct LayersPanelView: View {
         }
     }
 
-    private var rootRow: some View {
-        Button {
+    private func pageRow(_ pageIndex: Int) -> some View {
+        let page = document.pages[pageIndex]
+        return Button {
             selectedID = nil
         } label: {
             HStack(spacing: 12) {
@@ -70,9 +73,9 @@ struct LayersPanelView: View {
                     .frame(width: 24)
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Page")
+                    Text("Page \(pageIndex + 1)")
                         .foregroundStyle(.primary)
-                    Text("\(Int(document.pageWidth)) x \(Int(document.pageHeight))")
+                    Text("\(Int(document.pageWidth)) x \(Int(page.height))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -85,7 +88,7 @@ struct LayersPanelView: View {
             }
         }
         .buttonStyle(.plain)
-        .listRowBackground(selectedID == nil ? Color.accentColor.opacity(0.12) : Color.clear)
+        .listRowBackground(selectedID == nil && pageIndex == 0 ? Color.accentColor.opacity(0.12) : Color.clear)
     }
 
     private func layerRow(_ row: LayerRow) -> some View {
@@ -118,9 +121,9 @@ struct LayersPanelView: View {
         .listRowBackground(selectedID == row.nodeID ? Color.accentColor.opacity(0.12) : Color.clear)
     }
 
-    private var layerRows: [LayerRow] {
+    private func layerRows(onPage pageIndex: Int) -> [LayerRow] {
         var rows: [LayerRow] = []
-        appendRows(for: document.rootChildrenIDs, depth: 0, into: &rows)
+        appendRows(for: document.children(of: nil, onPage: pageIndex), depth: 0, into: &rows)
         return rows
     }
 

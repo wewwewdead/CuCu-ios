@@ -73,17 +73,24 @@ enum LocalCanvasAssetStore {
         return folder
     }
 
+    private static func pageBackgroundFilename(pageID: UUID?) -> String {
+        guard let pageID else { return "page_background.jpg" }
+        return "page_background_\(pageID.uuidString).jpg"
+    }
+
     // MARK: - Save
 
-    /// Normalize raw picker bytes and save as the *page background* image
-    /// for a draft. Filename is fixed (`page_background.jpg`), so each
-    /// draft has at most one — replacing overwrites cleanly with no leak.
+    /// Normalize raw picker bytes and save as a *page background* image
+    /// for a draft. Page 1 keeps the legacy fixed filename
+    /// (`page_background.jpg`); later pages include their page ID so their
+    /// backgrounds do not overwrite page 1 or each other.
     /// Larger max dimension than node images since backgrounds are
     /// displayed full-bleed.
     @discardableResult
     static func savePageBackground(
         _ rawData: Data,
         draftID: UUID,
+        pageID: UUID? = nil,
         maxDimension: CGFloat = ImageNormalizer.backgroundImageMaxDimension,
         compressionQuality: CGFloat = ImageNormalizer.defaultCompressionQuality
     ) throws -> String {
@@ -95,7 +102,7 @@ enum LocalCanvasAssetStore {
             throw SaveError.normalizationFailed
         }
         let folder = draftFolder(draftID: draftID, create: true)
-        let filename = "page_background.jpg"
+        let filename = pageBackgroundFilename(pageID: pageID)
         let url = folder.appendingPathComponent(filename)
         do {
             try jpeg.write(to: url, options: .atomic)
@@ -207,26 +214,28 @@ enum LocalCanvasAssetStore {
     @discardableResult
     static func copyPageBackground(
         from relativePath: String,
-        draftID: UUID
+        draftID: UUID,
+        pageID: UUID? = nil
     ) throws -> String {
         try copyExistingAsset(
             from: relativePath,
             toFolder: draftFolder(draftID: draftID, create: true),
             relativeFolderName: "draft_\(draftID.uuidString)",
-            filename: "page_background.jpg"
+            filename: pageBackgroundFilename(pageID: pageID)
         )
     }
 
     @discardableResult
     static func copyPageBackground(
         from relativePath: String,
-        templateID: UUID
+        templateID: UUID,
+        pageID: UUID? = nil
     ) throws -> String {
         try copyExistingAsset(
             from: relativePath,
             toFolder: templateFolder(templateID: templateID, create: true),
             relativeFolderName: "template_\(templateID.uuidString)",
-            filename: "page_background.jpg"
+            filename: pageBackgroundFilename(pageID: pageID)
         )
     }
 

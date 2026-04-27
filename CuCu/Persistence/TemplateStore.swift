@@ -127,12 +127,16 @@ private enum CanvasTemplateAssetCopier {
     static func copyAssetsForTemplateSave(_ document: ProfileDocument,
                                           templateID: UUID) -> ProfileDocument {
         var copy = document
-        if let path = document.pageBackgroundImagePath, !path.isEmpty {
-            copy.pageBackgroundImagePath = try? LocalCanvasAssetStore.copyPageBackground(
-                from: path,
-                templateID: templateID
-            )
+        for index in copy.pages.indices {
+            if let path = document.pages[index].backgroundImagePath, !path.isEmpty {
+                copy.pages[index].backgroundImagePath = try? LocalCanvasAssetStore.copyPageBackground(
+                    from: path,
+                    templateID: templateID,
+                    pageID: index == 0 ? nil : document.pages[index].id
+                )
+            }
         }
+        copy.syncLegacyFieldsFromFirstPage()
 
         for (id, node) in document.nodes {
             var next = node
@@ -180,12 +184,16 @@ private enum CanvasTemplateAssetCopier {
         var copy = document
         copy.id = UUID()
 
-        if let path = document.pageBackgroundImagePath, !path.isEmpty {
-            copy.pageBackgroundImagePath = try? LocalCanvasAssetStore.copyPageBackground(
-                from: path,
-                draftID: draftID
-            )
+        for index in copy.pages.indices {
+            if let path = document.pages[index].backgroundImagePath, !path.isEmpty {
+                copy.pages[index].backgroundImagePath = try? LocalCanvasAssetStore.copyPageBackground(
+                    from: path,
+                    draftID: draftID,
+                    pageID: index == 0 ? nil : document.pages[index].id
+                )
+            }
         }
+        copy.syncLegacyFieldsFromFirstPage()
 
         for (id, node) in document.nodes {
             var next = node

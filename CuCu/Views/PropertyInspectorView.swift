@@ -98,7 +98,7 @@ struct PropertyInspectorView: View {
                 }
             }
             .background(Color.cucuPaper.ignoresSafeArea())
-            .tint(Color.cucuMoss)
+            .tint(Color.cucuCherry)
             .onChange(of: replaceSelection) { _, newItem in
                 loadPickerData(newItem) { data in
                     onReplaceImage(selectedID, data)
@@ -177,20 +177,17 @@ struct PropertyInspectorView: View {
 
     private func header(for node: CanvasNode) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            CucuSpecLine(figure: "fig. 04 — inspector",
-                         trailing: typeLabel(for: node))
-                .padding(.horizontal, 4)
-
             HStack(spacing: 12) {
                 iconBadge(for: node)
                 VStack(alignment: .leading, spacing: 2) {
+                    Text(typeLabel(for: node).uppercased())
+                        .font(.cucuMono(9, weight: .semibold))
+                        .tracking(2)
+                        .foregroundStyle(Color.cucuInkFaded)
                     Text(displayName(for: node))
-                        .font(.cucuSerif(20, weight: .bold))
+                        .font(.cucuEditorial(20, weight: .bold, italic: true))
                         .foregroundStyle(Color.cucuInk)
                         .lineLimit(1)
-                    Text(typeLabel(for: node))
-                        .font(.cucuSans(12, weight: .medium))
-                        .foregroundStyle(Color.cucuInkFaded)
                 }
                 Spacer()
                 Button {
@@ -244,10 +241,10 @@ struct PropertyInspectorView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.cucuSerif(11, weight: .bold))
-                .tracking(0.4)
-                .foregroundStyle(Color.cucuInkSoft)
+            Text(title.uppercased())
+                .font(.cucuMono(9, weight: .semibold))
+                .tracking(2)
+                .foregroundStyle(Color.cucuInkFaded)
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
@@ -260,9 +257,8 @@ struct PropertyInspectorView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.cucuInk, lineWidth: 1)
+                .strokeBorder(Color.cucuInkRule, lineWidth: 1)
         )
-        .shadow(color: Color.cucuInk.opacity(0.10), radius: 8, x: 0, y: 3)
     }
 
     // MARK: - Card kinds
@@ -277,7 +273,7 @@ struct PropertyInspectorView: View {
                 Slider(value: binding, in: range, step: step) { editing in
                     if !editing { onCommit(document) }
                 }
-                .tint(Color.cucuMoss)
+                .tint(Color.cucuCherry)
                 CucuValuePill(text: valueLabel)
             }
         }
@@ -299,10 +295,12 @@ struct PropertyInspectorView: View {
         }
     }
 
-    private func colorCard(title: String, hex: Binding<String>) -> some View {
+    private func colorCard(title: String,
+                           hex: Binding<String>,
+                           supportsAlpha: Bool = false) -> some View {
         cardShell(title: title, width: 150) {
             HStack(spacing: 10) {
-                ColorPicker("", selection: hex.asColor(), supportsOpacity: false)
+                ColorPicker("", selection: hex.asColor(), supportsOpacity: supportsAlpha)
                     .labelsHidden()
                     .frame(width: 32, height: 32)
                     .onChange(of: hex.wrappedValue) { _, _ in onCommit(document) }
@@ -495,9 +493,15 @@ struct PropertyInspectorView: View {
             text: bindingName(node.id),
             placeholder: "e.g. Hero"
         )
+        // Containers expose alpha so users can build see-through
+        // overlays — the hex pipeline already round-trips
+        // `#RRGGBBAA` and `uiColor(hex:)` paints alpha correctly.
+        // Other color cards stay opaque (text fg / borders / icon
+        // plates / link bgs read better with a guaranteed solid).
         colorCard(
             title: "Background",
-            hex: bindingHex(node.id, key: \.style.backgroundColorHex, defaultHex: "#FFFFFF")
+            hex: bindingHex(node.id, key: \.style.backgroundColorHex, defaultHex: "#FFFFFF"),
+            supportsAlpha: true
         )
         containerImageCard(node: node)
         segmentedCard(

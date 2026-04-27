@@ -10,7 +10,7 @@ import Foundation
 /// remote/local fork falls back to a placeholder for unresolved paths.
 ///
 /// Surfaces transformed:
-///   1. `document.pageBackgroundImagePath`
+///   1. `document.pages[*].backgroundImagePath`
 ///   2. `node.style.backgroundImagePath`        (container backgrounds)
 ///   3. `node.content.localImagePath`           (image nodes)
 ///   4. `node.content.imagePaths`               (gallery nodes — array)
@@ -26,10 +26,15 @@ enum PublishedDocumentTransformer {
                           replacing pathMap: [String: String]) -> ProfileDocument {
         var copy = document
 
-        // 1. Page background.
-        if let local = copy.pageBackgroundImagePath, let remote = pathMap[local] {
-            copy.pageBackgroundImagePath = remote
+        // 1. Page backgrounds. Mirror page 1 back into the legacy top-level
+        // fields because ProfileDocument currently dual-emits both shapes.
+        for index in copy.pages.indices {
+            if let local = copy.pages[index].backgroundImagePath,
+               let remote = pathMap[local] {
+                copy.pages[index].backgroundImagePath = remote
+            }
         }
+        copy.syncLegacyFieldsFromFirstPage()
 
         // 2-4. Walk every node — leaf types update content paths, containers
         // update style.backgroundImagePath. Galleries update an array of
@@ -67,7 +72,12 @@ enum PublishedDocumentTransformer {
     static func localAssetPaths(in document: ProfileDocument) -> [String] {
         var paths = Set<String>()
 
-        if let p = document.pageBackgroundImagePath, !isRemote(p) {
+        for page in document.pages {
+            if let p = page.backgroundImagePath, !p.isEmpty, !isRemote(p) {
+                paths.insert(p)
+            }
+        }
+        if let p = document.pageBackgroundImagePath, !p.isEmpty, !isRemote(p) {
             paths.insert(p)
         }
 

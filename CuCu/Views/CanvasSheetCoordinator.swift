@@ -34,6 +34,7 @@ final class CanvasSheetCoordinator {
     var showLayersSheet = false
     var showSaveTemplateSheet = false
     var showApplyTemplateSheet = false
+    var showThemePickerSheet = false
     var showContainerBackgroundEffectsSheet = false
 
     // Pending chain flags — set when the user requests a transition,

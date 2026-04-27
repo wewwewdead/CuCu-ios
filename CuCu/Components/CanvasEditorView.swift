@@ -82,6 +82,47 @@ private struct BackgroundImageLRUCache {
     }
 }
 
+private final class AddPageAffordanceView: UIControl {
+    private let dashedBorder = CAShapeLayer()
+    private let label = UILabel()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        backgroundColor = UIColor.secondarySystemGroupedBackground.withAlphaComponent(0.8)
+        layer.cornerRadius = 14
+        layer.masksToBounds = true
+
+        dashedBorder.strokeColor = UIColor.separator.cgColor
+        dashedBorder.fillColor = UIColor.clear.cgColor
+        dashedBorder.lineDashPattern = [6, 5]
+        dashedBorder.lineWidth = 1
+        layer.addSublayer(dashedBorder)
+
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = "+ Add page"
+        label.font = .systemFont(ofSize: 15, weight: .semibold)
+        label.textColor = .secondaryLabel
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        dashedBorder.frame = bounds
+        dashedBorder.path = UIBezierPath(
+            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+            cornerRadius: 14
+        ).cgPath
+    }
+}
+
 /// The UIKit canvas. Owns:
 ///   - a flat `[UUID: NodeRenderView]` cache keyed by node ID
 ///   - the page-background view (the canvas root's background fill)
@@ -104,6 +145,158 @@ private struct BackgroundImageLRUCache {
 ///   canvas-root coords and we apply it directly to the selected node's
 ///   parent-space frame. If we ever add zoom, replace direct addition with
 ///   `convert(_:to:)` of the translation vector.
+/// Host view for `CanvasEditorView`'s background pattern overlay.
+/// Owns whatever `CAGradientLayer` is currently painting a wash and
+/// keeps it sized to its bounds across page resizes — `CALayer.autoresizingMask`
+/// is macOS-only, so the equivalent on iOS is a tiny layoutSubviews
+/// override that walks the sublayers.
+private final class BackgroundPatternHostView: UIView {
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let sublayers = layer.sublayers else { return }
+        for sublayer in sublayers where sublayer is CAGradientLayer {
+            // `actions = nil` (set on the layer when it's authored)
+            // would be the cleaner suppression of implicit animation,
+            // but the gradients we paint are static so a `disableActions`
+            // transaction here keeps the resize from cross-fading.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            sublayer.frame = bounds
+            CATransaction.commit()
+        }
+    }
+}
+
+/// Editorial page-identifier tag pinned to the top-left corner of
+/// every page. Two-tier composition:
+/// - mono uppercase "PAGE" caption (Lexend SemiBold, tracked)
+/// - cherry hairline rule
+/// - Fraunces italic numeral
+///
+/// Replaces the old systemMaterial blur bar — the blur read as iOS
+/// settings chrome, not the editorial-scrapbook tone the rest of the
+/// editor uses. Focus state flips fill/stroke to ink so the active
+/// page reads with the same "selected" cue as the inspector
+/// header's `Editing · n3` tile.
+private final class PageIdentifierTagView: UIView {
+    private let captionLabel = UILabel()
+    private let numeralLabel = UILabel()
+    private let ruleView = UIView()
+
+    private(set) var isFocusedPage: Bool = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        backgroundColor = .cucuPaper
+        layer.cornerRadius = 14
+        layer.cornerCurve = .continuous
+        layer.borderWidth = 1
+        layer.borderColor = UIColor.cucuInkRule.cgColor
+        layer.shadowColor = UIColor.cucuInk.cgColor
+        layer.shadowOpacity = 0.10
+        layer.shadowRadius = 6
+        layer.shadowOffset = CGSize(width: 0, height: 2)
+
+        captionLabel.translatesAutoresizingMaskIntoConstraints = false
+        captionLabel.text = "PAGE"
+        captionLabel.font = .monospacedSystemFont(ofSize: 8.5, weight: .semibold)
+        captionLabel.textColor = .cucuInkFaded
+        captionLabel.textAlignment = .center
+        captionLabel.attributedText = NSAttributedString(
+            string: "PAGE",
+            attributes: [.kern: 1.6,
+                         .font: UIFont.monospacedSystemFont(ofSize: 8.5, weight: .semibold),
+                         .foregroundColor: UIColor.cucuInkFaded]
+        )
+
+        ruleView.translatesAutoresizingMaskIntoConstraints = false
+        ruleView.backgroundColor = .cucuCherry
+
+        numeralLabel.translatesAutoresizingMaskIntoConstraints = false
+        // Fraunces italic — the editorial face introduced in Phase 1.
+        // Falls back to system italic if registration somehow fails;
+        // the page tag reading as "italic page number" is the load-
+        // bearing visual, the specific face is the polish.
+        numeralLabel.font = UIFont(name: "Fraunces-BoldItalic", size: 26)
+            ?? .italicSystemFont(ofSize: 26)
+        numeralLabel.textColor = .cucuInk
+        numeralLabel.textAlignment = .center
+
+        addSubview(captionLabel)
+        addSubview(ruleView)
+        addSubview(numeralLabel)
+
+        NSLayoutConstraint.activate([
+            captionLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            captionLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+
+            ruleView.topAnchor.constraint(equalTo: captionLabel.bottomAnchor, constant: 4),
+            ruleView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            ruleView.widthAnchor.constraint(equalToConstant: 26),
+            ruleView.heightAnchor.constraint(equalToConstant: 1.4),
+
+            numeralLabel.topAnchor.constraint(equalTo: ruleView.bottomAnchor, constant: 1),
+            numeralLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            numeralLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -6),
+        ])
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { nil }
+
+    func setNumber(_ number: Int) {
+        numeralLabel.text = String(number)
+    }
+
+    /// Flips the tag between the "active page" and "background page"
+    /// states. Active uses ink fill / paper text — the same inversion
+    /// pattern the inspector header uses for the editing-target tile.
+    /// Background uses paper fill / ink text. Cherry rule stays cherry
+    /// in both — it's the constant accent of the editorial system.
+    func setFocused(_ focused: Bool, animated: Bool) {
+        guard focused != isFocusedPage else { return }
+        isFocusedPage = focused
+        let apply = { [self] in
+            backgroundColor = focused ? .cucuInk : .cucuPaper
+            layer.borderColor = (focused ? UIColor.cucuInk : UIColor.cucuInkRule).cgColor
+            layer.shadowOpacity = focused ? 0.22 : 0.10
+            numeralLabel.textColor = focused ? .cucuPaper : .cucuInk
+            captionLabel.attributedText = NSAttributedString(
+                string: "PAGE",
+                attributes: [
+                    .kern: 1.6,
+                    .font: UIFont.monospacedSystemFont(ofSize: 8.5, weight: .semibold),
+                    .foregroundColor: focused
+                        ? UIColor.cucuPaper.withAlphaComponent(0.7)
+                        : UIColor.cucuInkFaded,
+                ]
+            )
+            transform = focused
+                ? CGAffineTransform(scaleX: 1.06, y: 1.06)
+                : .identity
+        }
+        if animated {
+            UIView.animate(
+                withDuration: 0.25,
+                delay: 0,
+                usingSpringWithDamping: 0.78,
+                initialSpringVelocity: 0,
+                options: [.allowUserInteraction, .beginFromCurrentState],
+                animations: apply
+            )
+        } else {
+            apply()
+        }
+    }
+}
+
+private extension UIColor {
+    /// Re-stated rule colour that reads as ink at 12% — same value
+    /// `Color.cucuInkRule` uses on the SwiftUI side. Kept private to
+    /// the file because no other UIKit consumer needs it yet.
+    static let cucuInkRule = UIColor.black.withAlphaComponent(0.12)
+}
+
 final class CanvasEditorView: UIView {
 
     // MARK: - State
@@ -163,54 +356,58 @@ final class CanvasEditorView: UIView {
         return v
     }()
 
-    /// Shadow/border wrapper for the actual profile page. Root canvas nodes
-    /// live inside `pageView`; this outer wrapper supplies the visual page
-    /// object without clipping the shadow.
-    private let pageShadowView: UIView = {
-        let v = UIView()
+    private let pagesStackView: UIStackView = {
+        let v = UIStackView()
         v.translatesAutoresizingMaskIntoConstraints = false
-        v.backgroundColor = .clear
-        v.layer.shadowColor = UIColor.black.cgColor
-        v.layer.shadowOpacity = 0.12
-        v.layer.shadowRadius = 14
-        v.layer.shadowOffset = CGSize(width: 0, height: 5)
+        v.axis = .vertical
+        v.alignment = .center
+        v.spacing = 40
         return v
     }()
 
-    /// The bounded profile page surface. Root nodes are positioned in this
-    /// view's coordinate space. Clipping makes page bounds explicit while the
-    /// selection overlay remains outside in `contentView`.
-    private let pageView: UIView = {
-        let v = UIView()
-        v.translatesAutoresizingMaskIntoConstraints = false
-        v.backgroundColor = uiColor(hex: ProfileDocument.defaultPageBackgroundHex)
-        v.clipsToBounds = true
-        v.layer.borderColor = UIColor.separator.cgColor
-        v.layer.borderWidth = 1
-        return v
-    }()
+    private struct PageSurface {
+        let pageID: UUID
+        let shadowView: UIView
+        /// Editorial page-number tag pinned to the top-left of the
+        /// page. Owns its own caption / rule / numeral; the
+        /// surrounding host only flips its focused state.
+        let pageTagView: PageIdentifierTagView
+        /// Container for `pageTagView` + `deleteButton`. Lives on the
+        /// shadowView so the page-number tag floats above the
+        /// page-edge stroke without clipping. Toggled to alpha 0
+        /// during published-viewer preview.
+        let chromeView: UIView
+        let deleteButton: UIButton
+        let pageView: UIView
+        let backgroundImageView: UIImageView
+        /// Tiled pattern overlay. Empty by default; either gets a
+        /// `UIColor(patternImage:)` background for tile patterns or
+        /// hosts a gradient layer for the wash patterns. Sits above
+        /// `backgroundImageView` and below the paper grain.
+        let backgroundPatternView: UIView
+        /// Gradient sublayer hosted inside `backgroundPatternView`
+        /// when a wash pattern (sunset / meadow / hazyDusk) is
+        /// selected. Removed when the active pattern flips back to
+        /// a tile pattern or `nil`.
+        let backgroundPatternGradientLayer: CAGradientLayer
+        /// Always-on noise overlay. Reads as newsprint texture on
+        /// top of whatever the bg color / pattern produced.
+        let paperGrainView: UIImageView
+        let widthConstraint: NSLayoutConstraint
+        let heightConstraint: NSLayoutConstraint
+    }
+
+    private var pageSurfaces: [UUID: PageSurface] = [:]
+    private var orderedPageIDs: [UUID] = []
+    private let addPageAffordance = AddPageAffordanceView()
+    private var addPageWidthConstraint: NSLayoutConstraint?
+    private var addPageHeightConstraint: NSLayoutConstraint?
 
     private var contentWidthConstraint: NSLayoutConstraint?
     /// Drives `contentView.height`. Updated by `updateContentHeight()`
     /// based on page height and viewport height.
     private var contentHeightConstraint: NSLayoutConstraint?
-    private var pageWidthConstraint: NSLayoutConstraint?
-    private var pageHeightConstraint: NSLayoutConstraint?
-
-    /// Page-level background image. Sits at the very back of the subview
-    /// stack inside `pageView` so node views render on top. Hidden when the document has
-    /// no `pageBackgroundImagePath`. `isUserInteractionEnabled = false`
-    /// so it never claims taps — empty-canvas touches still reach the
-    /// `CanvasEditorView`'s tap recognizer for deselect.
-    private let backgroundImageView: UIImageView = {
-        let v = UIImageView()
-        v.contentMode = .scaleAspectFill
-        v.clipsToBounds = true
-        v.isUserInteractionEnabled = false
-        v.translatesAutoresizingMaskIntoConstraints = false
-        v.isHidden = true
-        return v
-    }()
+    private var pagesStackTopConstraint: NSLayoutConstraint?
 
     /// LRU cache for original (non-filtered) background bitmaps. Keyed
     /// by the relative path *and* the file's modification date so a
@@ -232,14 +429,13 @@ final class CanvasEditorView: UIView {
     /// already running, we stash only its parameters and the running
     /// task picks them up the moment it finishes. Latest-wins, so the
     /// user's final slider position always lands in the visible result.
-    private var isRenderingBackground = false
-    private var pendingBackgroundEffects: (image: UIImage, blur: Double, vignette: Double)?
+    private var backgroundRenderVersions: [UUID: Int] = [:]
 
     /// Signature of the last document state we actually applied. Lets us
     /// skip whole `apply(...)` passes when nothing background-relevant
     /// changed (e.g., a node mutation that doesn't touch the page).
     /// Includes `mtime` so an in-place file replace counts as a change.
-    private var lastBackgroundSignature: (path: String?, mtime: Date?, blur: Double, vignette: Double) = (nil, nil, 0, 0)
+    private var lastBackgroundSignatures: [UUID: (path: String?, mtime: Date?, blur: Double, vignette: Double)] = [:]
 
     /// Snapshot taken at the start of a drag/resize, so each `.changed` event
     /// can compute an absolute-from-translation frame instead of accumulating
@@ -253,8 +449,29 @@ final class CanvasEditorView: UIView {
     /// stranded as the parent grows or shrinks. Cleared on gesture
     /// end. Empty for resizes on leaf nodes (text, image, etc.).
     private var dragStartDescendantFrames: [UUID: CGRect] = [:]
-    private let pageTopPadding: CGFloat = 24
+    /// Vertical gap between the canvas top and the first page. Was
+    /// 56pt to leave room for a card-style "page card on a tray" look,
+    /// but the editor now paints the page edge-to-edge so the page
+    /// can sit flush under the toolbar — matching the published
+    /// view (where this padding has always been 0).
+    private let pageTopPadding: CGFloat = 0
     private let pageBottomPadding: CGFloat = 48
+    private let addPageHeight: CGFloat = 64
+    private var lastReportedEditingPageIndex: Int = 0
+    private var appliedPageCount = ProfileDocument.blank.pages.count
+    /// False until the first `apply(document:)` pass lands. Gates the
+    /// "user appended a new page → auto-scroll to it" behaviour so
+    /// cold launches of multi-page drafts open at page 1 instead of
+    /// jumping to the last page (the load looks like "new pages
+    /// appeared since the blank baseline" without this flag).
+    private var hasAppliedFirstDocument = false
+    /// True until the first valid layout pass scrolls page 1 into
+    /// view. The scroll has to run after `scrollView.bounds` is sized
+    /// — calling `scrollToPage` from inside `apply(document:)` on a
+    /// cold launch hits a 0×0 scroll view and the offset assignment
+    /// is silently clamped / overwritten. Honored in `layoutSubviews`
+    /// once dimensions are real, then cleared.
+    private var pendingInitialScrollToTop = false
 
     // MARK: - SwiftUI bridges
 
@@ -264,6 +481,17 @@ final class CanvasEditorView: UIView {
     /// Called whenever the model is mutated by a user gesture and the
     /// gesture has ended (drag-end, resize-end). The caller persists.
     var onCommit: ((ProfileDocument) -> Void)?
+
+    /// Editor-only affordance below the last page.
+    var onAddPage: (() -> Void)?
+
+    /// Editor-only page chrome delete request. The SwiftUI host owns the
+    /// confirmation alert and actual mutation.
+    var onDeletePageRequested: ((Int) -> Void)?
+
+    /// Reports the page whose settings should be edited. Selection wins;
+    /// otherwise the topmost visible page in the scroll viewport wins.
+    var onEditingPageChanged: ((Int) -> Void)?
 
     /// Called when the user long-presses a node — a "fast path to the
     /// inspector". The canvas has already updated its own selection
@@ -321,13 +549,21 @@ final class CanvasEditorView: UIView {
     /// paginated grid (`FullGalleryView`).
     var onOpenFullGallery: (([URL]) -> Void)?
 
+    /// Non-nil in the public viewer: render only that page so off-screen
+    /// page backgrounds and node images are not mounted or fetched.
+    var viewerPageIndex: Int?
+
 
     // MARK: - Init
 
     init() {
         super.init(frame: .zero)
         clipsToBounds = true
-        backgroundColor = .secondarySystemGroupedBackground
+        // Edge-to-edge backdrop matches the editorial paper tone, so
+        // the few pixels of canvas visible past the page edges (or
+        // when the user scrolls past the page bottom) read as
+        // continuous paper margin instead of iOS settings grey.
+        backgroundColor = .cucuPaper
 
         // Scrollable content stack: scrollView → contentView → page → nodes.
         addSubview(scrollView)
@@ -343,7 +579,19 @@ final class CanvasEditorView: UIView {
             contentView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
             contentView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
         ])
-        let w = contentView.widthAnchor.constraint(equalToConstant: ProfileDocument.defaultPageWidth)
+        // Edge-to-edge: contentView tracks the scroll view's visible
+        // frame width, not a fixed page-size constant. Pages inside
+        // the stack stretch to this width via their own constraint
+        // (see `makePageSurface`), so the page paints flush with the
+        // canvas — no horizontal gutter, regardless of which iPhone
+        // model the user is on. The document's `pageWidth` stays the
+        // canonical model field; children still address coordinates
+        // in that logical space, accepting a few-point trailing gap
+        // on Plus / Max devices in exchange for keeping the
+        // persisted document portable across screen widths.
+        let w = contentView.widthAnchor.constraint(
+            equalTo: scrollView.frameLayoutGuide.widthAnchor
+        )
         w.priority = .required
         w.isActive = true
         contentWidthConstraint = w
@@ -352,30 +600,20 @@ final class CanvasEditorView: UIView {
         h.isActive = true
         contentHeightConstraint = h
 
-        contentView.addSubview(pageShadowView)
-        pageShadowView.addSubview(pageView)
-        pageView.addSubview(backgroundImageView)
-
-        let pageW = pageShadowView.widthAnchor.constraint(equalToConstant: ProfileDocument.defaultPageWidth)
-        let pageH = pageShadowView.heightAnchor.constraint(equalToConstant: ProfileDocument.defaultPageHeight)
-        pageW.isActive = true
-        pageH.isActive = true
-        pageWidthConstraint = pageW
-        pageHeightConstraint = pageH
-
+        contentView.addSubview(pagesStackView)
+        let stackTop = pagesStackView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: pageTopPadding)
+        pagesStackTopConstraint = stackTop
         NSLayoutConstraint.activate([
-            pageShadowView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: pageTopPadding),
-            pageShadowView.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            stackTop,
+            pagesStackView.centerXAnchor.constraint(equalTo: contentView.centerXAnchor)
+        ])
 
-            pageView.leadingAnchor.constraint(equalTo: pageShadowView.leadingAnchor),
-            pageView.trailingAnchor.constraint(equalTo: pageShadowView.trailingAnchor),
-            pageView.topAnchor.constraint(equalTo: pageShadowView.topAnchor),
-            pageView.bottomAnchor.constraint(equalTo: pageShadowView.bottomAnchor),
-
-            backgroundImageView.leadingAnchor.constraint(equalTo: pageView.leadingAnchor),
-            backgroundImageView.trailingAnchor.constraint(equalTo: pageView.trailingAnchor),
-            backgroundImageView.topAnchor.constraint(equalTo: pageView.topAnchor),
-            backgroundImageView.bottomAnchor.constraint(equalTo: pageView.bottomAnchor),
+        addPageAffordance.addTarget(self, action: #selector(handleAddPageTapped), for: .touchUpInside)
+        addPageWidthConstraint = addPageAffordance.widthAnchor.constraint(equalToConstant: ProfileDocument.defaultPageWidth)
+        addPageHeightConstraint = addPageAffordance.heightAnchor.constraint(equalToConstant: addPageHeight)
+        NSLayoutConstraint.activate([
+            addPageWidthConstraint!,
+            addPageHeightConstraint!
         ])
 
         // Tap recognizer on `contentView` so `gesture.location(in:)`
@@ -383,6 +621,7 @@ final class CanvasEditorView: UIView {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.cancelsTouchesInView = false
         contentView.addGestureRecognizer(tap)
+        scrollView.delegate = self
 
         // Selection overlay lives inside `contentView` so it scrolls
         // along with the selected node while drawing above the page's clipping.
@@ -435,63 +674,33 @@ final class CanvasEditorView: UIView {
 
         self.document = document
         self.selectedID = selectedID
+        // Only auto-scroll to a new page when one was just appended
+        // *during this session*. On first apply (cold launch) the
+        // load looks like "pages appeared past the blank baseline"
+        // — that's not an append, that's the existing draft. Open
+        // at page 1 instead.
+        let shouldFocusNewPage = viewerPageIndex == nil
+            && hasAppliedFirstDocument
+            && document.pages.count > appliedPageCount
 
-        backgroundColor = .secondarySystemGroupedBackground
-        pageView.backgroundColor = uiColor(hex: document.pageBackgroundHex)
+        backgroundColor = .cucuPaper
+        let pageIndices = visiblePageIndices(for: document)
+        reconcilePageSurfaces(for: pageIndices, in: document)
         applyPageSizing(for: document)
-
-        // Page background image + effects. Three optimizations vs. the
-        // straightforward sync path:
-        //   1. Skip the work entirely when nothing background-relevant
-        //      changed (so an unrelated apply pass is free).
-        //   2. Cache the loaded `UIImage` by path so a slider drag
-        //      doesn't re-decode the JPEG on every tick.
-        //   3. Filter rendering runs off the main thread with
-        //      coalescing — see `scheduleBackgroundFilterRender`.
-        // The on-disk file is never modified; effects are recomputed
-        // from the original bitmap each time, so sliding back to 0
-        // restores pixel-perfect quality.
-        let path = document.pageBackgroundImagePath
-        let blur = document.pageBackgroundBlur ?? 0
-        let vignette = document.pageBackgroundVignette ?? 0
-        let mtime = LocalCanvasAssetStore.modificationDate(path)
-
-        let signatureChanged =
-            lastBackgroundSignature.path != path ||
-            lastBackgroundSignature.mtime != mtime ||
-            lastBackgroundSignature.blur != blur ||
-            lastBackgroundSignature.vignette != vignette
-
-        if signatureChanged {
-            if let path, !path.isEmpty,
-               let original = cachedOrLoadBackgroundOriginal(path: path, mtime: mtime) {
-                backgroundImageView.isHidden = false
-                if blur <= 0.01 && vignette <= 0.01 {
-                    // No filter — instant assignment, no GPU work.
-                    backgroundImageView.image = original
-                } else {
-                    scheduleBackgroundFilterRender(image: original, blur: blur, vignette: vignette)
-                }
-            } else {
-                // Path went away (clear) or load failed. Don't wipe
-                // the LRU here — keeping prior entries warm is the
-                // whole point. Just hide the view; the next show
-                // will pull from cache if the same key returns.
-                backgroundImageView.image = nil
-                backgroundImageView.isHidden = true
-            }
-            lastBackgroundSignature = (path, mtime, blur, vignette)
-        }
-        pageView.sendSubviewToBack(backgroundImageView)
 
         // Walk the live tree, ensuring each node has a render view in the
         // right superview, then prune any cached views whose IDs are gone.
-        // Root children live inside `pageView`, which is the bounded profile
-        // page surface. Nested children live inside container node views.
+        // Root children live inside their page's bounded surface. Nested
+        // children live inside container node views.
         var liveIDs: Set<UUID> = []
 
-        for childID in document.rootChildrenIDs {
-            applyNode(id: childID, parent: pageView, liveIDs: &liveIDs)
+        for pageIndex in pageIndices {
+            let page = document.pages[pageIndex]
+            guard let surface = pageSurfaces[page.id] else { continue }
+            applyPageBackground(page, surface: surface)
+            for childID in page.rootChildrenIDs {
+                applyNode(id: childID, parent: surface.pageView, liveIDs: &liveIDs)
+            }
         }
 
         // Prune orphans (deleted nodes).
@@ -511,17 +720,25 @@ final class CanvasEditorView: UIView {
         // `setNeedsLayout` and the layout invalidation count exploded.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        applyZOrder(parentID: nil, in: pageView)
+        for pageIndex in pageIndices {
+            let page = document.pages[pageIndex]
+            if let surface = pageSurfaces[page.id] {
+                applyZOrder(parentID: nil, in: surface.pageView, onPage: pageIndex)
+                surface.pageView.sendSubviewToBack(surface.backgroundImageView)
+            }
+        }
         for (id, view) in renderViews {
-            if document.nodes[id]?.type == .container {
-                applyZOrder(parentID: id, in: view)
+            if document.nodes[id]?.type == .container || document.nodes[id]?.type == .text {
+                // Text nodes can host children too — order them by
+                // `childrenIDs` so a stack of icons over a text region
+                // renders front-to-back like containers do.
+                applyZOrder(parentID: id, in: view, onPage: nil)
             } else if document.nodes[id]?.type == .carousel,
                       let carousel = view as? CarouselNodeView {
-                applyZOrder(parentID: id, in: carousel.itemHostView)
+                applyZOrder(parentID: id, in: carousel.itemHostView, onPage: nil)
                 carousel.updateContentSizeToFitItems()
             }
         }
-        pageView.sendSubviewToBack(backgroundImageView)
 
         // Selection overlay tracks the selected node, regardless of nesting.
         contentView.bringSubviewToFront(overlay)
@@ -544,10 +761,350 @@ final class CanvasEditorView: UIView {
             }
         }
 
-        // Resize the scrollable content to fit the bottommost root
-        // node — the canvas grows downward as the user adds /
-        // positions content past the viewport.
         updateContentHeight()
+        if shouldFocusNewPage {
+            layoutIfNeeded()
+            scrollToPage(at: document.pages.count - 1, animated: true)
+        } else {
+            updateEditingPageForCurrentState()
+            // First apply: defer the "open at page 1" snap to the
+            // next valid layout pass. Calling `scrollToPage` here
+            // is too early on a cold launch — `scrollView.bounds`
+            // is still 0×0 so the offset assignment lands, then
+            // gets clobbered when the actual layout runs and the
+            // scroll view re-anchors at top automatically (which
+            // is *not* page 1 once content has scrolled to the
+            // restored 2nd-page position from a prior session).
+            if !hasAppliedFirstDocument, viewerPageIndex == nil {
+                pendingInitialScrollToTop = true
+                setNeedsLayout()
+            }
+        }
+        appliedPageCount = document.pages.count
+        hasAppliedFirstDocument = true
+    }
+
+    private func visiblePageIndices(for document: ProfileDocument) -> [Int] {
+        guard !document.pages.isEmpty else { return [] }
+        if let viewerPageIndex {
+            guard document.pages.indices.contains(viewerPageIndex) else { return [] }
+            return [viewerPageIndex]
+        }
+        return Array(document.pages.indices)
+    }
+
+    private func reconcilePageSurfaces(for pageIndices: [Int], in document: ProfileDocument) {
+        let requiredIDs = pageIndices.map { document.pages[$0].id }
+        for pageID in orderedPageIDs where !requiredIDs.contains(pageID) {
+            if let surface = pageSurfaces.removeValue(forKey: pageID) {
+                pagesStackView.removeArrangedSubview(surface.shadowView)
+                surface.shadowView.removeFromSuperview()
+                lastBackgroundSignatures.removeValue(forKey: pageID)
+                backgroundRenderVersions.removeValue(forKey: pageID)
+            }
+        }
+
+        orderedPageIDs = []
+        for (stackIndex, pageIndex) in pageIndices.enumerated() {
+            let page = document.pages[pageIndex]
+            let surface = pageSurfaces[page.id] ?? makePageSurface(for: page)
+            pageSurfaces[page.id] = surface
+            updatePageChrome(pageIndex: pageIndex, surface: surface)
+            orderedPageIDs.append(page.id)
+            if surface.shadowView.superview !== pagesStackView {
+                pagesStackView.insertArrangedSubview(surface.shadowView, at: min(stackIndex, pagesStackView.arrangedSubviews.count))
+            }
+            if let currentIndex = pagesStackView.arrangedSubviews.firstIndex(of: surface.shadowView),
+               currentIndex != stackIndex {
+                pagesStackView.removeArrangedSubview(surface.shadowView)
+                pagesStackView.insertArrangedSubview(surface.shadowView, at: stackIndex)
+            }
+        }
+
+        let shouldShowAddPage = viewerPageIndex == nil && isInteractive
+        if shouldShowAddPage {
+            if addPageAffordance.superview !== pagesStackView {
+                pagesStackView.addArrangedSubview(addPageAffordance)
+            } else if pagesStackView.arrangedSubviews.last !== addPageAffordance {
+                pagesStackView.removeArrangedSubview(addPageAffordance)
+                pagesStackView.addArrangedSubview(addPageAffordance)
+            }
+        } else if addPageAffordance.superview === pagesStackView {
+            pagesStackView.removeArrangedSubview(addPageAffordance)
+            addPageAffordance.removeFromSuperview()
+        }
+    }
+
+    private func makePageSurface(for page: PageStyle) -> PageSurface {
+        let shadowView = UIView()
+        shadowView.translatesAutoresizingMaskIntoConstraints = false
+        shadowView.backgroundColor = .clear
+        // Edge-to-edge: page sits flush against the canvas with no
+        // lifted-card shadow. `updatePageChrome` keeps the shadow
+        // properties at 0 too — the cherry-tinted focus shadow has
+        // been retired in favour of the floating page-tag's
+        // ink-fill flip as the focus indicator.
+        shadowView.layer.shadowOpacity = 0
+
+        // Chrome host — a transparent container that lives over the
+        // page edge so the editorial tag and trash button float
+        // without clipping. No blur, no fill; the visual chrome
+        // belongs to the tag itself.
+        let chromeView = UIView()
+        chromeView.translatesAutoresizingMaskIntoConstraints = false
+        chromeView.backgroundColor = .clear
+        chromeView.alpha = 0
+
+        // Page-number label suppressed per UX direction: the editor
+        // canvas reads as a single uninterrupted page, no editorial
+        // marginalia floating in the corner. The view stays in the
+        // hierarchy (rather than being deleted from `PageSurface`
+        // entirely) so the rest of the chrome plumbing — alpha
+        // toggling for viewer mode, layout constraints, focus-state
+        // setters — keeps working without a structural refactor.
+        // Flip `isHidden = false` to bring the tag back.
+        let pageTagView = PageIdentifierTagView()
+        pageTagView.isHidden = true
+
+        // Trash button — circular paper-fill / ink-stroke / cherry
+        // glyph. System red read as iOS settings; cherry keeps the
+        // delete affordance in the editorial palette without losing
+        // its "this is destructive" valence.
+        let deleteButton = UIButton(type: .system)
+        deleteButton.translatesAutoresizingMaskIntoConstraints = false
+        let trashConfig = UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        deleteButton.setImage(
+            UIImage(systemName: "trash", withConfiguration: trashConfig),
+            for: .normal
+        )
+        deleteButton.tintColor = .cucuCherry
+        deleteButton.backgroundColor = .cucuPaper
+        deleteButton.layer.cornerRadius = 16
+        deleteButton.layer.borderWidth = 1
+        deleteButton.layer.borderColor = UIColor.cucuInk.cgColor
+        deleteButton.layer.shadowColor = UIColor.cucuInk.cgColor
+        deleteButton.layer.shadowOpacity = 0.10
+        deleteButton.layer.shadowRadius = 4
+        deleteButton.layer.shadowOffset = CGSize(width: 0, height: 2)
+        deleteButton.accessibilityLabel = "Delete Page"
+        deleteButton.addTarget(self, action: #selector(handleDeletePageTapped(_:)), for: .touchUpInside)
+
+        let pageView = UIView()
+        pageView.translatesAutoresizingMaskIntoConstraints = false
+        pageView.backgroundColor = uiColor(hex: page.backgroundHex)
+        pageView.clipsToBounds = true
+        // Edge-to-edge: no visible border / shadow on the page. Focus
+        // is communicated through the floating page tag's ink-fill
+        // flip in `updatePageChrome`, not by ringing the page itself.
+        pageView.layer.borderColor = UIColor.clear.cgColor
+        pageView.layer.borderWidth = 0
+
+        let backgroundImageView = UIImageView()
+        backgroundImageView.contentMode = .scaleAspectFill
+        backgroundImageView.clipsToBounds = true
+        backgroundImageView.isUserInteractionEnabled = false
+        backgroundImageView.translatesAutoresizingMaskIntoConstraints = false
+        backgroundImageView.isHidden = true
+
+        // Pattern overlay container. Stays clear by default and gets
+        // a tiled UIColor backgroundColor or a CAGradientLayer
+        // sublayer once the user selects a `CanvasBackgroundPattern`.
+        // Uses `BackgroundPatternHostView` so the gradient sublayer's
+        // frame tracks the host's bounds without a manual relayout.
+        let backgroundPatternView = BackgroundPatternHostView()
+        backgroundPatternView.translatesAutoresizingMaskIntoConstraints = false
+        backgroundPatternView.isUserInteractionEnabled = false
+        backgroundPatternView.backgroundColor = .clear
+        backgroundPatternView.clipsToBounds = true
+
+        let backgroundPatternGradientLayer = CAGradientLayer()
+        backgroundPatternGradientLayer.isHidden = true
+
+        // Always-on paper grain. UIView's `pattern image` background
+        // tiles a small noise UIImage edge-to-edge for free, then we
+        // dim it with `alpha` rather than a multiply blend (UIKit
+        // doesn't compose blends across siblings reliably; alpha on
+        // a low-contrast tile reads close enough to the SVG version).
+        let paperGrainView = UIImageView()
+        paperGrainView.translatesAutoresizingMaskIntoConstraints = false
+        paperGrainView.isUserInteractionEnabled = false
+        paperGrainView.backgroundColor = UIColor(patternImage: CucuPaperGrain.uiTile)
+        paperGrainView.alpha = 0.22
+
+        shadowView.addSubview(pageView)
+        pageView.addSubview(backgroundImageView)
+        pageView.addSubview(backgroundPatternView)
+        pageView.addSubview(paperGrainView)
+        shadowView.addSubview(chromeView)
+        chromeView.addSubview(pageTagView)
+        chromeView.addSubview(deleteButton)
+
+        let width = shadowView.widthAnchor.constraint(equalToConstant: ProfileDocument.defaultPageWidth)
+        let height = shadowView.heightAnchor.constraint(equalToConstant: ProfileDocument.defaultPageHeight)
+        NSLayoutConstraint.activate([
+            width,
+            height,
+            // Chrome stretches the full top of the shadowView so its
+            // children (the tag at the leading edge, the trash at
+            // the trailing edge) can use raw absolute positioning
+            // without resorting to two separate floating subviews.
+            chromeView.leadingAnchor.constraint(equalTo: shadowView.leadingAnchor),
+            chromeView.trailingAnchor.constraint(equalTo: shadowView.trailingAnchor),
+            chromeView.topAnchor.constraint(equalTo: shadowView.topAnchor),
+            chromeView.heightAnchor.constraint(equalToConstant: 64),
+
+            // Page tag — slightly inset from the page edge so the
+            // tag's own ink stroke doesn't visually merge with the
+            // page border. Tag is square-ish (~58×56) so the
+            // numeral has room to breathe in italic.
+            pageTagView.leadingAnchor.constraint(equalTo: chromeView.leadingAnchor, constant: 10),
+            pageTagView.topAnchor.constraint(equalTo: chromeView.topAnchor, constant: 10),
+            pageTagView.widthAnchor.constraint(equalToConstant: 58),
+            pageTagView.heightAnchor.constraint(equalToConstant: 56),
+
+            deleteButton.trailingAnchor.constraint(equalTo: chromeView.trailingAnchor, constant: -10),
+            deleteButton.topAnchor.constraint(equalTo: chromeView.topAnchor, constant: 14),
+            deleteButton.widthAnchor.constraint(equalToConstant: 32),
+            deleteButton.heightAnchor.constraint(equalToConstant: 32),
+            pageView.leadingAnchor.constraint(equalTo: shadowView.leadingAnchor),
+            pageView.trailingAnchor.constraint(equalTo: shadowView.trailingAnchor),
+            pageView.topAnchor.constraint(equalTo: shadowView.topAnchor),
+            pageView.bottomAnchor.constraint(equalTo: shadowView.bottomAnchor),
+            backgroundImageView.leadingAnchor.constraint(equalTo: pageView.leadingAnchor),
+            backgroundImageView.trailingAnchor.constraint(equalTo: pageView.trailingAnchor),
+            backgroundImageView.topAnchor.constraint(equalTo: pageView.topAnchor),
+            backgroundImageView.bottomAnchor.constraint(equalTo: pageView.bottomAnchor),
+            backgroundPatternView.leadingAnchor.constraint(equalTo: pageView.leadingAnchor),
+            backgroundPatternView.trailingAnchor.constraint(equalTo: pageView.trailingAnchor),
+            backgroundPatternView.topAnchor.constraint(equalTo: pageView.topAnchor),
+            backgroundPatternView.bottomAnchor.constraint(equalTo: pageView.bottomAnchor),
+            paperGrainView.leadingAnchor.constraint(equalTo: pageView.leadingAnchor),
+            paperGrainView.trailingAnchor.constraint(equalTo: pageView.trailingAnchor),
+            paperGrainView.topAnchor.constraint(equalTo: pageView.topAnchor),
+            paperGrainView.bottomAnchor.constraint(equalTo: pageView.bottomAnchor)
+        ])
+
+        backgroundPatternView.layer.addSublayer(backgroundPatternGradientLayer)
+
+        return PageSurface(
+            pageID: page.id,
+            shadowView: shadowView,
+            pageTagView: pageTagView,
+            chromeView: chromeView,
+            deleteButton: deleteButton,
+            pageView: pageView,
+            backgroundImageView: backgroundImageView,
+            backgroundPatternView: backgroundPatternView,
+            backgroundPatternGradientLayer: backgroundPatternGradientLayer,
+            paperGrainView: paperGrainView,
+            widthConstraint: width,
+            heightConstraint: height
+        )
+    }
+
+    private func updatePageChrome(pageIndex: Int, surface: PageSurface) {
+        let isFocusedPage = pageIndex == focusedPageIndex()
+        surface.pageTagView.setNumber(pageIndex + 1)
+        surface.pageTagView.setFocused(isFocusedPage, animated: true)
+        surface.deleteButton.tag = pageIndex
+        surface.deleteButton.isHidden = !isInteractive || pageIndex == 0 || document.pages.count <= 1
+        surface.chromeView.alpha = viewerPageIndex == nil ? 1 : 0
+
+        // Edge-to-edge layout: page has no visible border or drop
+        // shadow in either focused or unfocused state. The floating
+        // page tag is the sole focus indicator (ink fill + scale on
+        // active, paper fill + faded text on inactive — see
+        // `PageIdentifierTagView.setFocused`).
+        surface.pageView.layer.borderColor = UIColor.clear.cgColor
+        surface.pageView.layer.borderWidth = 0
+        surface.shadowView.layer.shadowOpacity = 0
+    }
+
+    private func focusedPageIndex() -> Int {
+        if let selectedID, let pageIndex = document.pageContaining(selectedID) {
+            return pageIndex
+        }
+        return min(lastReportedEditingPageIndex, max(0, document.pages.count - 1))
+    }
+
+    private func applyPageBackground(_ page: PageStyle, surface: PageSurface) {
+        surface.pageView.backgroundColor = uiColor(hex: page.backgroundHex)
+        let path = page.backgroundImagePath
+        let blur = page.backgroundBlur ?? 0
+        let vignette = page.backgroundVignette ?? 0
+        let mtime = LocalCanvasAssetStore.modificationDate(path)
+        let previous = lastBackgroundSignatures[page.id]
+
+        let signatureChanged =
+            previous?.path != path ||
+            previous?.mtime != mtime ||
+            previous?.blur != blur ||
+            previous?.vignette != vignette
+
+        if signatureChanged {
+            if let path, !path.isEmpty,
+               let original = cachedOrLoadBackgroundOriginal(path: path, mtime: mtime, pageID: page.id) {
+                surface.backgroundImageView.isHidden = false
+                if blur <= 0.01 && vignette <= 0.01 {
+                    surface.backgroundImageView.image = original
+                } else {
+                    scheduleBackgroundFilterRender(
+                        image: original,
+                        blur: blur,
+                        vignette: vignette,
+                        pageID: page.id,
+                        imageView: surface.backgroundImageView
+                    )
+                }
+            } else {
+                surface.backgroundImageView.image = nil
+                surface.backgroundImageView.isHidden = true
+            }
+            lastBackgroundSignatures[page.id] = (path, mtime, blur, vignette)
+        }
+
+        // Image opacity. Cheap; reapplied every pass since it's not
+        // part of the cached signature above.
+        surface.backgroundImageView.alpha = CGFloat(page.backgroundImageOpacity ?? 1)
+
+        // Pattern overlay. Tile patterns set a `UIColor(patternImage:)`
+        // background; gradient washes use the cached `CAGradientLayer`.
+        applyBackgroundPattern(page, surface: surface)
+
+        // Z-order: image (back) → pattern → grain (front, but below nodes).
+        // Nodes are added to `pageView` later in the apply pass; sending
+        // these to the back keeps them under whatever node stack lands
+        // here next.
+        surface.pageView.sendSubviewToBack(surface.paperGrainView)
+        surface.pageView.sendSubviewToBack(surface.backgroundPatternView)
+        surface.pageView.sendSubviewToBack(surface.backgroundImageView)
+    }
+
+    private func applyBackgroundPattern(_ page: PageStyle, surface: PageSurface) {
+        let pattern = CanvasBackgroundPattern(key: page.backgroundPatternKey)
+        guard let pattern else {
+            surface.backgroundPatternView.backgroundColor = .clear
+            surface.backgroundPatternGradientLayer.isHidden = true
+            return
+        }
+        if let tile = pattern.tileImage {
+            surface.backgroundPatternView.backgroundColor = UIColor(patternImage: tile)
+            surface.backgroundPatternGradientLayer.isHidden = true
+        } else if let fresh = pattern.makeGradientLayer() {
+            surface.backgroundPatternView.backgroundColor = .clear
+            // Copy the freshly built layer's properties onto the
+            // surface's persistent gradient layer rather than
+            // swapping layers in/out — keeps the layer hierarchy
+            // stable across pattern changes and avoids implicit
+            // animations from re-adding sublayers.
+            surface.backgroundPatternGradientLayer.colors = fresh.colors
+            surface.backgroundPatternGradientLayer.locations = fresh.locations
+            surface.backgroundPatternGradientLayer.startPoint = fresh.startPoint
+            surface.backgroundPatternGradientLayer.endPoint = fresh.endPoint
+            surface.backgroundPatternGradientLayer.type = fresh.type
+            surface.backgroundPatternGradientLayer.frame = surface.backgroundPatternView.bounds
+            surface.backgroundPatternGradientLayer.isHidden = false
+        }
     }
 
     private func applyNode(id: UUID, parent: UIView, liveIDs: inout Set<UUID>) {
@@ -585,8 +1142,14 @@ final class CanvasEditorView: UIView {
             #endif
         }
 
-        // Recurse for containers.
-        if node.type == .container {
+        // Recurse for containers and text nodes. Text accepts children
+        // so the user can drop an icon (or any element) onto a text
+        // node and have it float over the text region. The text view
+        // paints first via its own `addSubview` in `TextNodeView.init`;
+        // children added here layer above via standard subview
+        // stacking — no special Z-order plumbing needed beyond what
+        // `applyZOrder` already does for `childrenIDs`.
+        if node.type == .container || node.type == .text {
             for childID in node.childrenIDs {
                 applyNode(id: childID, parent: view, liveIDs: &liveIDs)
             }
@@ -740,8 +1303,13 @@ final class CanvasEditorView: UIView {
         )
     }
 
-    private func applyZOrder(parentID: UUID?, in container: UIView) {
-        let order = document.children(of: parentID)
+    private func applyZOrder(parentID: UUID?, in container: UIView, onPage pageIndex: Int?) {
+        let order: [UUID]
+        if let pageIndex {
+            order = document.children(of: parentID, onPage: pageIndex)
+        } else {
+            order = document.children(of: parentID)
+        }
         for id in order {
             if let v = renderViews[id], v.superview === container {
                 container.bringSubviewToFront(v)
@@ -755,12 +1323,20 @@ final class CanvasEditorView: UIView {
             containerView.bringEffectOverlaysToFront()
         }
         // Ensure the selection overlay is in front of root content.
-        if container === pageView {
+        if pageSurfaces.values.contains(where: { $0.pageView === container }) {
             contentView.bringSubviewToFront(overlay)
         }
     }
 
     // MARK: - Gestures: select / deselect
+
+    @objc private func handleAddPageTapped() {
+        onAddPage?()
+    }
+
+    @objc private func handleDeletePageTapped(_ sender: UIButton) {
+        onDeletePageRequested?(sender.tag)
+    }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         // Viewer mode: nothing to select. The recognizer stays
@@ -775,6 +1351,11 @@ final class CanvasEditorView: UIView {
         // and `applyZOrder` use, so the hit-test recursion just works.
         let point = gesture.location(in: contentView)
         let hit = hitTestNode(at: point)
+
+        if hit == nil, let pageIndex = pageIndex(at: point) {
+            focusPage(at: pageIndex)
+            return
+        }
 
         // Tapping the already-selected text node a second time enters
         // direct in-place editing — keyboard up, cursor in the box.
@@ -800,6 +1381,78 @@ final class CanvasEditorView: UIView {
             selectedID = hit
             applyOverlayForCurrentSelection()
             onSelectionChanged?(hit)
+            updateEditingPageForCurrentState()
+        }
+    }
+
+    private func focusPage(at pageIndex: Int) {
+        guard document.pages.indices.contains(pageIndex) else { return }
+        endActiveTextEditingIfNeeded(except: nil)
+        if selectedID != nil {
+            selectedID = nil
+            onSelectionChanged?(nil)
+        }
+        overlay.isHidden = true
+        lastReportedEditingPageIndex = pageIndex
+        onEditingPageChanged?(pageIndex)
+        updatePageChromeSelection()
+    }
+
+    private func updateEditingPageForCurrentState() {
+        let resolvedIndex: Int
+        if let selectedID, let pageIndex = document.pageContaining(selectedID) {
+            resolvedIndex = pageIndex
+        } else {
+            resolvedIndex = topmostVisiblePageIndex()
+        }
+        guard resolvedIndex != lastReportedEditingPageIndex else { return }
+        lastReportedEditingPageIndex = resolvedIndex
+        onEditingPageChanged?(resolvedIndex)
+        updatePageChromeSelection()
+    }
+
+    private func topmostVisiblePageIndex() -> Int {
+        let visibleRect = CGRect(origin: scrollView.contentOffset, size: scrollView.bounds.size)
+        for pageIndex in visiblePageIndices(for: document) {
+            let page = document.pages[pageIndex]
+            guard let surface = pageSurfaces[page.id] else { continue }
+            let frame = contentView.convert(surface.shadowView.bounds, from: surface.shadowView)
+            if frame.intersects(visibleRect) || frame.maxY >= visibleRect.minY {
+                return pageIndex
+            }
+        }
+        return min(lastReportedEditingPageIndex, max(0, document.pages.count - 1))
+    }
+
+    private func scrollToPage(at pageIndex: Int, animated: Bool) {
+        guard document.pages.indices.contains(pageIndex),
+              let surface = pageSurfaces[document.pages[pageIndex].id] else { return }
+        let pageFrame = contentView.convert(surface.shadowView.bounds, from: surface.shadowView)
+        let maxOffsetY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+        let targetY = min(max(0, pageFrame.minY - 12), maxOffsetY)
+        scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: animated)
+        lastReportedEditingPageIndex = pageIndex
+        onEditingPageChanged?(pageIndex)
+        updatePageChromeSelection()
+    }
+
+    private func pageIndex(at point: CGPoint) -> Int? {
+        for pageIndex in visiblePageIndices(for: document).reversed() {
+            let page = document.pages[pageIndex]
+            guard let surface = pageSurfaces[page.id] else { continue }
+            let pagePoint = contentView.convert(point, to: surface.pageView)
+            if surface.pageView.bounds.contains(pagePoint) {
+                return pageIndex
+            }
+        }
+        return nil
+    }
+
+    private func updatePageChromeSelection() {
+        for pageIndex in visiblePageIndices(for: document) {
+            let page = document.pages[pageIndex]
+            guard let surface = pageSurfaces[page.id] else { continue }
+            updatePageChrome(pageIndex: pageIndex, surface: surface)
         }
     }
 
@@ -818,24 +1471,38 @@ final class CanvasEditorView: UIView {
     /// highest-z sibling wins. A point inside a container that doesn't hit
     /// any child returns the container itself.
     private func hitTestNode(at point: CGPoint) -> UUID? {
-        let pagePoint = contentView.convert(point, to: pageView)
-        guard pageView.bounds.contains(pagePoint) else { return nil }
-        return hitTestNode(at: pagePoint, in: pageView, parent: nil)
+        for pageIndex in visiblePageIndices(for: document).reversed() {
+            let page = document.pages[pageIndex]
+            guard let surface = pageSurfaces[page.id] else { continue }
+            let pagePoint = contentView.convert(point, to: surface.pageView)
+            guard surface.pageView.bounds.contains(pagePoint) else { continue }
+            return hitTestNode(at: pagePoint, in: surface.pageView, parent: nil, onPage: pageIndex)
+        }
+        return nil
     }
 
-    private func hitTestNode(at point: CGPoint, in superview: UIView, parent: UUID?) -> UUID? {
-        let order = document.children(of: parent)
+    private func hitTestNode(at point: CGPoint, in superview: UIView, parent: UUID?, onPage pageIndex: Int) -> UUID? {
+        let order = document.children(of: parent, onPage: pageIndex)
         for id in order.reversed() {
             guard let view = renderViews[id] else { continue }
             let local = superview.convert(point, to: view)
             if view.bounds.contains(local) {
                 if document.nodes[id]?.type == .carousel {
-                    if let inner = hitTestNode(at: local, in: view, parent: id) {
+                    if let inner = hitTestNode(at: local, in: view, parent: id, onPage: pageIndex) {
                         return inner
                     }
                     return id
                 } else if document.nodes[id]?.type == .container,
-                          let inner = hitTestNode(at: local, in: view, parent: id) {
+                          let inner = hitTestNode(at: local, in: view, parent: id, onPage: pageIndex) {
+                    return inner
+                } else if document.nodes[id]?.type == .text,
+                          let inner = hitTestNode(at: local, in: view, parent: id, onPage: pageIndex) {
+                    // Text nodes can host children (icons, images,
+                    // anything). A tap on a child must return that
+                    // child, not the text underneath — otherwise
+                    // selection / drag / resize all target the text
+                    // and the children become unmovable. Mirrors the
+                    // container arm above.
                     return inner
                 }
                 return id
@@ -1032,27 +1699,17 @@ final class CanvasEditorView: UIView {
             newFrame.origin.x += translation.x
             newFrame.origin.y += translation.y
             view.frame = newFrame
-            // For root-level nodes, grow the scrollable canvas live so
-            // the user can drag past the previous bottom without
-            // clipping. (Children of containers are bounded by their
-            // container's clipping, which is the desired behavior.)
-              if view.superview === pageView {
-                  growPageHeightIfNeeded(toContain: newFrame.maxY)
-              }
-              nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
-              applyOverlayForCurrentSelection()
+            nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
+            applyOverlayForCurrentSelection()
 
         case .ended, .cancelled:
             // Commit the new frame to the document and notify the host.
             if var node = document.nodes[id] {
                 node.frame = NodeFrame(view.frame)
                 document.nodes[id] = node
-                  if view.superview === pageView {
-                      commitPageHeightIfNeeded(toContain: view.frame.maxY)
-                  }
-                  nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
-                  onCommit?(document)
-              }
+                nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
+                onCommit?(document)
+            }
 
         default:
             break
@@ -1162,11 +1819,8 @@ final class CanvasEditorView: UIView {
                 scaleY: dragStartFrame.height > 0 ? newFrame.height / dragStartFrame.height : 1
             )
 
-              if view.superview === pageView {
-                  growPageHeightIfNeeded(toContain: newFrame.maxY)
-              }
-              nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
-              applyOverlayForCurrentSelection()
+            nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
+            applyOverlayForCurrentSelection()
 
         case .ended, .cancelled:
             // Commit the resized frame plus every scaled descendant
@@ -1198,12 +1852,9 @@ final class CanvasEditorView: UIView {
             dragStartDescendantFrames.removeAll()
 
             if document.nodes[id] != nil {
-                  if view.superview === pageView {
-                      commitPageHeightIfNeeded(toContain: view.frame.maxY)
-                  }
-                  nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
-                  onCommit?(document)
-              }
+                nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
+                onCommit?(document)
+            }
 
         default:
             break
@@ -1249,7 +1900,7 @@ final class CanvasEditorView: UIView {
     /// the same path *and* unchanged mtime hit the cache, which is the
     /// difference between butter-smooth slider scrubbing and stuttering.
     /// Including `mtime` lets a same-path replace bust the cache.
-    private func cachedOrLoadBackgroundOriginal(path: String, mtime: Date?) -> UIImage? {
+    private func cachedOrLoadBackgroundOriginal(path: String, mtime: Date?, pageID: UUID) -> UIImage? {
         if let cached = backgroundImageCache.image(for: path, mtime: mtime) {
             return cached
         }
@@ -1271,8 +1922,8 @@ final class CanvasEditorView: UIView {
                     // (page bg cleared, swapped) while bytes were in
                     // flight. Drop the result if the path no longer
                     // matches the live document.
-                    guard self.document.pageBackgroundImagePath == path else { return }
-                    self.applyFetchedPageBackground(image: fetched, path: path, mtime: mtime)
+                    guard self.document.pages.first(where: { $0.id == pageID })?.backgroundImagePath == path else { return }
+                    self.applyFetchedPageBackground(image: fetched, path: path, mtime: mtime, pageID: pageID)
                 }
             }
             return nil
@@ -1286,51 +1937,48 @@ final class CanvasEditorView: UIView {
     /// image view (skipping the filter pipeline when blur + vignette
     /// are off), updates the cache, and writes the signature so the
     /// next `apply(document:)` pass short-circuits the work entirely.
-    private func applyFetchedPageBackground(image: UIImage, path: String, mtime: Date?) {
+    private func applyFetchedPageBackground(image: UIImage, path: String, mtime: Date?, pageID: UUID) {
         backgroundImageCache.insert(path: path, mtime: mtime, image: image)
 
-        let blur = document.pageBackgroundBlur ?? 0
-        let vignette = document.pageBackgroundVignette ?? 0
-        backgroundImageView.isHidden = false
+        guard let page = document.pages.first(where: { $0.id == pageID }),
+              let surface = pageSurfaces[pageID] else { return }
+        let blur = page.backgroundBlur ?? 0
+        let vignette = page.backgroundVignette ?? 0
+        surface.backgroundImageView.isHidden = false
         if blur <= 0.01 && vignette <= 0.01 {
-            backgroundImageView.image = image
+            surface.backgroundImageView.image = image
         } else {
-            scheduleBackgroundFilterRender(image: image, blur: blur, vignette: vignette)
+            scheduleBackgroundFilterRender(
+                image: image,
+                blur: blur,
+                vignette: vignette,
+                pageID: pageID,
+                imageView: surface.backgroundImageView
+            )
         }
         // Background sits behind every node view; keep that layering
         // intact since `apply(document:)` is the path that normally
         // calls `sendSubviewToBack` for us.
-        pageView.sendSubviewToBack(backgroundImageView)
-        lastBackgroundSignature = (path, mtime, blur, vignette)
+        surface.pageView.sendSubviewToBack(surface.backgroundImageView)
+        lastBackgroundSignatures[pageID] = (path, mtime, blur, vignette)
     }
 
     /// Run `PageBackgroundEffects.apply(...)` on a background queue and
-    /// hand the resulting bitmap back to the main thread. Coalesces
-    /// in-flight requests: while a render is running, additional ticks
-    /// only update `pendingBackgroundEffects` and the running task
-    /// picks up the latest values when it finishes. Net effect: at most
-    /// one render is in flight, the user always sees their final slider
-    /// position, and the main thread stays free for SwiftUI to redraw.
-    private func scheduleBackgroundFilterRender(image: UIImage, blur: Double, vignette: Double) {
-        if isRenderingBackground {
-            pendingBackgroundEffects = (image, blur, vignette)
-            return
-        }
-        isRenderingBackground = true
+    /// hand the resulting bitmap back to the main thread. A per-page version
+    /// token drops stale slider results so the latest effect values win.
+    private func scheduleBackgroundFilterRender(image: UIImage,
+                                                blur: Double,
+                                                vignette: Double,
+                                                pageID: UUID,
+                                                imageView: UIImageView) {
+        let version = (backgroundRenderVersions[pageID] ?? 0) + 1
+        backgroundRenderVersions[pageID] = version
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             let result = PageBackgroundEffects.apply(to: image, blur: blur, vignette: vignette)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.backgroundImageView.image = result
-                self.isRenderingBackground = false
-                if let pending = self.pendingBackgroundEffects {
-                    self.pendingBackgroundEffects = nil
-                    self.scheduleBackgroundFilterRender(
-                        image: pending.image,
-                        blur: pending.blur,
-                        vignette: pending.vignette
-                    )
-                }
+                guard self.backgroundRenderVersions[pageID] == version else { return }
+                imageView.image = result
             }
         }
     }
@@ -1343,33 +1991,72 @@ final class CanvasEditorView: UIView {
         // Re-pin the overlay to the selected node in case bounds changed
         // (e.g., rotation or window resize on iPad).
         applyOverlayForCurrentSelection()
+        // Honor the deferred "open at page 1" snap once the scroll
+        // view has real bounds and content size. Doing this in
+        // layoutSubviews (rather than apply(document:)) is the only
+        // moment we can trust that `scrollToPage`'s `pageFrame.minY`
+        // computation reflects the actual rendered layout — earlier
+        // calls compute against a 0×0 viewport and the offset gets
+        // overwritten as soon as real layout lands.
+        if pendingInitialScrollToTop,
+           scrollView.bounds.height > 0,
+           scrollView.contentSize.height > 0 {
+            pendingInitialScrollToTop = false
+            scrollToPage(at: 0, animated: false)
+        }
     }
 
     /// Apply document-level page dimensions to the visible page frame
     /// and keep the scroll content wide/tall enough to show it.
     private func applyPageSizing(for document: ProfileDocument) {
         let pageWidth = effectivePageWidth(for: document)
-        let pageHeight = effectivePageHeight(for: document)
         let viewportWidth = scrollView.bounds.width > 0 ? scrollView.bounds.width : bounds.width
-
-        if let constraint = pageWidthConstraint,
-           abs(constraint.constant - pageWidth) > 0.5 {
-            constraint.constant = pageWidth
+        // Edge-to-edge: pages render at the full canvas width
+        // regardless of the document's `pageWidth`. The model's
+        // pageWidth stays the canonical coordinate space children
+        // are placed in; the editor stretches the rendered page so
+        // the user perceives a full-screen canvas. On standard
+        // iPhones the drift between viewport (393) and pageWidth
+        // (390) is invisible; on Plus / Max devices a few points of
+        // trailing space remain past the children's reach, which is
+        // the right tradeoff for keeping the persisted document
+        // portable across screen widths.
+        let renderedPageWidth = max(viewportWidth, pageWidth)
+        let topPadding = viewerPageIndex == nil ? pageTopPadding : 0
+        if let constraint = pagesStackTopConstraint,
+           abs(constraint.constant - topPadding) > 0.5 {
+            constraint.constant = topPadding
         }
-        if let constraint = pageHeightConstraint,
-           abs(constraint.constant - pageHeight) > 0.5 {
-            constraint.constant = pageHeight
+
+        for pageIndex in visiblePageIndices(for: document) {
+            let page = document.pages[pageIndex]
+            guard let surface = pageSurfaces[page.id] else { continue }
+            let pageHeight = effectivePageHeight(for: page)
+            if abs(surface.widthConstraint.constant - renderedPageWidth) > 0.5 {
+                surface.widthConstraint.constant = renderedPageWidth
+            }
+            if abs(surface.heightConstraint.constant - pageHeight) > 0.5 {
+                surface.heightConstraint.constant = pageHeight
+            }
+            surface.shadowView.layer.shadowPath = UIBezierPath(
+                rect: CGRect(origin: .zero, size: CGSize(width: renderedPageWidth, height: pageHeight))
+            ).cgPath
         }
 
-        let contentWidth = max(viewportWidth, pageWidth)
-        if let constraint = contentWidthConstraint,
-           abs(constraint.constant - contentWidth) > 0.5 {
-            constraint.constant = contentWidth
+        // contentView width tracks the scroll view's frame (set up
+        // in `init` via a layout-anchor equality), so its `.constant`
+        // is unused in this path — no manual width math required
+        // here anymore. Keep the addPageAffordance synced with the
+        // rendered page width so the "+" affordance also spans
+        // edge-to-edge.
+        if let constraint = addPageWidthConstraint,
+           abs(constraint.constant - renderedPageWidth) > 0.5 {
+            constraint.constant = renderedPageWidth
         }
-
-        pageShadowView.layer.shadowPath = UIBezierPath(
-            rect: CGRect(origin: .zero, size: CGSize(width: pageWidth, height: pageHeight))
-        ).cgPath
+        if let constraint = addPageHeightConstraint,
+           abs(constraint.constant - addPageHeight) > 0.5 {
+            constraint.constant = addPageHeight
+        }
         updateContentHeight()
     }
 
@@ -1377,18 +2064,8 @@ final class CanvasEditorView: UIView {
         max(240, CGFloat(document.pageWidth))
     }
 
-    private func effectivePageHeight(for document: ProfileDocument) -> CGFloat {
-        let explicitHeight = max(400, CGFloat(document.pageHeight))
-        return max(explicitHeight, bottommostRootNodeY(in: document) + 60)
-    }
-
-    private func bottommostRootNodeY(in document: ProfileDocument) -> CGFloat {
-        var maxY: CGFloat = 0
-        for childID in document.rootChildrenIDs {
-            guard let node = document.nodes[childID] else { continue }
-            maxY = max(maxY, CGFloat(node.frame.y + node.frame.height))
-        }
-        return maxY
+    private func effectivePageHeight(for page: PageStyle) -> CGFloat {
+        max(400, CGFloat(page.height))
     }
 
     /// Resize `contentView` to fit either the viewport or the page frame,
@@ -1396,33 +2073,20 @@ final class CanvasEditorView: UIView {
     /// `contentView` is just scroll-space around that page.
     private func updateContentHeight() {
         let viewport = scrollView.bounds.height
-        let pageHeight = max(pageHeightConstraint?.constant ?? 0, effectivePageHeight(for: document))
-        let target = max(viewport, pageTopPadding + pageHeight + pageBottomPadding)
+        let topPadding = viewerPageIndex == nil ? pageTopPadding : 0
+        let bottomPadding = viewerPageIndex == nil ? pageBottomPadding : 0
+        let pageHeights = visiblePageIndices(for: document).compactMap { index -> CGFloat? in
+            guard document.pages.indices.contains(index) else { return nil }
+            let page = document.pages[index]
+            return pageSurfaces[page.id]?.heightConstraint.constant ?? effectivePageHeight(for: page)
+        }
+        let pageGapTotal = CGFloat(max(0, pageHeights.count - 1)) * pagesStackView.spacing
+        let addPageTotal = (viewerPageIndex == nil && isInteractive) ? pagesStackView.spacing + addPageHeight : 0
+        let stackHeight = pageHeights.reduce(0, +) + pageGapTotal + addPageTotal
+        let target = max(viewport, topPadding + stackHeight + bottomPadding)
         if let constraint = contentHeightConstraint,
            abs(constraint.constant - target) > 0.5 {
             constraint.constant = target
-        }
-    }
-
-    /// Expand the visible page *during* a root drag / resize so the
-    /// user can keep moving a node past the previous bottom without
-    /// losing it under clipping.
-    private func growPageHeightIfNeeded(toContain frameMaxY: CGFloat) {
-        let needed = frameMaxY + 60
-        if let constraint = pageHeightConstraint, constraint.constant < needed {
-            constraint.constant = needed
-            updateContentHeight()
-        }
-    }
-
-    /// Persist auto-grown page height when a root node is committed
-    /// beyond the current document height. Old drafts still decode to
-    /// the default height, and future edits keep the user-created
-    /// bottom space after relaunch.
-    private func commitPageHeightIfNeeded(toContain frameMaxY: CGFloat) {
-        let needed = Double(frameMaxY + 60)
-        if document.pageHeight < needed {
-            document.pageHeight = needed
         }
     }
 
@@ -1502,7 +2166,11 @@ final class CanvasEditorView: UIView {
 
 // MARK: - Gesture delegate (selection-aware arbitration)
 
-extension CanvasEditorView: UIGestureRecognizerDelegate {
+extension CanvasEditorView: UIGestureRecognizerDelegate, UIScrollViewDelegate {
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        updateEditingPageForCurrentState()
+    }
+
     /// Decide which node's pan recognizer wins a touch. The rule is
     /// "selection wins over depth":
     ///

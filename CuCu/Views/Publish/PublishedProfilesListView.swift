@@ -172,17 +172,6 @@ struct PublishedProfilesListView: View {
 
     private var feedList: some View {
         ScrollView {
-            // Spec line + fleuron header so the list reads as a
-            // catalog page rather than a generic table.
-            VStack(spacing: 8) {
-                CucuSpecLine(figure: "fresh from the press",
-                             trailing: "\(profiles.count) profile\(profiles.count == 1 ? "" : "s")")
-                    .padding(.horizontal, 6)
-                CucuFleuronDivider()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 14)
-            .padding(.bottom, 6)
 
             LazyVStack(spacing: 14) {
                 ForEach(Array(profiles.enumerated()), id: \.element.id) { index, profile in

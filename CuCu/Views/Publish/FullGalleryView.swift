@@ -82,16 +82,6 @@ struct FullGalleryView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text("✦")
-                        .font(.cucuSerif(13, weight: .regular))
-                        .foregroundStyle(Color.cucuRoseStroke)
-                    Text("gallery — fig. 06")
-                        .font(.cucuMono(10, weight: .medium))
-                        .tracking(2)
-                        .textCase(.uppercase)
-                        .foregroundStyle(Color.cucuInkSoft)
-                }
                 Text("\(urls.count) photo\(urls.count == 1 ? "" : "s")")
                     .font(.cucuSerif(22, weight: .bold))
                     .foregroundStyle(Color.cucuInk)

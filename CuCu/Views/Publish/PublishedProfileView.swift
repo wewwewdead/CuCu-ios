@@ -41,6 +41,10 @@ struct PublishedProfileView: View {
     /// tap on a tile inside the grid opens the lightbox without
     /// dismissing the grid first.
     @State private var fullGalleryState: FullGalleryState?
+    @State private var loadedPageCount: Int = 1
+    @State private var visiblePageIndex: Int = 0
+
+    private let nextPageLoadThreshold: CGFloat = 520
 
     /// Identifiable wrapper so SwiftUI animates re-presentations
     /// cleanly when a viewer taps "View Gallery" on a different
@@ -253,92 +257,138 @@ struct PublishedProfileView: View {
         // No header — display name + bio columns were removed from
         // the publish flow. Identity is whatever the author drew on
         // the canvas itself, so it gets the full screen.
-        adaptiveCanvas(profile: profile)
+        incrementalScrollCanvas(profile: profile)
     }
 
-    /// The published canvas, scaled-to-fit the viewer's screen width.
-    ///
-    /// Why this matters: the author chose `document.pageWidth` on
-    /// their device (e.g. 430pt on a Pro Max). Without scaling, a
-    /// viewer on a smaller phone (e.g. 374pt iPhone 15 plain) sees
-    /// the page horizontally clipped or scrollable. We want the
-    /// whole page to fit edge-to-edge regardless of which device is
-    /// viewing it.
-    ///
-    /// Implementation — three nested frames:
-    ///   1. **Inner frame** (`documentWidth × availableHeight/scale`)
-    ///      gives the canvas its full authored width internally so
-    ///      every node frame, gesture coord, and child layout
-    ///      computation runs at the exact pixel grid the author
-    ///      saw. The height is divided by `scale` so the visual
-    ///      result fills the available vertical space after scaling.
-    ///   2. **`.scaleEffect`** with `.top` anchor renders that
-    ///      full-size canvas at `scale`, visually shrinking it to
-    ///      `availableWidth × availableHeight`.
-    ///   3. **Outer frame** (`scaledWidth × availableHeight`) claims
-    ///      the post-scale bounding box in the parent layout so
-    ///      Auto Layout / VStack spacing works correctly.
-    ///
-    /// The cap at `1.0` means we **shrink to fit but never enlarge**
-    /// — viewing a 390pt-wide page on an iPad just centers it at
-    /// authored size rather than upscaling (which would soften
-    /// images and look pixelated).
+    /// The published canvas, rendered as threshold-loaded infinite scroll.
+    /// We mount page 1 immediately, then mount each next page only when the
+    /// sentinel below the loaded content nears the viewport. That keeps remote
+    /// image requests delayed until a visitor actually scrolls toward a page.
     @ViewBuilder
-    private func adaptiveCanvas(profile: PublishedProfile) -> some View {
+    private func incrementalScrollCanvas(profile: PublishedProfile) -> some View {
         GeometryReader { geo in
-            let documentWidth = max(1, CGFloat(profile.document.pageWidth))
-            let availableWidth = max(1, geo.size.width)
-            let scale = min(1.0, availableWidth / documentWidth)
-            let scaledWidth = documentWidth * scale
-            let scaledHeight = geo.size.height
-
-            CanvasEditorContainer(
-                document: documentBinding(for: profile),
-                selectedID: $sinkSelectedID,
-                onCommit: { _ in
-                    // View-only: ignore commits. The viewer never
-                    // attaches editing gestures, so this is belt-and-
-                    // braces — nothing should ever fire.
-                },
-                isInteractive: false,
-                onOpenURL: { url in
-                    // Route the URL through SwiftUI's `openURL` so the
-                    // user's default browser / URL handler picks it up.
-                    openURL(url)
-                },
-                onOpenImage: { urls, index in
-                    // Tap-on-tile from a gallery in viewer mode →
-                    // present the paginated fullscreen lightbox.
-                    withAnimation(.easeOut(duration: 0.22)) {
-                        lightboxState = LightboxState(
-                            id: UUID(),
-                            urls: urls,
-                            initialIndex: index
-                        )
+            let pageCount = profile.document.pages.count
+            let renderedCount = min(max(1, loadedPageCount), pageCount)
+            ScrollView {
+                VStack(spacing: 24) {
+                    ForEach(0..<renderedCount, id: \.self) { pageIndex in
+                        VStack(spacing: 8) {
+                            if pageCount > 1 {
+                                Text("Page \(pageIndex + 1) of \(pageCount)")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            singlePageCanvas(
+                                profile: profile,
+                                pageIndex: pageIndex,
+                                availableWidth: geo.size.width
+                            )
+                            .background(pageVisibilityProbe(pageIndex: pageIndex))
+                        }
                     }
-                },
-                onOpenJournal: { nodeID in
-                    // Tap-on-Journal-Card → extract title/body from
-                    // the container's text descendants and present
-                    // the journal modal. The spring on the wrapping
-                    // ZStack drives the entry animation.
-                    guard let extracted = profile.document.journalContent(for: nodeID) else { return }
-                    journalContent = extracted
-                },
-                onOpenFullGallery: { urls in
-                    // Tap on the gallery's "View Gallery" chip →
-                    // present the lazy-grid full gallery. New
-                    // identifier on every open so SwiftUI
-                    // re-presents cleanly if the user taps a
-                    // different gallery while the modal is up.
-                    fullGalleryState = FullGalleryState(id: UUID(), urls: urls)
+
+                    if renderedCount < pageCount {
+                        loadingNextPageSentinel
+                    }
+                }
+                .padding(.vertical, 16)
+            }
+            .coordinateSpace(name: "publishedProfileScroll")
+            .overlay(alignment: .bottom) {
+                if pageCount > 1 {
+                    pageCountOverlay(current: visiblePageIndex, total: pageCount)
+                }
+            }
+            .onPreferenceChange(NextPublishedPageSentinelPreferenceKey.self) { sentinelMinY in
+                guard renderedCount < pageCount else { return }
+                if sentinelMinY < geo.size.height + nextPageLoadThreshold {
+                    loadedPageCount = min(pageCount, renderedCount + 1)
+                }
+            }
+            .onPreferenceChange(PublishedPageTopPreferenceKey.self) { positions in
+                guard let nearest = positions.min(by: { abs($0.value) < abs($1.value) }) else { return }
+                visiblePageIndex = nearest.key
+            }
+        }
+    }
+
+    private func singlePageCanvas(profile: PublishedProfile,
+                                  pageIndex: Int,
+                                  availableWidth: CGFloat) -> some View {
+        let page = profile.document.pages[pageIndex]
+        let documentWidth = max(1, CGFloat(profile.document.pageWidth))
+        let pageHeight = max(1, CGFloat(page.height))
+        let scale = min(1.0, max(1, availableWidth) / documentWidth)
+        let scaledWidth = documentWidth * scale
+        let scaledHeight = pageHeight * scale
+
+        return CanvasEditorContainer(
+            document: documentBinding(for: profile),
+            selectedID: $sinkSelectedID,
+            onCommit: { _ in
+                // View-only: ignore commits. The viewer never attaches editing
+                // gestures, so nothing should ever fire.
+            },
+            isInteractive: false,
+            onOpenURL: { url in
+                openURL(url)
+            },
+            onOpenImage: { urls, index in
+                withAnimation(.easeOut(duration: 0.22)) {
+                    lightboxState = LightboxState(
+                        id: UUID(),
+                        urls: urls,
+                        initialIndex: index
+                    )
+                }
+            },
+            onOpenJournal: { nodeID in
+                guard let extracted = profile.document.journalContent(for: nodeID) else { return }
+                journalContent = extracted
+            },
+            onOpenFullGallery: { urls in
+                fullGalleryState = FullGalleryState(id: UUID(), urls: urls)
+            },
+            viewerPageIndex: pageIndex
+        )
+        .frame(width: documentWidth, height: pageHeight)
+        .scaleEffect(scale, anchor: .top)
+        .frame(width: scaledWidth, height: scaledHeight)
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+
+    private var loadingNextPageSentinel: some View {
+        ProgressView()
+            .controlSize(.small)
+            .frame(maxWidth: .infinity)
+            .frame(height: 72)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: NextPublishedPageSentinelPreferenceKey.self,
+                        value: proxy.frame(in: .named("publishedProfileScroll")).minY
+                    )
                 }
             )
-            .frame(width: documentWidth, height: scaledHeight / max(scale, 0.001))
-            .scaleEffect(scale, anchor: .top)
-            .frame(width: scaledWidth, height: scaledHeight)
-            .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private func pageVisibilityProbe(pageIndex: Int) -> some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: PublishedPageTopPreferenceKey.self,
+                value: [pageIndex: proxy.frame(in: .named("publishedProfileScroll")).minY]
+            )
         }
+    }
+
+    private func pageCountOverlay(current: Int, total: Int) -> some View {
+        Text("Page \(min(current + 1, total)) of \(total)")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(.regularMaterial, in: Capsule())
+            .padding(.bottom, 16)
     }
 
     // `profileHeader` was removed alongside the `display_name` / `bio`
@@ -364,6 +414,8 @@ struct PublishedProfileView: View {
     private func fetch() async {
         do {
             let profile = try await PublishedProfileService().fetch(username: username)
+            loadedPageCount = 1
+            visiblePageIndex = 0
             state = .loaded(profile)
         } catch let err as PublishedProfileError {
             switch err {
@@ -373,6 +425,22 @@ struct PublishedProfileView: View {
         } catch {
             state = .error(error.localizedDescription)
         }
+    }
+}
+
+private struct NextPublishedPageSentinelPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = .greatestFiniteMagnitude
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = min(value, nextValue())
+    }
+}
+
+private struct PublishedPageTopPreferenceKey: PreferenceKey {
+    static var defaultValue: [Int: CGFloat] = [:]
+
+    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
 

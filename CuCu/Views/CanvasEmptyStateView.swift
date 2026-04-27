@@ -32,20 +32,6 @@ struct CanvasEmptyStateView: View {
         VStack(spacing: 18) {
             Spacer(minLength: 24)
 
-            // — spec line —
-            HStack(spacing: 6) {
-                Text("✦")
-                    .font(.cucuSerif(13, weight: .regular))
-                    .foregroundStyle(Color.cucuRoseStroke)
-                Text("fig. 01 — start")
-                    .font(.cucuMono(10, weight: .medium))
-                    .tracking(2.2)
-                    .textCase(.uppercase)
-                    .foregroundStyle(Color.cucuInkSoft)
-            }
-            .opacity(headingVisible ? 1 : 0)
-            .offset(y: headingVisible ? 0 : -4)
-
             // — chunky cute headline —
             Text("Design your\ninternet identity.")
                 .font(.custom("Caprasimo-Regular", size: 36))
