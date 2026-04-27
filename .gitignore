@@ -1,5 +1,11 @@
 # Secrets — must never be committed. Holds the Supabase URL + anon key.
 CuCu/Config/SupabaseSecrets.plist
+# The example template file is tracked elsewhere but kept local-only
+# in this repo per the user's preference.
+SupabaseSecrets.example.plist
+
+# Local working notes — migration scratchpad, kept out of source control.
+MIGRATION_NOTES.md
 
 # Database schema + migrations live locally only. The SQL files in
 # `Supabase/` describe the production schema and intentionally stay
