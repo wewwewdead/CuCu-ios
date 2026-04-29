@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CuCu Studio — Choose a Template</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..900&family=Caprasimo&family=Lobster&family=Caveat:wght@400;700&family=Patrick+Hand&family=Yeseva+One&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body, #root { margin: 0; padding: 0; min-height: 100vh; }
+    body {
+      background: #F2EFE6;
+      font-family: "Hanken Grotesk", -apple-system, system-ui, sans-serif;
+      color: #1F1A12;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    button { font: inherit; }
+    input, textarea { font: inherit; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 3px; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  </style>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- Reuse existing CuCu primitives so the picker matches the live editor -->
+  <script type="text/babel" src="editor.jsx"></script>
+  <script type="text/babel" src="canvas.jsx"></script>
+  <script type="text/babel" src="shell.jsx"></script>
+
+  <!-- Templates -->
+  <script type="text/babel" src="templates.jsx"></script>
+  <script type="text/babel" src="templates-picker.jsx"></script>
+  <script type="text/babel" src="templates-app.jsx"></script>
+</body>
+</html>

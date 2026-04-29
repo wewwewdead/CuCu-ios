@@ -45,13 +45,14 @@ enum ProfileResetError: Error, LocalizedError, Equatable {
 /// every delete an RLS violation against a path that "looks right" in
 /// uppercase.
 ///
-/// **Maintenance note.** `storage.list(path:)` defaults to a 100-item
-/// page. Typical profiles ship under ~50 images (page bg, container
-/// bgs, image nodes, gallery tiles), so a single call returns the
-/// whole folder. If we ever ship a feature that pushes a single
-/// profile past 100 assets — multi-page galleries, bulk imports —
-/// switch to a paginated loop with explicit `limit`/`offset` here so
-/// the wipe doesn't leave orphaned objects.
+/// **Pagination.** `storage.list(path:)` defaults to a 100-item page,
+/// which used to be enough for typical profiles. Default templates
+/// ship galleries with multiple tiles plus icons, avatar, container
+/// bgs, etc., so a busy profile can plausibly cross that boundary —
+/// the wipe loops `list` + `remove` until the folder reads empty so
+/// no orphaned objects survive a reset regardless of asset count.
+/// A safety cap on iterations protects against unexpected loops if a
+/// remove call ever silently fails to delete its targets.
 @MainActor
 struct ProfileResetService {
     let user: AppUser
@@ -72,11 +73,21 @@ struct ProfileResetService {
         let folderPath = "user_\(canonicalUserId)/profile_\(canonicalProfileId)"
 
         // 1. List + delete every storage object under the profile folder.
+        //    Loop until the folder reads empty so we don't strand
+        //    orphaned objects past the 100-item default page. The
+        //    iteration cap is generous (5000 objects-worth of pages)
+        //    but bounded so a remove call that silently no-ops can't
+        //    spin forever.
         do {
-            let objects = try await client.storage
-                .from("profile-assets")
-                .list(path: folderPath)
-            if !objects.isEmpty {
+            let maxPages = 50
+            var page = 0
+            while page < maxPages {
+                page += 1
+                let objects = try await client.storage
+                    .from("profile-assets")
+                    .list(path: folderPath)
+                if objects.isEmpty { break }
+
                 let fullPaths = objects.map { "\(folderPath)/\($0.name)" }
                 _ = try await client.storage
                     .from("profile-assets")

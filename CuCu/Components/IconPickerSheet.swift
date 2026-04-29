@@ -82,8 +82,7 @@ struct IconPickerSheet: View {
             dismiss()
         } label: {
             VStack(spacing: 4) {
-                Image(systemName: name)
-                    .font(.system(size: 22, weight: .semibold))
+                glyph(for: name)
                     .foregroundStyle(isSelected ? Color.cucuBurgundy : Color.cucuInk)
                     .frame(width: 50, height: 50)
                     .background(
@@ -104,6 +103,33 @@ struct IconPickerSheet: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    /// Mirrors `IconNodeView`'s three-way fork so the picker preview
+    /// matches what lands on the canvas:
+    ///   • `brand.*` → vendored single-color SVG, template-tinted.
+    ///   • `multi.*` → vendored multi-color SVG, original colors.
+    ///   • everything else → SF Symbol.
+    @ViewBuilder
+    private func glyph(for name: String) -> some View {
+        if name.hasPrefix("brand.") {
+            let assetName = "SocialIcons/" + String(name.dropFirst("brand.".count))
+            Image(assetName)
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .padding(12)
+        } else if name.hasPrefix("multi.") {
+            let assetName = "Glyphs/" + String(name.dropFirst("multi.".count))
+            Image(assetName)
+                .renderingMode(.original)
+                .resizable()
+                .scaledToFit()
+                .padding(10)
+        } else {
+            Image(systemName: name)
+                .font(.system(size: 22, weight: .semibold))
+        }
     }
 
     private var emptyState: some View {

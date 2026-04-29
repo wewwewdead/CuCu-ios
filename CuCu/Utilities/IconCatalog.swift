@@ -140,6 +140,33 @@ enum IconCatalog {
         "face.smiling.inverse",
         "eyes",
         "hand.wave.fill",
+
+        // ── Social brands ────────────────────────────────────────
+        // `brand.*` names resolve to vendored simple-icons SVGs under
+        // Assets.xcassets/SocialIcons/. `IconNodeView` recognises the
+        // prefix and loads them as template images instead of going
+        // through `UIImage(systemName:)`.
+        "brand.instagram",
+        "brand.tiktok",
+        "brand.x",
+        "brand.threads",
+        "brand.facebook",
+        "brand.youtube",
+        "brand.linkedin",
+        "brand.pinterest",
+        "brand.snapchat",
+        "brand.whatsapp",
+        "brand.discord",
+        "brand.twitch",
+        "brand.spotify",
+        "brand.github",
+
+        // ── Multi-color glyphs ───────────────────────────────────
+        // `multi.*` names resolve to vendored multi-color SVGs under
+        // Assets.xcassets/Glyphs/. `IconNodeView` loads them with
+        // `.alwaysOriginal` so the SVG's own fills paint regardless
+        // of the user's tintColor pick.
+        "multi.tlights",
     ]
 
     /// Friendly title for the menu / grid. Falls back to a humanised
@@ -269,6 +296,25 @@ enum IconCatalog {
             "face.smiling.inverse":         "Face",
             "eyes":                         "Eyes",
             "hand.wave.fill":               "Wave",
+
+            // social brands
+            "brand.instagram":              "Instagram",
+            "brand.tiktok":                 "TikTok",
+            "brand.x":                      "X",
+            "brand.threads":                "Threads",
+            "brand.facebook":               "Facebook",
+            "brand.youtube":                "YouTube",
+            "brand.linkedin":               "LinkedIn",
+            "brand.pinterest":              "Pinterest",
+            "brand.snapchat":               "Snapchat",
+            "brand.whatsapp":               "WhatsApp",
+            "brand.discord":                "Discord",
+            "brand.twitch":                 "Twitch",
+            "brand.spotify":                "Spotify",
+            "brand.github":                 "GitHub",
+
+            // multi-color glyphs
+            "multi.tlights":                "Traffic Lights",
         ]
         if let humanised = labels[symbol] { return humanised }
         // Fallback: turn "music.note" → "Music Note", "star.fill" → "Star Fill"

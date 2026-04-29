@@ -28,6 +28,21 @@ struct CanvasEmptyStateView: View {
     @State private var bodyVisible = false
     @State private var ctasVisible = false
 
+    @Environment(\.cucuWidthClass) private var widthClass
+
+    /// CTA buttons grow with the width class instead of capping at
+    /// 240pt on every device — Pro Max / iPad have plenty of room and
+    /// the conservative cap made the empty state feel marooned at
+    /// the centre of the screen.
+    private var ctaMaxWidth: CGFloat {
+        switch widthClass {
+        case .compact:  return 260
+        case .regular:  return 280
+        case .expanded: return 320
+        case .iPad:     return 360
+        }
+    }
+
     var body: some View {
         VStack(spacing: 18) {
             Spacer(minLength: 24)
@@ -52,7 +67,7 @@ struct CanvasEmptyStateView: View {
                 .offset(y: bodyVisible ? 0 : 6)
 
             CucuFleuronDivider()
-                .frame(maxWidth: 220)
+                .frame(maxWidth: ctaMaxWidth - 20)
                 .padding(.vertical, 4)
                 .opacity(bodyVisible ? 1 : 0)
 
@@ -66,7 +81,7 @@ struct CanvasEmptyStateView: View {
                             .font(.cucuSerif(16, weight: .bold))
                     }
                     .foregroundStyle(Color.cucuCard)
-                    .frame(maxWidth: 240)
+                    .frame(maxWidth: ctaMaxWidth)
                     .padding(.horizontal, 22)
                     .padding(.vertical, 12)
                     .background(Capsule().fill(Color.cucuInk))
@@ -81,7 +96,7 @@ struct CanvasEmptyStateView: View {
                             .font(.cucuSerif(15, weight: .semibold))
                     }
                     .foregroundStyle(Color.cucuInk)
-                    .frame(maxWidth: 240)
+                    .frame(maxWidth: ctaMaxWidth)
                     .padding(.horizontal, 22)
                     .padding(.vertical, 11)
                     .background(Capsule().fill(Color.cucuCard))

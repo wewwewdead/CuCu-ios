@@ -64,19 +64,17 @@ struct CanvasPreviewView: View {
         }
     }
 
-    /// Mirror of `PublishedProfileView.adaptiveCanvas` — the document
-    /// renders at its authored width internally, then SwiftUI scales
-    /// it down (cap at 1.0) so a profile authored on a Pro Max stays
-    /// readable on an iPhone SE and a profile authored on an SE
-    /// doesn't get stretched on an iPad.
+    /// Mirror of `PublishedProfileView.singlePageCanvas` — render the
+    /// canvas edge-to-edge at the previewer's screen width and let the
+    /// inner `CanvasEditorContainer` apply the same
+    /// `max(viewportWidth, pageWidth)` rule the editor uses. That
+    /// guarantees 100% pixel parity with the editing surface — what
+    /// the author dragged into place on this device will render at the
+    /// exact same size in the preview and in the published viewer.
     @ViewBuilder
     private var adaptiveCanvas: some View {
         GeometryReader { geo in
-            let documentWidth = max(1, CGFloat(document.pageWidth))
             let availableWidth = max(1, geo.size.width)
-            let scale = min(1.0, availableWidth / documentWidth)
-            let scaledWidth = documentWidth * scale
-            let scaledHeight = geo.size.height
 
             CanvasEditorContainer(
                 document: .constant(document),
@@ -85,10 +83,7 @@ struct CanvasPreviewView: View {
                 isInteractive: false,
                 onOpenURL: { url in openURL(url) }
             )
-            .frame(width: documentWidth, height: scaledHeight / max(scale, 0.001))
-            .scaleEffect(scale, anchor: .top)
-            .frame(width: scaledWidth, height: scaledHeight)
-            .frame(maxWidth: .infinity, alignment: .center)
+            .frame(width: availableWidth, height: geo.size.height)
         }
     }
 }

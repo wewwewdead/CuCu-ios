@@ -65,8 +65,9 @@ struct CanvasMutator {
                 : .defaultIcon()
         case .divider:
             node = isCarousel(parentID)
-                ? CanvasNode.defaultDivider(at: nextCarouselItemOrigin(parentID: parentID, size: CGSize(width: 120, height: 28)),
-                                            size: CGSize(width: 120, height: 28))
+                ? CanvasNode.defaultDivider(
+                    at: nextCarouselItemOrigin(parentID: parentID, size: CGSize(width: 120, height: 28)),
+                    size: CGSize(width: 120, height: 28))
                 : .defaultDivider()
         case .link:
             node = isCarousel(parentID)
@@ -75,20 +76,9 @@ struct CanvasMutator {
                 : .defaultLink()
         case .gallery:   return
         case .carousel:
-            let carousel = CanvasNode.defaultCarousel()
-            document.wrappedValue.insert(carousel, under: parentID, onPage: pageIndex)
-            selectedID.wrappedValue = carousel.id
-            store.updateDocument(draft, document: document.wrappedValue)
-            CucuHaptics.soft()
-            return
+            node = .defaultCarousel()
         }
-        if let parentID,
-           let origin = originForChildNextToText(
-                parentID: parentID,
-                childSize: CGSize(width: node.frame.width, height: node.frame.height)) {
-            node.frame.x = Double(origin.x)
-            node.frame.y = Double(origin.y)
-        }
+        applyAdaptivePlacement(to: &node, parentID: parentID, pageIndex: pageIndex)
         document.wrappedValue.insert(node, under: parentID, onPage: pageIndex)
         selectedID.wrappedValue = node.id
         store.updateDocument(draft, document: document.wrappedValue)
@@ -117,13 +107,7 @@ struct CanvasMutator {
                 )
                 : CanvasNode.defaultImage(localImagePath: path)
             node.id = nodeID
-            if let parentID,
-               let origin = originForChildNextToText(
-                    parentID: parentID,
-                    childSize: CGSize(width: node.frame.width, height: node.frame.height)) {
-                node.frame.x = Double(origin.x)
-                node.frame.y = Double(origin.y)
-            }
+            applyAdaptivePlacement(to: &node, parentID: parentID, pageIndex: pageIndex)
             document.wrappedValue.insert(node, under: parentID, onPage: pageIndex)
             selectedID.wrappedValue = nodeID
             store.updateDocument(draft, document: document.wrappedValue)
@@ -171,6 +155,7 @@ struct CanvasMutator {
             // uses inside the hero preset.
             node.style.borderColorHex = "#FFFFFF"
             node.style.borderWidth = 2
+            applyAdaptivePlacement(to: &node, parentID: parentID, pageIndex: pageIndex)
             document.wrappedValue.insert(node, under: parentID, onPage: pageIndex)
             selectedID.wrappedValue = nodeID
             store.updateDocument(draft, document: document.wrappedValue)
@@ -208,13 +193,14 @@ struct CanvasMutator {
         }
         guard !savedPaths.isEmpty else { return false }
 
-        let node = isCarousel(parentID)
+        var node = isCarousel(parentID)
             ? CanvasNode.defaultGallery(
                 imagePaths: savedPaths,
                 at: nextCarouselItemOrigin(parentID: parentID, size: CGSize(width: 160, height: 104)),
                 size: CGSize(width: 160, height: 104)
             )
             : CanvasNode.defaultGallery(imagePaths: savedPaths)
+        applyAdaptivePlacement(to: &node, parentID: parentID, pageIndex: pageIndex)
         document.wrappedValue.insert(node, under: parentID, onPage: pageIndex)
         selectedID.wrappedValue = node.id
         store.updateDocument(draft, document: document.wrappedValue)
@@ -233,10 +219,16 @@ struct CanvasMutator {
         for bytes in imageBytesList {
             let assetID = UUID()
             do {
+                // Gallery tiles render in small grid cells and at most go
+                // to a lightbox at device width — they don't need the
+                // full 1400pt block cap. Using `galleryImageMaxDimension`
+                // (1200pt) here trims another ~30% off each saved file
+                // and the per-image decode memory.
                 let path = try LocalCanvasAssetStore.saveImage(
                     bytes,
                     draftID: draft.id,
-                    nodeID: assetID
+                    nodeID: assetID,
+                    maxDimension: ImageNormalizer.galleryImageMaxDimension
                 )
                 newPaths.append(path)
             } catch { }
@@ -352,6 +344,108 @@ struct CanvasMutator {
         let x = min(preferredX, maxX)
         let y = max(0, (parentHeight - childSize.height) / 2)
         return CGPoint(x: x, y: y)
+    }
+
+    /// Compute a fitted (origin, size) for a new child node added to
+    /// the page root or inside a container. Centers horizontally,
+    /// stacks vertically below existing siblings, **and shrinks the
+    /// preferred size to fit the parent's available room** so a
+    /// 240×160 container can host a 320-wide divider or a 200×200
+    /// image without the child being clipped by `masksToBounds`.
+    /// Returns nil for text or carousel parents — those have their
+    /// own placement helpers (`originForChildNextToText`,
+    /// `nextCarouselItemOrigin`).
+    private func stackedFittedFrame(parentID: UUID?,
+                                    onPage pageIndex: Int,
+                                    preferredSize: CGSize) -> CGRect? {
+        let parentWidth: CGFloat
+        let parentHeight: CGFloat
+        let siblingIDs: [UUID]
+        let inset: CGFloat
+        let topPadding: CGFloat
+        let gap: CGFloat = 12
+        let minWidth: CGFloat = 40
+        let minHeight: CGFloat = 24
+
+        if let parentID,
+           let parent = document.wrappedValue.nodes[parentID],
+           parent.type != .text,
+           parent.type != .carousel {
+            // Container, image, icon, divider, link, gallery — any
+            // non-carousel parent gets fitted/centered placement.
+            // Text uses `originForChildNextToText`; carousel uses
+            // `nextCarouselItemOrigin` and is filtered earlier.
+            parentWidth = CGFloat(parent.frame.width)
+            parentHeight = CGFloat(parent.frame.height)
+            siblingIDs = parent.childrenIDs
+            inset = 8
+            topPadding = 12
+        } else if parentID == nil,
+                  document.wrappedValue.pages.indices.contains(pageIndex) {
+            parentWidth = CGFloat(document.wrappedValue.pageWidth)
+            // Page is intentionally tall — no vertical clamp at root.
+            parentHeight = .greatestFiniteMagnitude
+            siblingIDs = document.wrappedValue.pages[pageIndex].rootChildrenIDs
+            inset = 0
+            topPadding = 32
+        } else {
+            return nil
+        }
+
+        let maxWidth = max(minWidth, parentWidth - inset * 2)
+        let width = min(preferredSize.width, maxWidth)
+
+        let maxBottom = siblingIDs.compactMap { id -> CGFloat? in
+            guard let frame = document.wrappedValue.nodes[id]?.frame else { return nil }
+            return CGFloat(frame.y + frame.height)
+        }.max()
+        let stackedY = (maxBottom.map { $0 + gap }) ?? topPadding
+
+        // Cap y so a new child lands fully inside the parent even
+        // when existing siblings have already filled it. Without this
+        // the stacked y can exceed parentHeight and the new node is
+        // clipped by `masksToBounds` the instant it's added.
+        // `.greatestFiniteMagnitude` for root makes the cap a no-op
+        // there — the page is intentionally unbounded vertically.
+        let maxY = max(topPadding, parentHeight - minHeight - inset)
+        let y = min(stackedY, maxY)
+
+        let availableHeight = max(minHeight, parentHeight - y - inset)
+        let height = min(preferredSize.height, availableHeight)
+
+        let x = max(0, (parentWidth - width) / 2)
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    /// Post-creation placement for new nodes. Encapsulates the order
+    /// that all five `add…` entry points share:
+    ///   1. Carousel parent → keep the per-element helper's frame
+    ///      (already laid out in carousel content space).
+    ///   2. Text parent → drop the new child next to the rendered
+    ///      glyphs (`originForChildNextToText`), preserving its size.
+    ///   3. Container or page root → fit the size to the parent and
+    ///      center / stack the origin (`stackedFittedFrame`).
+    private func applyAdaptivePlacement(to node: inout CanvasNode,
+                                        parentID: UUID?,
+                                        pageIndex: Int) {
+        if isCarousel(parentID) { return }
+        if let parentID,
+           let origin = originForChildNextToText(
+                parentID: parentID,
+                childSize: CGSize(width: node.frame.width, height: node.frame.height)) {
+            node.frame.x = Double(origin.x)
+            node.frame.y = Double(origin.y)
+            return
+        }
+        if let adapted = stackedFittedFrame(
+            parentID: parentID,
+            onPage: pageIndex,
+            preferredSize: CGSize(width: node.frame.width, height: node.frame.height)) {
+            node.frame.x = Double(adapted.origin.x)
+            node.frame.y = Double(adapted.origin.y)
+            node.frame.width = Double(adapted.size.width)
+            node.frame.height = Double(adapted.size.height)
+        }
     }
 
     private func nextCarouselItemOrigin(parentID: UUID?, size: CGSize) -> CGPoint {
@@ -695,33 +789,31 @@ struct CanvasMutator {
     // MARK: - Internals
 
     /// Where a new node lands:
-    ///   • Selected `.container` → directly into that container.
-    ///   • Selected `.carousel`   → directly into that horizontal strip.
-    ///   • Selected carousel child → as a sibling item in that carousel.
-    ///   • Otherwise               → page root.
+    ///   • Selected `.container` / `.carousel` / `.text` → directly
+    ///     into that node.
+    ///   • Selected leaf inside a carousel → sibling item in that
+    ///     carousel (otherwise dropping a new item on top of an
+    ///     existing carousel child would visually leave the strip).
+    ///   • Selected leaf elsewhere (image, icon, divider, link,
+    ///     gallery) → nested inside that leaf, so users can drop a
+    ///     badge icon on an image, an accent on an icon, etc.
+    ///   • Nothing selected → page root.
     /// Mirrors the rule used for the AddNodeSheet's banner so the
-    /// "Adding to:" hint matches reality.
+    /// "Adding to:" hint matches reality. Pair this with the
+    /// recursion arm in `CanvasEditorView.applyNode` so the canvas
+    /// actually renders the new children.
     func parentForInsertion() -> UUID? {
         guard let sid = selectedID.wrappedValue,
               let node = document.wrappedValue.nodes[sid] else {
             return nil
         }
         switch node.type {
-        case .container:
-            return sid
-        case .carousel:
-            return sid
-        case .text:
-            // Text nodes accept children too — drop an icon, image,
-            // or any other element onto a text node and it nests
-            // inside, absolutely positioned over the text region.
-            // The text view paints first, children layer above via
-            // standard subview stacking. Pair this with the
-            // recursion arm in `applyNode` (text branch) so the
-            // canvas actually renders the children.
+        case .container, .carousel, .text:
             return sid
         default:
-            return carouselAncestor(containing: sid)
+            // Inside a carousel? New items become carousel siblings.
+            // Otherwise nest inside the selected leaf.
+            return carouselAncestor(containing: sid) ?? sid
         }
     }
 

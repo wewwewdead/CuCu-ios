@@ -173,7 +173,8 @@ struct ProfileBuilderView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 320)
+                    .frame(maxWidth: 480)
+                    .padding(.horizontal, 24)
             }
 
             Spacer()

@@ -19,6 +19,7 @@ enum PublishError: Error, LocalizedError, Equatable {
     case usernameTaken
     case missingAsset(localPath: String)
     case uploadFailed(String)
+    case storagePolicyDenied
     case database(String)
     case network
     case unknown(String)
@@ -39,6 +40,8 @@ enum PublishError: Error, LocalizedError, Equatable {
             return "Couldn't find a local image (\(path)). Re-pick that image and try again."
         case .uploadFailed(let detail):
             return "Image upload failed: \(detail)"
+        case .storagePolicyDenied:
+            return "Image upload was blocked by your Supabase storage policy. Check that the `profile-assets` bucket exists and that the storage policies in `Supabase/schema_phase4.sql` (lines 175-208) have been applied. If the bucket and policies are in place, sign out and sign back in to refresh your session."
         case .database(let detail):
             return "Couldn't save your profile: \(detail)"
         case .network:
@@ -235,35 +238,40 @@ struct PublishService {
     /// Walk the document's four asset surfaces and collect a deduplicated
     /// list of (path, asset_type) pairs to upload. Skips paths that
     /// already look remote (e.g. an unedited republish where a path is
-    /// already a public URL) and empty strings.
+    /// already a public URL), `bundled:` references that resolve to the
+    /// app's asset catalog (seeded default templates use these for
+    /// placeholder tone images), and empty strings.
     private func collectUploads(from document: ProfileDocument) -> [PendingUpload] {
         var seen = Set<String>()
         var uploads: [PendingUpload] = []
 
         for page in document.pages {
-            if let p = page.backgroundImagePath, !p.isEmpty,
-               !PublishedDocumentTransformer.isRemote(p), seen.insert(p).inserted {
+            if let p = page.backgroundImagePath,
+               PublishedDocumentTransformer.isUploadable(p),
+               seen.insert(p).inserted {
                 uploads.append(PendingUpload(localPath: p, assetType: "page_background"))
             }
         }
 
-        if let p = document.pageBackgroundImagePath, !p.isEmpty,
-           !PublishedDocumentTransformer.isRemote(p), seen.insert(p).inserted {
+        if let p = document.pageBackgroundImagePath,
+           PublishedDocumentTransformer.isUploadable(p),
+           seen.insert(p).inserted {
             uploads.append(PendingUpload(localPath: p, assetType: "page_background"))
         }
 
         for node in document.nodes.values {
-            if let p = node.style.backgroundImagePath, !p.isEmpty,
-               !PublishedDocumentTransformer.isRemote(p), seen.insert(p).inserted {
+            if let p = node.style.backgroundImagePath,
+               PublishedDocumentTransformer.isUploadable(p),
+               seen.insert(p).inserted {
                 uploads.append(PendingUpload(localPath: p, assetType: "container_background"))
             }
-            if let p = node.content.localImagePath, !p.isEmpty,
-               !PublishedDocumentTransformer.isRemote(p), seen.insert(p).inserted {
+            if let p = node.content.localImagePath,
+               PublishedDocumentTransformer.isUploadable(p),
+               seen.insert(p).inserted {
                 uploads.append(PendingUpload(localPath: p, assetType: "image_node"))
             }
             if let arr = node.content.imagePaths {
-                for p in arr where !p.isEmpty
-                    && !PublishedDocumentTransformer.isRemote(p)
+                for p in arr where PublishedDocumentTransformer.isUploadable(p)
                     && seen.insert(p).inserted {
                     uploads.append(PendingUpload(localPath: p, assetType: "gallery_image"))
                 }
@@ -300,6 +308,19 @@ struct PublishService {
                     options: FileOptions(contentType: "image/jpeg", upsert: true)
                 )
         } catch {
+            // Storage RLS rejections come back as a generic error string
+            // mentioning "row-level security policy" or "violates ... policy".
+            // Surface these as a typed `.storagePolicyDenied` so the UI can
+            // explain how to fix the bucket setup, instead of dumping the
+            // raw Postgres message at the user.
+            let detail = error.localizedDescription.lowercased()
+            if detail.contains("row-level security") || detail.contains("violates")
+                && (detail.contains("policy") || detail.contains("rls")) {
+                throw PublishError.storagePolicyDenied
+            }
+            if (error as NSError).domain == NSURLErrorDomain {
+                throw PublishError.network
+            }
             throw PublishError.uploadFailed(error.localizedDescription)
         }
         do {

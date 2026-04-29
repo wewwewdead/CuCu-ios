@@ -120,9 +120,9 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
                 .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $sheets.showApplyTemplateSheet) {
-                ApplyTemplateSheet(onApply: { template in onApplyTemplate(template) })
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
+                TemplatePickerSheet(onApply: { template in onApplyTemplate(template) })
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.hidden)
             }
             .sheet(isPresented: $sheets.showThemePickerSheet) {
                 ThemePickerSheet(mutator: mutator, document: document)

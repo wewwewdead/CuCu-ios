@@ -34,6 +34,15 @@ struct RootView: View {
         // safe-area shrink, otherwise it pre-shrinks the entire view
         // and our offset has nothing to lift into.
         .ignoresSafeArea(.keyboard, edges: .bottom)
+        // Measure the scene's available width once at the root so
+        // every surface below this point can branch on
+        // `@Environment(\.cucuWidthClass)` without remeasuring.
+        .cucuWidthClass()
+        // Default templates: insert / refresh the seven prebuilt picks
+        // so the "Apply Template" sheet always has them. Idempotent —
+        // existing rows are skipped unless the bundled seed version
+        // changed.
+        .task { DefaultTemplateSeeder.seedIfNeeded(context: context) }
     }
 
     private func ensureDraftExists() {

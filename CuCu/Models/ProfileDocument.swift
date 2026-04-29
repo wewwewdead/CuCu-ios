@@ -330,6 +330,37 @@ extension ProfileDocument {
         return result
     }
 
+    /// Effective design width the viewer should scale by — the larger of the
+    /// persisted `pageWidth` and the actual horizontal extent of the page's
+    /// root nodes. The editor renders edge-to-edge at
+    /// `max(viewportWidth, pageWidth)`, so authors on Plus / Max phones may
+    /// place children past the canonical `pageWidth`. Without this widening
+    /// the published viewer would scale by 390 only and clip those nodes on
+    /// narrower devices. The floor is `pageWidth` so a sparse page (no root
+    /// children at the right edge) still scales by the canvas the author saw.
+    func contentDesignWidth(forPageAt index: Int) -> Double {
+        guard pages.indices.contains(index) else { return pageWidth }
+        var maxExtent = pageWidth
+        for id in pages[index].rootChildrenIDs {
+            guard let node = nodes[id] else { continue }
+            let extent = node.frame.x + node.frame.width
+            if extent > maxExtent { maxExtent = extent }
+        }
+        return maxExtent
+    }
+
+    /// Max content-design width across every page. Used by previews that
+    /// render all pages stacked (e.g. local preview) so a single scale
+    /// factor fits the widest page without clipping the others.
+    func contentDesignWidth() -> Double {
+        var maxExtent = pageWidth
+        for index in pages.indices {
+            let pageExtent = contentDesignWidth(forPageAt: index)
+            if pageExtent > maxExtent { maxExtent = pageExtent }
+        }
+        return maxExtent
+    }
+
     /// Ordered children IDs for any parent. Pass `nil` for the page root.
     func children(of parentID: UUID?, onPage pageIndex: Int) -> [UUID] {
         if let parentID, let node = nodes[parentID] { return node.childrenIDs }

@@ -38,6 +38,48 @@ struct TemplateStore {
         return document
     }
 
+    /// Insert or refresh a seeded default template at a known UUID. Used
+    /// by `DefaultTemplateSeeder` on app launch so the seven CuCu starter
+    /// templates always exist (and stay current) without ever creating
+    /// duplicates. When `forceRefresh` is `true` the JSON of an existing
+    /// row is overwritten with a fresh encode of `document`; otherwise
+    /// existing rows are left untouched (idempotent fast-path for
+    /// startup launches that haven't bumped the seed version).
+    @discardableResult
+    func upsertSeededTemplate(id: UUID,
+                              name: String,
+                              document: ProfileDocument,
+                              forceRefresh: Bool) throws -> ProfileTemplate {
+        let descriptor = FetchDescriptor<ProfileTemplate>(
+            predicate: #Predicate<ProfileTemplate> { $0.id == id }
+        )
+        let templateDocument = CanvasTemplateAssetCopier.copyAssetsForTemplateSave(
+            document,
+            templateID: id
+        )
+
+        if let existing = try context.fetch(descriptor).first {
+            guard forceRefresh else { return existing }
+            existing.templateJSON = try encode(templateDocument)
+            existing.name = normalizedName(name)
+            existing.previewSummary = Self.previewSummary(for: templateDocument)
+            existing.updatedAt = .now
+            try context.save()
+            return existing
+        }
+
+        let json = try encode(templateDocument)
+        let template = ProfileTemplate(
+            id: id,
+            name: normalizedName(name),
+            templateJSON: json,
+            previewSummary: Self.previewSummary(for: templateDocument)
+        )
+        context.insert(template)
+        try context.save()
+        return template
+    }
+
     // `createDraft(from:title:)` lived here for the now-removed
     // "New From Template" flow on the drafts page. The product is
     // single-document, so users apply templates onto the existing
@@ -124,16 +166,28 @@ struct TemplateStore {
 }
 
 private enum CanvasTemplateAssetCopier {
+    /// Path schemes that resolve at render time without a per-folder file
+    /// copy: `http(s)://` (already remote) and `bundled:…` (asset catalog,
+    /// shipped with seeded default templates). They pass through both the
+    /// template-save and draft-instantiation hops unchanged.
+    private static func isPassthrough(_ path: String) -> Bool {
+        CanvasImageLoader.isRemote(path) || CanvasImageLoader.isBundled(path)
+    }
+
     static func copyAssetsForTemplateSave(_ document: ProfileDocument,
                                           templateID: UUID) -> ProfileDocument {
         var copy = document
         for index in copy.pages.indices {
             if let path = document.pages[index].backgroundImagePath, !path.isEmpty {
-                copy.pages[index].backgroundImagePath = try? LocalCanvasAssetStore.copyPageBackground(
-                    from: path,
-                    templateID: templateID,
-                    pageID: index == 0 ? nil : document.pages[index].id
-                )
+                if isPassthrough(path) {
+                    copy.pages[index].backgroundImagePath = path
+                } else {
+                    copy.pages[index].backgroundImagePath = try? LocalCanvasAssetStore.copyPageBackground(
+                        from: path,
+                        templateID: templateID,
+                        pageID: index == 0 ? nil : document.pages[index].id
+                    )
+                }
             }
         }
         copy.syncLegacyFieldsFromFirstPage()
@@ -141,18 +195,26 @@ private enum CanvasTemplateAssetCopier {
         for (id, node) in document.nodes {
             var next = node
             if let path = node.content.localImagePath, !path.isEmpty {
-                next.content.localImagePath = try? LocalCanvasAssetStore.copyImage(
-                    from: path,
-                    templateID: templateID,
-                    nodeID: id
-                )
+                if isPassthrough(path) {
+                    next.content.localImagePath = path
+                } else {
+                    next.content.localImagePath = try? LocalCanvasAssetStore.copyImage(
+                        from: path,
+                        templateID: templateID,
+                        nodeID: id
+                    )
+                }
             }
             if let path = node.style.backgroundImagePath, !path.isEmpty {
-                next.style.backgroundImagePath = try? LocalCanvasAssetStore.copyContainerBackground(
-                    from: path,
-                    templateID: templateID,
-                    nodeID: id
-                )
+                if isPassthrough(path) {
+                    next.style.backgroundImagePath = path
+                } else {
+                    next.style.backgroundImagePath = try? LocalCanvasAssetStore.copyContainerBackground(
+                        from: path,
+                        templateID: templateID,
+                        nodeID: id
+                    )
+                }
             }
             // Gallery payload: each tile under its own fresh asset UUID
             // inside the template's folder so per-tile replace stays
@@ -160,6 +222,10 @@ private enum CanvasTemplateAssetCopier {
             if let paths = node.content.imagePaths, !paths.isEmpty {
                 var copied: [String] = []
                 for original in paths {
+                    if isPassthrough(original) {
+                        copied.append(original)
+                        continue
+                    }
                     let assetID = UUID()
                     if let dest = try? LocalCanvasAssetStore.copyImage(
                         from: original,
@@ -186,11 +252,15 @@ private enum CanvasTemplateAssetCopier {
 
         for index in copy.pages.indices {
             if let path = document.pages[index].backgroundImagePath, !path.isEmpty {
-                copy.pages[index].backgroundImagePath = try? LocalCanvasAssetStore.copyPageBackground(
-                    from: path,
-                    draftID: draftID,
-                    pageID: index == 0 ? nil : document.pages[index].id
-                )
+                if isPassthrough(path) {
+                    copy.pages[index].backgroundImagePath = path
+                } else {
+                    copy.pages[index].backgroundImagePath = try? LocalCanvasAssetStore.copyPageBackground(
+                        from: path,
+                        draftID: draftID,
+                        pageID: index == 0 ? nil : document.pages[index].id
+                    )
+                }
             }
         }
         copy.syncLegacyFieldsFromFirstPage()
@@ -198,22 +268,34 @@ private enum CanvasTemplateAssetCopier {
         for (id, node) in document.nodes {
             var next = node
             if let path = node.content.localImagePath, !path.isEmpty {
-                next.content.localImagePath = try? LocalCanvasAssetStore.copyImage(
-                    from: path,
-                    draftID: draftID,
-                    nodeID: id
-                )
+                if isPassthrough(path) {
+                    next.content.localImagePath = path
+                } else {
+                    next.content.localImagePath = try? LocalCanvasAssetStore.copyImage(
+                        from: path,
+                        draftID: draftID,
+                        nodeID: id
+                    )
+                }
             }
             if let path = node.style.backgroundImagePath, !path.isEmpty {
-                next.style.backgroundImagePath = try? LocalCanvasAssetStore.copyContainerBackground(
-                    from: path,
-                    draftID: draftID,
-                    nodeID: id
-                )
+                if isPassthrough(path) {
+                    next.style.backgroundImagePath = path
+                } else {
+                    next.style.backgroundImagePath = try? LocalCanvasAssetStore.copyContainerBackground(
+                        from: path,
+                        draftID: draftID,
+                        nodeID: id
+                    )
+                }
             }
             if let paths = node.content.imagePaths, !paths.isEmpty {
                 var copied: [String] = []
                 for original in paths {
+                    if isPassthrough(original) {
+                        copied.append(original)
+                        continue
+                    }
                     let assetID = UUID()
                     if let dest = try? LocalCanvasAssetStore.copyImage(
                         from: original,

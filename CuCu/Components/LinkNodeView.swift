@@ -75,10 +75,24 @@ final class LinkNodeView: NodeRenderView {
         // same field icon nodes use, so a future cross-reference (e.g.
         // "use this icon as my link's leading mark") works for free.
         if let symbolName = node.content.iconName, !symbolName.isEmpty {
-            let cfg = UIImage.SymbolConfiguration(weight: .semibold)
-            symbolImageView.image = UIImage(systemName: symbolName, withConfiguration: cfg)
-            symbolImageView.tintColor = textColor
-            symbolImageView.isHidden = false
+            // Same three-way fork as `IconNodeView`:
+            //   • `brand.*` → vendored single-color SVG, tinted.
+            //   • `multi.*` → vendored multi-color SVG, original colors.
+            //   • everything else → SF Symbol.
+            var multicolor = false
+            if symbolName.hasPrefix("brand.") {
+                let assetName = "SocialIcons/" + String(symbolName.dropFirst("brand.".count))
+                symbolImageView.image = UIImage(named: assetName)?.withRenderingMode(.alwaysTemplate)
+            } else if symbolName.hasPrefix("multi.") {
+                let assetName = "Glyphs/" + String(symbolName.dropFirst("multi.".count))
+                symbolImageView.image = UIImage(named: assetName)?.withRenderingMode(.alwaysOriginal)
+                multicolor = true
+            } else {
+                let cfg = UIImage.SymbolConfiguration(weight: .semibold)
+                symbolImageView.image = UIImage(systemName: symbolName, withConfiguration: cfg)
+            }
+            symbolImageView.tintColor = multicolor ? nil : textColor
+            symbolImageView.isHidden = (symbolImageView.image == nil)
         } else {
             symbolImageView.image = nil
             symbolImageView.isHidden = true

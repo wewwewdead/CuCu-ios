@@ -24,6 +24,7 @@ struct PublishedProfileView: View {
     let username: String
 
     @Environment(\.openURL) private var openURL
+    @Environment(\.cucuWidthClass) private var widthClass
     @State private var state: ViewState = .loading
     /// A binding sink the canvas container needs but the viewer doesn't
     /// use — selection has no meaning in view-only mode.
@@ -316,11 +317,35 @@ struct PublishedProfileView: View {
                                   pageIndex: Int,
                                   availableWidth: CGFloat) -> some View {
         let page = profile.document.pages[pageIndex]
-        let documentWidth = max(1, CGFloat(profile.document.pageWidth))
         let pageHeight = max(1, CGFloat(page.height))
-        let scale = min(1.0, max(1, availableWidth) / documentWidth)
-        let scaledWidth = documentWidth * scale
-        let scaledHeight = pageHeight * scale
+        // Responsive scale-to-fit, edge-to-edge. The published page
+        // was authored at a fixed `pageWidth` (390pt by default, or
+        // the actual content extent if the author placed nodes past
+        // that). When a viewer opens the profile on a different-
+        // sized phone, we don't want the content to look small with
+        // empty margins (Pro Max viewing an SE author) or to overflow
+        // off-screen (SE viewing a Pro Max author). Computing
+        // `availableWidth / designWidth` and applying a uniform
+        // `.scaleEffect` makes elements grow or shrink proportionally
+        // so the published profile fills the viewer's full width.
+        //
+        // No paper-color outer margin: the editor canvas itself runs
+        // edge-to-edge in the builder, and the seven default
+        // templates already bake a ~15pt content inset into their
+        // authored coordinates so individual nodes sit comfortably
+        // inside the canvas without needing the viewer to add an
+        // extra gutter on top. Adding one here too would compound
+        // into a strip of whitespace the user has explicitly told
+        // us not to show.
+        //
+        // `contentDesignWidth(forPageAt:)` is the design unit: the
+        // larger of the canonical `pageWidth` and any node's right
+        // edge (so authors who placed children past 390pt on a Pro
+        // Max stay visible on narrower viewers).
+        let designWidth = max(1, CGFloat(profile.document.contentDesignWidth(forPageAt: pageIndex)))
+        let usableWidth = max(1, availableWidth)
+        let scale = usableWidth / designWidth
+        let renderedHeight = pageHeight * scale
 
         return CanvasEditorContainer(
             document: documentBinding(for: profile),
@@ -351,10 +376,16 @@ struct PublishedProfileView: View {
             },
             viewerPageIndex: pageIndex
         )
-        .frame(width: documentWidth, height: pageHeight)
-        .scaleEffect(scale, anchor: .top)
-        .frame(width: scaledWidth, height: scaledHeight)
-        .frame(maxWidth: .infinity, alignment: .top)
+        // Render the canvas at the author's authored design width so the
+        // inner `max(viewportWidth, pageWidth)` rule resolves cleanly
+        // (viewport == pageWidth → no double-stretch). The scale is
+        // applied as a visual transform around the topLeading anchor;
+        // the matching outer frame alignment keeps the scaled origin
+        // pinned to the topLeading of the full viewport so content
+        // fills from the leading edge without offset drift.
+        .frame(width: designWidth, height: pageHeight)
+        .scaleEffect(scale, anchor: .topLeading)
+        .frame(width: usableWidth, height: renderedHeight, alignment: .topLeading)
     }
 
     private var loadingNextPageSentinel: some View {

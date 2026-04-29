@@ -18,6 +18,14 @@ struct NodeStyle: Codable, Hashable {
     var imageFit: NodeImageFit?
     var clipShape: NodeClipShape?
 
+    /// Tilt angle in **degrees**, applied as a `CGAffineTransform`
+    /// rotation around the node's center by `NodeRenderView`. `0`
+    /// means no tilt — old drafts written before this field
+    /// existed decode to `0` and render unchanged. Range exposed
+    /// in the inspector is -180...180; the model accepts any
+    /// double so future gestures could spin past a full turn.
+    var rotation: Double
+
     /// Optional relative path (resolved via `LocalCanvasAssetStore`) of
     /// an image rendered behind the node's children, on top of
     /// `backgroundColorHex`. Used by container nodes to host a photo
@@ -112,6 +120,7 @@ struct NodeStyle: Codable, Hashable {
          textAlignment: NodeTextAlignment? = nil,
          imageFit: NodeImageFit? = nil,
          clipShape: NodeClipShape? = nil,
+         rotation: Double = 0,
          backgroundImagePath: String? = nil,
          backgroundBlur: Double? = nil,
          backgroundVignette: Double? = nil,
@@ -138,6 +147,7 @@ struct NodeStyle: Codable, Hashable {
         self.textAlignment = textAlignment
         self.imageFit = imageFit
         self.clipShape = clipShape
+        self.rotation = rotation
         self.backgroundImagePath = backgroundImagePath
         self.backgroundBlur = backgroundBlur
         self.backgroundVignette = backgroundVignette
@@ -169,6 +179,7 @@ extension NodeStyle {
         case textAlignment
         case imageFit
         case clipShape
+        case rotation
         case backgroundImagePath
         case backgroundBlur
         case backgroundVignette
@@ -202,6 +213,7 @@ extension NodeStyle {
         self.textAlignment = try c.decodeIfPresent(NodeTextAlignment.self, forKey: .textAlignment)
         self.imageFit = try c.decodeIfPresent(NodeImageFit.self, forKey: .imageFit)
         self.clipShape = try c.decodeIfPresent(NodeClipShape.self, forKey: .clipShape)
+        self.rotation = try c.decodeIfPresent(Double.self, forKey: .rotation) ?? 0
         self.backgroundImagePath = try c.decodeIfPresent(String.self, forKey: .backgroundImagePath)
         self.backgroundBlur = try c.decodeIfPresent(Double.self, forKey: .backgroundBlur)
         self.backgroundVignette = try c.decodeIfPresent(Double.self, forKey: .backgroundVignette)
@@ -333,6 +345,7 @@ enum NodeClipShape: String, Codable, CaseIterable, Hashable {
 // like a different sticker each time.
 
 enum NodeIconStyleFamily: String, Codable, CaseIterable, Hashable {
+    case plain           // no plate / accents — bare glyph, user's tint
     case pastelDoodle    // soft pastel disk + doodled offset shadow
     case y2kCute         // chrome bevel + glossy highlight
     case pixelCute       // chunky pixel-frame, hard edges
@@ -349,6 +362,7 @@ enum NodeIconStyleFamily: String, Codable, CaseIterable, Hashable {
     /// Display name used by the inspector menu.
     var label: String {
         switch self {
+        case .plain: return "Default"
         case .pastelDoodle: return "Pastel Doodle"
         case .y2kCute: return "Y2K Cute"
         case .pixelCute: return "Pixel Cute"

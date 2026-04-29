@@ -40,6 +40,7 @@ struct PropertyInspectorView: View {
     var onRemoveGalleryImage: (UUID, Int) -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.cucuWidthClass) private var widthClass
 
     @State private var replaceSelection: PhotosPickerItem?
     @State private var containerBgSelection: PhotosPickerItem?
@@ -240,6 +241,14 @@ struct PropertyInspectorView: View {
         width: CGFloat,
         @ViewBuilder content: () -> Content
     ) -> some View {
+        // `width` is the design-time intent (the same numbers the
+        // prototype shipped: 220 for sliders, 200 for font, 150 for
+        // color, etc.). We multiply by the current width class's
+        // `inspectorCardScale` so SE shrinks slightly (1.4 cards still
+        // visible) and Pro Max / iPad grow (more cards at a glance)
+        // without each call site having to know about screen size.
+        let scaledWidth = width * widthClass.inspectorCardScale
+
         VStack(alignment: .leading, spacing: 6) {
             Text(title.uppercased())
                 .font(.cucuMono(9, weight: .semibold))
@@ -250,7 +259,7 @@ struct PropertyInspectorView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .frame(width: width, height: 84)
+        .frame(width: scaledWidth, height: 84)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.cucuCard)
@@ -277,6 +286,21 @@ struct PropertyInspectorView: View {
                 CucuValuePill(text: valueLabel)
             }
         }
+    }
+
+    /// Tilt slider, shared across every node-type section. Range
+    /// -180...180° with a degree-formatted readout. Reuses
+    /// `sliderCard` for visual consistency with corner-radius,
+    /// border-width, opacity, etc. so the inspector stays uniform.
+    private func tiltCard(node: CanvasNode) -> some View {
+        let rotationBinding = binding(node.id, key: \.style.rotation)
+        return sliderCard(
+            title: "Tilt",
+            binding: rotationBinding,
+            range: -180...180,
+            step: 1,
+            valueLabel: "\(Int(rotationBinding.wrappedValue))°"
+        )
     }
 
     private func segmentedCard<T: Hashable>(
@@ -536,6 +560,7 @@ struct PropertyInspectorView: View {
             step: 0.01,
             valueLabel: "\(Int(binding(node.id, key: \.opacity).wrappedValue * 100))%"
         )
+        tiltCard(node: node)
         sliderCard(
             title: "Blur",
             binding: bindingOptionalDouble(node.id, key: \.style.containerBlur),
@@ -634,6 +659,7 @@ struct PropertyInspectorView: View {
             step: 0.01,
             valueLabel: "\(Int(binding(node.id, key: \.opacity).wrappedValue * 100))%"
         )
+        tiltCard(node: node)
     }
 
     // MARK: - Icon cards
@@ -680,6 +706,7 @@ struct PropertyInspectorView: View {
             step: 0.01,
             valueLabel: "\(Int(binding(node.id, key: \.opacity).wrappedValue * 100))%"
         )
+        tiltCard(node: node)
     }
 
     /// Menu over the 12 icon families. Each row shows the family's
@@ -769,6 +796,7 @@ struct PropertyInspectorView: View {
             step: 0.01,
             valueLabel: "\(Int(binding(node.id, key: \.opacity).wrappedValue * 100))%"
         )
+        tiltCard(node: node)
     }
 
     private func dividerStyleFamilyCard(node: CanvasNode) -> some View {
@@ -850,6 +878,7 @@ struct PropertyInspectorView: View {
             step: 0.01,
             valueLabel: "\(Int(binding(node.id, key: \.opacity).wrappedValue * 100))%"
         )
+        tiltCard(node: node)
     }
 
     private func linkStyleVariantCard(node: CanvasNode) -> some View {
@@ -926,6 +955,7 @@ struct PropertyInspectorView: View {
             step: 0.01,
             valueLabel: "\(Int(binding(node.id, key: \.opacity).wrappedValue * 100))%"
         )
+        tiltCard(node: node)
     }
 
     // MARK: - Carousel cards
@@ -969,6 +999,7 @@ struct PropertyInspectorView: View {
             step: 0.01,
             valueLabel: "\(Int(binding(node.id, key: \.opacity).wrappedValue * 100))%"
         )
+        tiltCard(node: node)
         // Backdrop blur — frosted-glass effect that samples whatever
         // sits behind the carousel on the canvas. Reuses the
         // `containerBlur` field; per-node, so it can't drift onto a
@@ -1113,6 +1144,7 @@ struct PropertyInspectorView: View {
             step: 0.01,
             valueLabel: "\(Int(binding(node.id, key: \.opacity).wrappedValue * 100))%"
         )
+        tiltCard(node: node)
     }
 
     // MARK: - Display helpers

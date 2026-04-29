@@ -192,6 +192,11 @@ final class IconNodeView: NodeRenderView {
 
         // Per-family plate.
         switch family {
+        case .plain:
+            // "Default" — no plate, no accents, no border. The reset
+            // block above has already cleared every layer / fill /
+            // shadow so we deliberately leave the family setup empty.
+            break
         case .pastelDoodle:
             plateView.layer.cornerRadius = min(rect.width, rect.height) / 2
             plateView.backgroundColor = plateFill
@@ -378,20 +383,66 @@ final class IconNodeView: NodeRenderView {
             plateView.layer.masksToBounds = false
         }
 
-        // Glyph rendering with a family-tuned weight + scale.
-        let weight: UIImage.SymbolWeight
-        let scale: UIImage.SymbolScale
-        switch family {
-        case .pixelCute, .retroWeb, .sticker, .y2kCute: weight = .heavy; scale = .large
-        case .softMinimal, .dreamy, .handDrawn:         weight = .regular; scale = .medium
-        default:                                         weight = .bold; scale = .large
+        // Glyph rendering. Three resolution paths:
+        //   • `brand.*` → vendored single-color SVGs in
+        //     `Assets.xcassets/SocialIcons/`. Loaded as template
+        //     images so the existing tintColor / plate-family code
+        //     recolors them correctly.
+        //   • `multi.*` → vendored multi-color SVGs in
+        //     `Assets.xcassets/Glyphs/`. Loaded as `.alwaysOriginal`
+        //     so the SVG's own fills paint (e.g. macOS traffic
+        //     lights stay red/yellow/green regardless of the user's
+        //     tint pick).
+        //   • everything else → SF Symbol with family-tuned weight +
+        //     scale. Symbol weight/scale knobs don't apply to bitmap
+        //     branches and are skipped there.
+        let glyph: UIImage?
+        var glyphIsMulticolor = false
+        if symbolName.hasPrefix("brand.") {
+            let assetName = "SocialIcons/" + String(symbolName.dropFirst("brand.".count))
+            if let brandImage = UIImage(named: assetName) {
+                glyph = brandImage.withRenderingMode(.alwaysTemplate)
+            } else {
+                // Brand asset missing on this build (e.g. a draft saved
+                // by a future binary that ships a brand we don't have):
+                // fall back to a neutral profile glyph so the node still
+                // renders and the user can swap from the inspector.
+                let fallbackConfig = UIImage.SymbolConfiguration(weight: .bold)
+                    .applying(UIImage.SymbolConfiguration(scale: .large))
+                glyph = UIImage(systemName: "person.crop.circle.fill", withConfiguration: fallbackConfig)
+            }
+        } else if symbolName.hasPrefix("multi.") {
+            let assetName = "Glyphs/" + String(symbolName.dropFirst("multi.".count))
+            if let multiImage = UIImage(named: assetName) {
+                glyph = multiImage.withRenderingMode(.alwaysOriginal)
+                glyphIsMulticolor = true
+            } else {
+                let fallbackConfig = UIImage.SymbolConfiguration(weight: .bold)
+                    .applying(UIImage.SymbolConfiguration(scale: .large))
+                glyph = UIImage(systemName: "circle.grid.3x1.fill", withConfiguration: fallbackConfig)
+            }
+        } else {
+            let weight: UIImage.SymbolWeight
+            let scale: UIImage.SymbolScale
+            switch family {
+            case .pixelCute, .retroWeb, .sticker, .y2kCute: weight = .heavy; scale = .large
+            case .plain, .softMinimal, .dreamy, .handDrawn: weight = .regular; scale = .medium
+            default:                                         weight = .bold; scale = .large
+            }
+            let config = UIImage.SymbolConfiguration(weight: weight)
+                .applying(UIImage.SymbolConfiguration(scale: scale))
+            glyph = UIImage(systemName: symbolName, withConfiguration: config)
+                ?? UIImage(systemName: "star.fill", withConfiguration: config)
         }
-        let config = UIImage.SymbolConfiguration(weight: weight)
-            .applying(UIImage.SymbolConfiguration(scale: scale))
-        let glyph = UIImage(systemName: symbolName, withConfiguration: config)
-            ?? UIImage(systemName: "star.fill", withConfiguration: config)
         imageView.image = glyph
-        imageView.tintColor = (family == .cyberCute) ? plateFill : glyphTint
+        // Multicolor glyphs (e.g. macOS traffic lights) ship their own
+        // fills via `.alwaysOriginal`, so a non-nil tintColor would be
+        // ignored anyway — but explicitly nil-ing it makes the intent
+        // obvious for future readers and matches the no-recolor
+        // contract.
+        imageView.tintColor = glyphIsMulticolor
+            ? nil
+            : ((family == .cyberCute) ? plateFill : glyphTint)
         bringSubviewToFront(imageView)
         layoutGlyph(in: rect)
 
@@ -430,6 +481,7 @@ final class IconNodeView: NodeRenderView {
 
     private func defaultPlate(for family: NodeIconStyleFamily) -> UIColor {
         switch family {
+        case .plain:        return .clear
         case .pastelDoodle: return uiColor(hex: "#FFE3EC")
         case .y2kCute:      return uiColor(hex: "#D8B6FF")
         case .pixelCute:    return uiColor(hex: "#FFE082")
@@ -447,6 +499,7 @@ final class IconNodeView: NodeRenderView {
 
     private func defaultTint(for family: NodeIconStyleFamily) -> UIColor {
         switch family {
+        case .plain:        return uiColor(hex: "#1A140E")
         case .pastelDoodle: return uiColor(hex: "#B22A4A")
         case .y2kCute:      return uiColor(hex: "#341B62")
         case .pixelCute:    return uiColor(hex: "#3A1D00")

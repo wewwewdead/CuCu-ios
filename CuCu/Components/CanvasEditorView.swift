@@ -123,6 +123,177 @@ private final class AddPageAffordanceView: UIControl {
     }
 }
 
+/// Hold-to-edit spotlight overlay. Two `CAShapeLayer`s pinned to
+/// the canvas root, sitting above the scroll view:
+///
+/// - **dimLayer**: fills (canvas rect ⊖ node silhouette) with dim
+///   ink using the even-odd fill rule. The "hole" in the dim is
+///   exactly the focused element's clip shape (rounded rect,
+///   capsule, or circle), so the element itself is fully visible.
+/// - **glowLayer**: strokes the same silhouette with a soft white
+///   `shadowPath`, casting an outward halo into the dimmed area.
+///   That halo softens the dim's hard edge against the cutout and
+///   reads as "the element is illuminated."
+///
+/// Path animation between focus targets runs via explicit
+/// `CABasicAnimation` on `path` / `shadowPath` so the silhouette
+/// morphs smoothly from one element's shape to another's. All
+/// node clip paths are constructed as 4-arc rounded rects so the
+/// CGPath control-point topology matches across shapes —
+/// rectangles, capsules, and circles all interpolate cleanly.
+///
+/// Non-interactive so taps fall through to the underlying canvas
+/// (deselect / focus-page paths handle the exit).
+private final class SpotlightOverlayView: UIView {
+    /// Hard-edge dim layer: fills the canvas everywhere except
+    /// inside the focused element's silhouette. Even-odd fill
+    /// rule + a path that combines the canvas rect and the node
+    /// shape gives us a clean cutout without manual masking.
+    /// Tinted with `cucuInk` (the editorial warm brown) at the
+    /// "subtle stage lighting" peak alpha 0.40.
+    private let dimLayer: CAShapeLayer = {
+        let l = CAShapeLayer()
+        l.fillColor = UIColor.cucuInk.withAlphaComponent(0.40).cgColor
+        l.fillRule = .evenOdd
+        return l
+    }()
+
+    /// Soft luminous halo around the focused element's silhouette.
+    /// No visible stroke or fill — the glow is *purely* the
+    /// `shadow*` halo projected via `shadowPath`, which
+    /// `CAShapeLayer` renders independently of the layer's
+    /// composited alpha. Without the stroke ring on top, what
+    /// remains is a diffuse, lifted-edge feel rather than a
+    /// bright outline. Sits above `dimLayer` so the halo extends
+    /// OUT into the dimmed area, gently softening the dim's hard
+    /// cutout boundary.
+    private let glowLayer: CAShapeLayer = {
+        let l = CAShapeLayer()
+        l.fillColor = UIColor.clear.cgColor
+        l.strokeColor = UIColor.clear.cgColor
+        l.lineWidth = 0
+        l.shadowColor = UIColor.white.cgColor
+        // Dropped opacity (0.55 → 0.28) and widened the falloff
+        // (14 → 18) so the halo reads as gentle illumination
+        // rather than a bright rim. The cutout silhouette in
+        // `dimLayer` still gives the focused element its hard
+        // shape definition; the glow just whispers around it.
+        l.shadowOpacity = 0.28
+        l.shadowRadius = 18
+        l.shadowOffset = .zero
+        return l
+    }()
+
+    /// Last requested cutout path, in this view's coords. Re-
+    /// applied without animation in `layoutSubviews` so a rotation
+    /// or page-resize keeps the silhouette on the focused element.
+    private var lastTargetPath: UIBezierPath?
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        layer.addSublayer(dimLayer)
+        layer.addSublayer(glowLayer)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    /// Place the spotlight on a target silhouette (in this view's
+    /// coords). `animated == true` morphs both the dim cutout and
+    /// the glow shape from their previous values via explicit
+    /// `CABasicAnimation` over ~0.4s with cubic easing so the
+    /// transition reads as a single fluid motion. `animated ==
+    /// false` snaps the model values immediately (entry-from-cold
+    /// + bounds-driven re-anchors).
+    func setSpotlight(targetPath: UIBezierPath, animated: Bool) {
+        let oldPath = lastTargetPath
+        lastTargetPath = targetPath
+        guard bounds.width > 0, bounds.height > 0 else { return }
+
+        let combined = UIBezierPath(rect: bounds)
+        combined.append(targetPath)
+
+        // Build the "from" combined path for path animation —
+        // falling back to the new combined when there's no prior
+        // (entry-from-cold), so the animation is a no-op visually.
+        let oldCombined: UIBezierPath = {
+            guard let oldPath else { return combined }
+            let p = UIBezierPath(rect: bounds)
+            p.append(oldPath)
+            return p
+        }()
+
+        if animated {
+            // Cubic easing (0.32, 0.72, 0.24, 1.0) — sharp
+            // acceleration, soft landing. Reads as a deliberate
+            // stage-light pan, not a UIKit-default linear tween.
+            let timing = CAMediaTimingFunction(controlPoints: 0.32, 0.72, 0.24, 1.0)
+            let duration: CFTimeInterval = 0.4
+            animatePath(on: dimLayer, keyPath: "path",
+                        from: oldCombined.cgPath, to: combined.cgPath,
+                        duration: duration, timing: timing)
+            animatePath(on: glowLayer, keyPath: "path",
+                        from: oldPath?.cgPath ?? targetPath.cgPath,
+                        to: targetPath.cgPath,
+                        duration: duration, timing: timing)
+            animatePath(on: glowLayer, keyPath: "shadowPath",
+                        from: oldPath?.cgPath ?? targetPath.cgPath,
+                        to: targetPath.cgPath,
+                        duration: duration, timing: timing)
+            // Set model values outside a disable-actions block so
+            // the explicit animations above run, while ensuring
+            // the model lands at target after they complete.
+            dimLayer.path = combined.cgPath
+            glowLayer.path = targetPath.cgPath
+            glowLayer.shadowPath = targetPath.cgPath
+        } else {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            dimLayer.path = combined.cgPath
+            glowLayer.path = targetPath.cgPath
+            glowLayer.shadowPath = targetPath.cgPath
+            CATransaction.commit()
+        }
+    }
+
+    private func animatePath(on shapeLayer: CAShapeLayer,
+                             keyPath: String,
+                             from: CGPath,
+                             to: CGPath,
+                             duration: CFTimeInterval,
+                             timing: CAMediaTimingFunction) {
+        // Read from the presentation layer so a re-press mid-
+        // animation morphs from the visible silhouette rather
+        // than snapping back to the previous model path.
+        let fromActual = (shapeLayer.presentation()?.value(forKeyPath: keyPath) as! CGPath?) ?? from
+        let anim = CABasicAnimation(keyPath: keyPath)
+        anim.fromValue = fromActual
+        anim.toValue = to
+        anim.duration = duration
+        anim.timingFunction = timing
+        anim.isRemovedOnCompletion = true
+        shapeLayer.add(anim, forKey: "spotlight-\(keyPath)")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Sublayer frames must follow the view's bounds so their
+        // local coord systems align with our own.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        dimLayer.frame = bounds
+        glowLayer.frame = bounds
+        CATransaction.commit()
+        // Bounds-driven re-anchor (rotation, page resize).
+        if let path = lastTargetPath {
+            setSpotlight(targetPath: path, animated: false)
+        }
+    }
+}
+
 /// The UIKit canvas. Owns:
 ///   - a flat `[UUID: NodeRenderView]` cache keyed by node ID
 ///   - the page-background view (the canvas root's background fill)
@@ -328,6 +499,26 @@ final class CanvasEditorView: UIView {
 
     private let overlay = SelectionOverlayView()
 
+    /// Hold-to-edit visual mode. While `true`:
+    ///   1. `pagesStackView` is scaled to ~0.96× (under-damped spring).
+    ///   2. `spotlightOverlay` fades in, anchored to the focused
+    ///      node — clear at the node, gentle dim at the canvas edges.
+    ///   3. Every `NodeRenderView` shows its dashed clip-shape outline.
+    /// Entered from `handleNodeLongPress` (idempotent — re-pressing
+    /// a different node keeps the mode active and glides the
+    /// spotlight to the new focus). Exited from `handleTap` (only
+    /// when no node was hit) and `focusPage`. Always reset by
+    /// `isInteractive`'s didSet so a viewer flip can't strand the
+    /// spotlight on screen.
+    private var isEditingModeActive = false
+    /// Single radial gradient overlay shown while edit mode is on.
+    /// Lives on the canvas root (`self`), above the scroll view, so
+    /// it dims everything in the canvas — page surfaces, nodes, and
+    /// the selection overlay alike — except the soft clear core
+    /// around the focused element. Position changes glide via
+    /// explicit `CABasicAnimation`; alpha fades via `UIView.animate`.
+    private let spotlightOverlay = SpotlightOverlayView()
+
     /// Vertical scrolling host. Pinned to the canvas root's bounds and
     /// kept transparent so the page background image (which sits
     /// behind it on `self`) stays visible. Page content (node render
@@ -442,6 +633,16 @@ final class CanvasEditorView: UIView {
     /// translation deltas (UIPanGestureRecognizer reports cumulative
     /// translation since `.began` by default).
     private var dragStartFrame: CGRect = .zero
+    /// Drag-only snapshots taken at `.began`, captured separately
+    /// from `dragStartFrame` because the move path uses
+    /// `view.center` + `view.bounds.size` (both transform-safe)
+    /// instead of `view.frame` (which is "undefined" per Apple's
+    /// docs when `transform` is non-identity — a tilted element's
+    /// `view.frame` returns the *bounding box* of the rotated
+    /// view, which would grow the un-rotated logical size every
+    /// drag tick if used to drive the move).
+    private var dragStartCenter: CGPoint = .zero
+    private var dragStartSize: CGSize = .zero
     /// Snapshot of every descendant's frame at the start of a resize.
     /// Used to scale children proportionally as the resized node's
     /// bounds change — without this, resizing a container leaves its
@@ -517,6 +718,11 @@ final class CanvasEditorView: UIView {
             // editor and the viewer set this value once at init.
             if !isInteractive {
                 overlay.isHidden = true
+                // Viewer mode never has a live edit session, so a
+                // runtime flip from editor → viewer must tear down the
+                // dark backdrop / scaled stack / dashed outlines.
+                // Without this, flipping mid-edit strands the vignette.
+                exitEditingMode(animated: false)
             }
         }
     }
@@ -629,6 +835,23 @@ final class CanvasEditorView: UIView {
         overlay.isHidden = true
         overlay.frame = .zero
 
+        // Spotlight overlay pinned to the canvas root, above the
+        // scroll view. Pre-attached + hidden so we don't re-do the
+        // constraint dance on every edit-mode entry. Sits above the
+        // selection overlay too — that's by design: the dim is
+        // gentle near the focused node so the selection handles
+        // remain visible through the very-low-alpha spotlight area
+        // around the node's edges.
+        addSubview(spotlightOverlay)
+        NSLayoutConstraint.activate([
+            spotlightOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
+            spotlightOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
+            spotlightOverlay.topAnchor.constraint(equalTo: topAnchor),
+            spotlightOverlay.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+        spotlightOverlay.alpha = 0
+        spotlightOverlay.isHidden = true
+
         for handle in [overlay.topLeft, overlay.topRight, overlay.bottomLeft, overlay.bottomRight] {
             handle.referenceView = contentView
             let corner = handle.corner
@@ -728,15 +951,16 @@ final class CanvasEditorView: UIView {
             }
         }
         for (id, view) in renderViews {
-            if document.nodes[id]?.type == .container || document.nodes[id]?.type == .text {
-                // Text nodes can host children too — order them by
-                // `childrenIDs` so a stack of icons over a text region
-                // renders front-to-back like containers do.
-                applyZOrder(parentID: id, in: view, onPage: nil)
-            } else if document.nodes[id]?.type == .carousel,
-                      let carousel = view as? CarouselNodeView {
+            guard let nodeType = document.nodes[id]?.type else { continue }
+            // Carousel keeps its dedicated host-view ordering; every
+            // other node orders children directly on its own view so
+            // leaf parents (image, icon, divider, link, gallery) layer
+            // their nested badges/accents like containers do.
+            if nodeType == .carousel, let carousel = view as? CarouselNodeView {
                 applyZOrder(parentID: id, in: carousel.itemHostView, onPage: nil)
                 carousel.updateContentSizeToFitItems()
+            } else {
+                applyZOrder(parentID: id, in: view, onPage: nil)
             }
         }
 
@@ -1123,6 +1347,14 @@ final class CanvasEditorView: UIView {
             renderViews[id] = fresh
             view = fresh
             attachPanGesture(to: view)
+            // If the canvas is already in hold-to-edit mode, light up
+            // the new view's dashed outline immediately. `animated:
+            // false` is deliberate — fading in against the static
+            // outlines already on screen flickers; an instant snap
+            // reads as "this just appeared" rather than a transition.
+            if isEditingModeActive {
+                fresh.setEditingOutline(enabled: true, animated: false)
+            }
         }
         if isInteractive, nodePanGestures[id] == nil {
             attachPanGesture(to: view)
@@ -1142,26 +1374,22 @@ final class CanvasEditorView: UIView {
             #endif
         }
 
-        // Recurse for containers and text nodes. Text accepts children
-        // so the user can drop an icon (or any element) onto a text
-        // node and have it float over the text region. The text view
-        // paints first via its own `addSubview` in `TextNodeView.init`;
-        // children added here layer above via standard subview
-        // stacking — no special Z-order plumbing needed beyond what
-        // `applyZOrder` already does for `childrenIDs`.
-        if node.type == .container || node.type == .text {
-            for childID in node.childrenIDs {
-                applyNode(id: childID, parent: view, liveIDs: &liveIDs)
-            }
-        } else if node.type == .carousel, let carousel = view as? CarouselNodeView {
-            // Carousel children mount directly into the strip's scroll
-            // content. Their frames are in content coordinates, so
-            // horizontal scrolling only changes what part of that child
-            // coordinate space is visible.
+        // Recurse children for every node that can host them. Carousel
+        // children mount into the strip's scroll content (so horizontal
+        // scrolling moves them as a unit); every other node — including
+        // leaves like image / icon / divider / link / gallery — hosts
+        // its children directly so users can drop a badge icon on an
+        // image, an accent on an icon, etc. Empty `childrenIDs` makes
+        // the loop a no-op for nodes without nested children.
+        if node.type == .carousel, let carousel = view as? CarouselNodeView {
             for childID in node.childrenIDs {
                 applyNode(id: childID, parent: carousel.itemHostView, liveIDs: &liveIDs)
             }
             carousel.updateContentSizeToFitItems()
+        } else {
+            for childID in node.childrenIDs {
+                applyNode(id: childID, parent: view, liveIDs: &liveIDs)
+            }
         }
     }
 
@@ -1352,6 +1580,14 @@ final class CanvasEditorView: UIView {
         let point = gesture.location(in: contentView)
         let hit = hitTestNode(at: point)
 
+        // Tap on empty area is one of the two exit paths for
+        // hold-to-edit mode (the other is `focusPage`). Run the exit
+        // before falling through so the page-focus / deselect side
+        // effects below land in the un-scaled coordinate space.
+        if hit == nil {
+            exitEditingMode(animated: true)
+        }
+
         if hit == nil, let pageIndex = pageIndex(at: point) {
             focusPage(at: pageIndex)
             return
@@ -1382,6 +1618,13 @@ final class CanvasEditorView: UIView {
             applyOverlayForCurrentSelection()
             onSelectionChanged?(hit)
             updateEditingPageForCurrentState()
+            // Spotlight tracks selection while edit mode is active —
+            // tap-to-reselect needs to slide the focus too, otherwise
+            // the spotlight stays on the previously held node. The
+            // overlay's own `CABasicAnimation` handles the glide.
+            if isEditingModeActive {
+                applySpotlightForCurrentSelection(animated: true)
+            }
         }
     }
 
@@ -1393,6 +1636,11 @@ final class CanvasEditorView: UIView {
             onSelectionChanged?(nil)
         }
         overlay.isHidden = true
+        // Focusing a different page is the second of the two exit
+        // paths for hold-to-edit mode — pair this with the tap-empty
+        // exit in `handleTap` so both deselect routes land back at the
+        // resting visual state.
+        exitEditingMode(animated: true)
         lastReportedEditingPageIndex = pageIndex
         onEditingPageChanged?(pageIndex)
         updatePageChromeSelection()
@@ -1487,22 +1735,11 @@ final class CanvasEditorView: UIView {
             guard let view = renderViews[id] else { continue }
             let local = superview.convert(point, to: view)
             if view.bounds.contains(local) {
-                if document.nodes[id]?.type == .carousel {
-                    if let inner = hitTestNode(at: local, in: view, parent: id, onPage: pageIndex) {
-                        return inner
-                    }
-                    return id
-                } else if document.nodes[id]?.type == .container,
-                          let inner = hitTestNode(at: local, in: view, parent: id, onPage: pageIndex) {
-                    return inner
-                } else if document.nodes[id]?.type == .text,
-                          let inner = hitTestNode(at: local, in: view, parent: id, onPage: pageIndex) {
-                    // Text nodes can host children (icons, images,
-                    // anything). A tap on a child must return that
-                    // child, not the text underneath — otherwise
-                    // selection / drag / resize all target the text
-                    // and the children become unmovable. Mirrors the
-                    // container arm above.
+                // Always try children first so a nested icon/text/etc.
+                // wins over the leaf it sits on. Empty `childrenIDs`
+                // makes the recursion return nil and we fall through
+                // to returning `id` — same as before for true leaves.
+                if let inner = hitTestNode(at: local, in: view, parent: id, onPage: pageIndex) {
                     return inner
                 }
                 return id
@@ -1639,6 +1876,224 @@ final class CanvasEditorView: UIView {
         return URL(string: "https://" + trimmed)
     }
 
+    // MARK: - Hold-to-edit visual mode
+
+    /// Re-anchor the spotlight overlay to whatever node is currently
+    /// selected. Builds the focused node's outer clip silhouette
+    /// (rounded rect, capsule, or circle) in spotlight-overlay
+    /// coords and passes it to the overlay so the dim cuts out
+    /// exactly the element's shape — not an approximating circle.
+    /// `animated == true` morphs the silhouette from the previous
+    /// focus via `CABasicAnimation` over ~0.4s; `animated == false`
+    /// snaps the model values (used by entry-from-cold and
+    /// bounds-driven re-anchors).
+    private func applySpotlightForCurrentSelection(animated: Bool) {
+        guard isEditingModeActive,
+              let selectedID,
+              let node = renderViews[selectedID] else { return }
+        let path = spotlightSilhouette(for: node)
+        spotlightOverlay.setSpotlight(targetPath: path, animated: animated)
+    }
+
+    /// Trace the focused node's outer clip silhouette in
+    /// `spotlightOverlay`'s coord space, *rotation-aware*. The
+    /// silhouette must follow the node's tilt so the cutout
+    /// matches the visible element instead of falling back to an
+    /// axis-aligned bounding box.
+    ///
+    /// We build the rounded-rect path in node-local coords (where
+    /// it stays an axis-aligned rectangle regardless of the node's
+    /// rotation), then apply a `CGAffineTransform` that maps
+    /// node-local → overlay-local. The affine is recovered from
+    /// three reference points run through `UIView.convert`:
+    /// origin, x-unit, y-unit. That handles every transform in
+    /// the chain at once — the node's rotation, the page stack's
+    /// 0.96 scale, and any translations along the way — without
+    /// having to compose `CALayer.affineTransform` walking up the
+    /// hierarchy by hand.
+    ///
+    /// All paths are 4-arc rounded rects with a minimum radius of
+    /// 0.01 so CGPath topology stays uniform across rectangles,
+    /// capsules, and circles — required for `CABasicAnimation` to
+    /// interpolate the path's control points cleanly when the
+    /// focus moves between elements of different clip shapes.
+    private func spotlightSilhouette(for node: NodeRenderView) -> UIBezierPath {
+        // Halo expansion in node-local coords: small enough to hug
+        // the element ("more focus") but large enough that the
+        // dim's hard edge lands off the element's pixel boundary.
+        let halo: CGFloat = 6
+        let expandedLocal = node.bounds.insetBy(dx: -halo, dy: -halo)
+        let radiusLocal: CGFloat
+        switch node.clipShape {
+        case .rectangle:
+            // Outward offset of a rounded rect grows the corner
+            // radius by the same delta. Both quantities are in
+            // node-local coords; the affine below scales them.
+            radiusLocal = max(0.01, node.clipCornerRadius + halo)
+        case .circle:
+            radiusLocal = max(0.01, min(expandedLocal.width, expandedLocal.height) / 2)
+        }
+        let path = UIBezierPath(roundedRect: expandedLocal, cornerRadius: radiusLocal)
+
+        // Recover the affine that maps node-local → overlay-local
+        // from three reference points. (a, b) is the image of
+        // (1, 0); (c, d) is the image of (0, 1); (tx, ty) is the
+        // image of (0, 0). This captures rotation, non-uniform
+        // scale, and translation — everything the path needs to
+        // land where the visible element actually sits.
+        let origin = spotlightOverlay.convert(CGPoint.zero, from: node)
+        let xUnit = spotlightOverlay.convert(CGPoint(x: 1, y: 0), from: node)
+        let yUnit = spotlightOverlay.convert(CGPoint(x: 0, y: 1), from: node)
+        let affine = CGAffineTransform(
+            a: xUnit.x - origin.x,
+            b: xUnit.y - origin.y,
+            c: yUnit.x - origin.x,
+            d: yUnit.y - origin.y,
+            tx: origin.x,
+            ty: origin.y
+        )
+        path.apply(affine)
+        return path
+    }
+
+    /// Push the canvas into hold-to-edit visual mode. Idempotent: a
+    /// second call (e.g. long-pressing a different node while the mode
+    /// is already on) skips the entry transition and only re-anchors
+    /// the selection overlay + spotlight scrim against the now-scaled
+    /// coordinate space.
+    /// Three concurrent transitions:
+    ///   1. `pagesStackView` scales to 0.96 via an under-damped spring
+    ///      (~0.45s, damping 0.78). Reads as "user steps back from
+    ///      the canvas".
+    ///   2. `editingBackdrop` fades in (~0.32s ease-out) over the
+    ///      canvas, darkening corners while leaving the page surface
+    ///      lit. Pinned above the scroll view; non-interactive so taps
+    ///      still hit the canvas underneath.
+    ///   3. Every live `NodeRenderView` cross-fades its dashed outline
+    ///      in (~0.25s).
+    /// The selection overlay is a sibling of `pagesStackView` inside
+    /// `contentView` and does NOT inherit the scale transform —
+    /// re-anchored inside the spring block (so the convert math runs
+    /// against the model value already at target) and again in the
+    /// completion as a safety net.
+    private func enterEditingMode() {
+        // Viewer mode never participates — defensive guard in case a
+        // stray long-press recognizer survives a runtime flip.
+        guard isInteractive else { return }
+
+        // Idempotent: long-pressing a different node while the
+        // mode is already active should keep it active and just
+        // glide the spotlight to the new focus. The caller already
+        // ran `applyOverlayForCurrentSelection()` against the
+        // scaled coord space.
+        guard !isEditingModeActive else {
+            applyOverlayForCurrentSelection()
+            applySpotlightForCurrentSelection(animated: true)
+            return
+        }
+        isEditingModeActive = true
+
+        // Bring the spotlight on top in case anything got added to
+        // the canvas root after init. Pre-position at the focused
+        // node WITHOUT animation so the gradient appears already
+        // locked on, then cross-fade alpha — without the pre-
+        // position the gradient would sweep in from its default
+        // center and read as a stray animation rather than a focus
+        // signal.
+        spotlightOverlay.isHidden = false
+        spotlightOverlay.alpha = 0
+        bringSubviewToFront(spotlightOverlay)
+        applySpotlightForCurrentSelection(animated: false)
+        UIView.animate(withDuration: 0.32,
+                       delay: 0,
+                       options: [.curveEaseOut, .allowUserInteraction]) {
+            self.spotlightOverlay.alpha = 1
+        }
+
+        // Dashed outlines on every live render view. Cross-fade in
+        // concurrently with the spring + backdrop so the three signals
+        // arrive together.
+        for view in renderViews.values {
+            view.setEditingOutline(enabled: true, animated: true)
+        }
+
+        // Spring scale on the pages stack. Damping 0.78 gives a single
+        // gentle overshoot — under-damped enough to feel physical
+        // without bouncing into a "toy" register.
+        UIView.animate(withDuration: 0.45,
+                       delay: 0,
+                       usingSpringWithDamping: 0.78,
+                       initialSpringVelocity: 0,
+                       options: [.allowUserInteraction]) {
+            self.pagesStackView.transform = CGAffineTransform(scaleX: 0.96, y: 0.96)
+            // The transform's MODEL value is at target the moment this
+            // block runs, so `contentView.convert(node.bounds, from:
+            // node)` reports the scaled rect — which lets the overlay
+            // animate to its scaled position concurrently with the
+            // spring instead of snapping at the end.
+            if let selectedID = self.selectedID, let node = self.renderViews[selectedID] {
+                self.overlay.frame = self.contentView.convert(node.bounds, from: node)
+            }
+        } completion: { _ in
+            // Belt-and-suspenders re-anchor: the selection may have
+            // moved during the spring (long-press on a different node
+            // while still entering), so read state once more and place
+            // the overlay against the settled transform.
+            self.applyOverlayForCurrentSelection()
+        }
+    }
+
+    /// Tear down hold-to-edit visual mode. Reverses each of the three
+    /// entry transitions; idempotent (no-op if already off). `animated:
+    /// false` snaps everything immediately — used by `isInteractive`'s
+    /// didSet so a viewer flip can't strand the dark backdrop on
+    /// screen.
+    private func exitEditingMode(animated: Bool) {
+        guard isEditingModeActive else { return }
+        isEditingModeActive = false
+
+        if animated {
+            UIView.animate(withDuration: 0.32,
+                           delay: 0,
+                           options: [.curveEaseInOut, .allowUserInteraction]) {
+                self.spotlightOverlay.alpha = 0
+            } completion: { [weak self] _ in
+                guard let self else { return }
+                // Guard against a quick re-entry (exit → long-press
+                // within 0.32s) — only hide if no fresh session
+                // has flipped the flag back on.
+                if !self.isEditingModeActive {
+                    self.spotlightOverlay.isHidden = true
+                }
+            }
+
+            for view in renderViews.values {
+                view.setEditingOutline(enabled: false, animated: true)
+            }
+
+            UIView.animate(withDuration: 0.45,
+                           delay: 0,
+                           usingSpringWithDamping: 0.85,
+                           initialSpringVelocity: 0,
+                           options: [.allowUserInteraction]) {
+                self.pagesStackView.transform = .identity
+                if let selectedID = self.selectedID, let node = self.renderViews[selectedID] {
+                    self.overlay.frame = self.contentView.convert(node.bounds, from: node)
+                }
+            } completion: { [weak self] _ in
+                self?.applyOverlayForCurrentSelection()
+            }
+        } else {
+            spotlightOverlay.alpha = 0
+            spotlightOverlay.isHidden = true
+            for view in renderViews.values {
+                view.setEditingOutline(enabled: false, animated: false)
+            }
+            pagesStackView.transform = .identity
+            applyOverlayForCurrentSelection()
+        }
+    }
+
     @objc private func handleNodeLongPress(_ gesture: UILongPressGestureRecognizer) {
         // We only act on the single `.began` transition — long-press
         // recognizers continue to fire `.changed` events while the
@@ -1666,6 +2121,10 @@ final class CanvasEditorView: UIView {
         // canvas owns selection and the haptic; presenting modals is
         // a SwiftUI concern.
         onRequestEditNode?(id)
+
+        // Push the canvas into hold-to-edit visual mode (or refresh
+        // the selection overlay's anchor if it's already on).
+        enterEditingMode()
     }
 
     @objc private func handleNodePan(_ gesture: UIPanGestureRecognizer) {
@@ -1684,28 +2143,65 @@ final class CanvasEditorView: UIView {
                 selectedID = id
                 onSelectionChanged?(id)
             }
-            dragStartFrame = view.frame
+            // Capture transform-safe snapshots: `center` for
+            // position, `bounds.size` for the un-rotated logical
+            // size. Both are well-defined regardless of any tilt
+            // transform on the view; `view.frame` is not.
+            dragStartCenter = view.center
+            dragStartSize = view.bounds.size
 
         case .changed:
-            // Move the dragged view by mutating its `frame` directly.
-            // Nested children follow automatically because they are real
-            // UIKit subviews of this view, and their frames are in this
-            // view's coordinate space — moving the parent moves the
-            // entire subtree visually, with no manual translation needed.
-            // The document is not touched until `.ended` so SwiftUI does
-            // not re-render mid-drag and stomp the in-flight frame.
+            // Move the dragged view by mutating its `center`
+            // directly. `view.center` translates correctly even
+            // when the view has a rotation transform, so a tilted
+            // element drags by the same vector the user's finger
+            // travels. Nested children follow because they're real
+            // UIKit subviews and their frames live in this view's
+            // (un-rotated) coord space — moving the parent's
+            // center moves the whole subtree visually.
+            // Document is untouched until `.ended` so SwiftUI
+            // doesn't re-render mid-drag and stomp the in-flight
+            // position.
             let translation = gesture.translation(in: view.superview)
-            var newFrame = dragStartFrame
-            newFrame.origin.x += translation.x
-            newFrame.origin.y += translation.y
-            view.frame = newFrame
+            let newCenter = CGPoint(
+                x: dragStartCenter.x + translation.x,
+                y: dragStartCenter.y + translation.y
+            )
+            // No bounds clamp: nested children can be dragged
+            // anywhere — including past the parent's edge. The
+            // parent's `layer.masksToBounds = true` handles the
+            // visual: anything past the edge is clipped, exactly
+            // like the user wants for "bleed past the edge"
+            // layouts. The model frame keeps the real position so
+            // the user can grab and drag the element back into
+            // view via the layers panel or by selecting from the
+            // path chip.
+            view.center = newCenter
             nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
             applyOverlayForCurrentSelection()
+            // Spotlight tracks the dragged element in real-time —
+            // snap (no animation) so the silhouette glues to the
+            // node's frame instead of lagging behind on every
+            // gesture tick.
+            if isEditingModeActive, id == selectedID {
+                applySpotlightForCurrentSelection(animated: false)
+            }
 
         case .ended, .cancelled:
-            // Commit the new frame to the document and notify the host.
+            // Commit the new frame to the document and notify the
+            // host. Build the model frame from the captured
+            // un-rotated size + the dragged center so a tilted
+            // element gets the right model position even though
+            // its `view.frame` is undefined.
             if var node = document.nodes[id] {
-                node.frame = NodeFrame(view.frame)
+                let size = dragStartSize
+                let newFrame = CGRect(
+                    x: view.center.x - size.width / 2,
+                    y: view.center.y - size.height / 2,
+                    width: size.width,
+                    height: size.height
+                )
+                node.frame = NodeFrame(newFrame)
                 document.nodes[id] = node
                 nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
                 onCommit?(document)
@@ -1821,6 +2317,12 @@ final class CanvasEditorView: UIView {
 
             nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
             applyOverlayForCurrentSelection()
+            // Spotlight follows the resize too — the silhouette
+            // path needs to grow / shrink with the node so the
+            // cutout doesn't strand at the original size.
+            if isEditingModeActive {
+                applySpotlightForCurrentSelection(animated: false)
+            }
 
         case .ended, .cancelled:
             // Commit the resized frame plus every scaled descendant
@@ -1991,6 +2493,13 @@ final class CanvasEditorView: UIView {
         // Re-pin the overlay to the selected node in case bounds changed
         // (e.g., rotation or window resize on iPad).
         applyOverlayForCurrentSelection()
+        // Same for the spotlight — page resize / rotation changes the
+        // selected node's frame in `contentView` coords, so re-anchor
+        // without animation (this is bounds-driven, not interaction-
+        // driven).
+        if isEditingModeActive {
+            applySpotlightForCurrentSelection(animated: false)
+        }
         // Honor the deferred "open at page 1" snap once the scroll
         // view has real bounds and content size. Doing this in
         // layoutSubviews (rather than apply(document:)) is the only
@@ -2011,17 +2520,36 @@ final class CanvasEditorView: UIView {
     private func applyPageSizing(for document: ProfileDocument) {
         let pageWidth = effectivePageWidth(for: document)
         let viewportWidth = scrollView.bounds.width > 0 ? scrollView.bounds.width : bounds.width
-        // Edge-to-edge: pages render at the full canvas width
-        // regardless of the document's `pageWidth`. The model's
-        // pageWidth stays the canonical coordinate space children
-        // are placed in; the editor stretches the rendered page so
-        // the user perceives a full-screen canvas. On standard
-        // iPhones the drift between viewport (393) and pageWidth
-        // (390) is invisible; on Plus / Max devices a few points of
-        // trailing space remain past the children's reach, which is
-        // the right tradeoff for keeping the persisted document
-        // portable across screen widths.
-        let renderedPageWidth = max(viewportWidth, pageWidth)
+        // Edge-to-edge on phones: pages render at the full canvas
+        // width regardless of the document's `pageWidth`. The model's
+        // pageWidth stays the canonical coordinate space children are
+        // placed in; the editor stretches the rendered page so the
+        // user perceives a full-screen canvas. On standard iPhones
+        // the drift between viewport (393) and pageWidth (390) is
+        // invisible; on Plus / Max devices a few points of trailing
+        // space remain past the children's reach, which is the right
+        // tradeoff for keeping the persisted document portable
+        // across screen widths.
+        //
+        // On iPad-sized viewports (≥700pt) we *cap* the rendered
+        // page width at a comfortable phone-canvas size and let the
+        // pagesStackView's existing centerXAnchor constraint pin the
+        // surface to the middle of the screen, with desk-color
+        // margin on either side. Without the cap, an iPad would
+        // either stretch the page bg edge-to-edge (children
+        // clustered on the leading edge with empty trailing space)
+        // or render at full iPad width with nodes scattered into
+        // negative space on phone-authored documents — both feel
+        // wrong. The cap matches the published viewer's behaviour
+        // and the editor reads as "phone canvas on desk surface."
+        let iPadBreakpoint: CGFloat = 700
+        let iPadCap: CGFloat = 540
+        let renderedPageWidth: CGFloat
+        if viewportWidth >= iPadBreakpoint {
+            renderedPageWidth = min(viewportWidth, max(pageWidth, iPadCap))
+        } else {
+            renderedPageWidth = max(viewportWidth, pageWidth)
+        }
         let topPadding = viewerPageIndex == nil ? pageTopPadding : 0
         if let constraint = pagesStackTopConstraint,
            abs(constraint.constant - topPadding) > 0.5 {
@@ -2169,6 +2697,15 @@ final class CanvasEditorView: UIView {
 extension CanvasEditorView: UIGestureRecognizerDelegate, UIScrollViewDelegate {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         updateEditingPageForCurrentState()
+        // Spotlight overlay sits on the canvas root (outside the
+        // scroll view), so a scroll moves the focused node
+        // visually but leaves the silhouette behind. Re-anchor
+        // every tick — `convert` already accounts for the new
+        // contentOffset, and the `animated: false` snap is the
+        // right call here (the user's finger drives the cadence).
+        if isEditingModeActive {
+            applySpotlightForCurrentSelection(animated: false)
+        }
     }
 
     /// Decide which node's pan recognizer wins a touch. The rule is

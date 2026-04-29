@@ -67,29 +67,30 @@ enum PublishedDocumentTransformer {
     /// Enumerate every local-relative path inside `document` that needs to
     /// be uploaded. De-duplicated; preserves no particular order. Empty
     /// strings are filtered. Strings that already look remote (`http://`
-    /// or `https://`) are skipped — a re-publish where the local draft
-    /// somehow already carries a remote URL won't re-upload it.
+    /// or `https://`) or that reference a bundled asset (`bundled:…`,
+    /// shipped as part of seeded default templates) are skipped — both
+    /// resolve at render time without going through the upload step.
     static func localAssetPaths(in document: ProfileDocument) -> [String] {
         var paths = Set<String>()
 
         for page in document.pages {
-            if let p = page.backgroundImagePath, !p.isEmpty, !isRemote(p) {
+            if let p = page.backgroundImagePath, isUploadable(p) {
                 paths.insert(p)
             }
         }
-        if let p = document.pageBackgroundImagePath, !p.isEmpty, !isRemote(p) {
+        if let p = document.pageBackgroundImagePath, isUploadable(p) {
             paths.insert(p)
         }
 
         for node in document.nodes.values {
-            if let p = node.style.backgroundImagePath, !p.isEmpty, !isRemote(p) {
+            if let p = node.style.backgroundImagePath, isUploadable(p) {
                 paths.insert(p)
             }
-            if let p = node.content.localImagePath, !p.isEmpty, !isRemote(p) {
+            if let p = node.content.localImagePath, isUploadable(p) {
                 paths.insert(p)
             }
             if let arr = node.content.imagePaths {
-                for p in arr where !p.isEmpty && !isRemote(p) {
+                for p in arr where isUploadable(p) {
                     paths.insert(p)
                 }
             }
@@ -102,5 +103,19 @@ enum PublishedDocumentTransformer {
     /// render time so the canvas / viewer can decide local vs. remote.
     static func isRemote(_ value: String) -> Bool {
         value.hasPrefix("http://") || value.hasPrefix("https://")
+    }
+
+    /// True when `value` is a non-empty path that points at the per-draft
+    /// local asset store (the only kind we want to upload at publish time).
+    /// Filters out empty strings, already-remote URLs, and `bundled:`
+    /// references that resolve to the app's asset catalog.
+    ///
+    /// Internal-visible so `PublishService.collectUploads` can use the
+    /// same filter when walking asset surfaces — both the path-list
+    /// collector and the upload-queue collector need to skip bundled
+    /// references, otherwise seeded default templates fail to publish
+    /// with a missingAsset error on the placeholder tone images.
+    static func isUploadable(_ value: String) -> Bool {
+        !value.isEmpty && !isRemote(value) && !value.hasPrefix("bundled:")
     }
 }
