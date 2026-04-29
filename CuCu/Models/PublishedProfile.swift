@@ -11,7 +11,7 @@ import Foundation
 /// removed because the canvas itself is the right place for any "About"
 /// content the author wants to publish — duplicate fields above the
 /// canvas confused the design and split the source of truth.
-struct PublishedProfile: Sendable, Equatable {
+nonisolated struct PublishedProfile: Sendable, Equatable {
     let id: String
     let userId: String
     let username: String
@@ -26,7 +26,7 @@ struct PublishedProfile: Sendable, Equatable {
 /// Field names map 1:1 to Postgres columns (snake_case). Public typed
 /// surface (`PublishedProfile`) is built from this in
 /// `PublishedProfileService.fetch(...)`.
-struct PublishedProfileRow: Decodable, Sendable {
+nonisolated struct PublishedProfileRow: Decodable, Sendable {
     let id: String
     let user_id: String
     let username: String
@@ -62,7 +62,7 @@ struct PublishedProfileRow: Decodable, Sendable {
 /// feed don't pull 20 megabytes of scene-graph JSON over the wire;
 /// the full `PublishedProfile` is loaded lazily when the user taps
 /// into a row.
-struct PublishedProfileSummary: Identifiable, Sendable, Equatable {
+nonisolated struct PublishedProfileSummary: Identifiable, Sendable, Equatable {
     let id: String
     let username: String
     let thumbnailURL: String?
@@ -78,7 +78,7 @@ struct PublishedProfileSummary: Identifiable, Sendable, Equatable {
 
 /// Wire-level summary row. Mirrors `PublishedProfileSummary`'s shape
 /// in snake_case to match the Postgres column names.
-struct PublishedProfileSummaryRow: Decodable, Sendable {
+nonisolated struct PublishedProfileSummaryRow: Decodable, Sendable {
     let id: String
     let username: String
     let thumbnail_url: String?

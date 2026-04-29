@@ -879,6 +879,9 @@ final class CanvasEditorView: UIView {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        #if DEBUG
+        print("CanvasEditorView deinit")
+        #endif
     }
 
     // MARK: - Reconciliation

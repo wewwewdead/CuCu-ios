@@ -6,7 +6,7 @@ import Foundation
 /// builds that don't yet have the `Supabase` SPM package. The auth service
 /// constructs `AppUser` from `Supabase.User` in a `#if canImport(Supabase)`
 /// branch.
-struct AppUser: Equatable, Sendable {
+nonisolated struct AppUser: Equatable, Sendable {
     let id: String
     let email: String
 }

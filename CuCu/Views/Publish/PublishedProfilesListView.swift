@@ -75,6 +75,10 @@ struct PublishedProfilesListView: View {
             // initial feed fetch.
             await initialLoad()
         }
+        .onDisappear {
+            searchTask?.cancel()
+            searchTask = nil
+        }
     }
 
     // MARK: - Title
@@ -352,12 +356,12 @@ struct ExploreProfileRow: View {
     // MARK: - Avatar tile
     //
     // 64×64 ink-stroked square. Three fallback paths:
-    //   1. `thumbnail_url` is set + decodes → AsyncImage fills the tile.
+    //   1. `thumbnail_url` is set + decodes → cached image fills the tile.
     //   2. `thumbnail_url` is nil → tinted plate + first letter of
     //      username in big serif italic. Tint cycles through the cucu
     //      palette by hash of the username so the same user always
     //      lands on the same color.
-    //   3. AsyncImage's loading / failure states fall through to (2)
+    //   3. Loading / failure states fall through to (2)
     //      via the `placeholder` arm.
 
     @ViewBuilder
@@ -369,14 +373,10 @@ struct ExploreProfileRow: View {
 
             if let thumbString = profile.thumbnailURL?.trimmingCharacters(in: .whitespacesAndNewlines),
                !thumbString.isEmpty,
+               CanvasImageLoader.isRemote(thumbString),
                let thumbnailURL = URL(string: thumbString) {
-                AsyncImage(url: thumbnailURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    default:
-                        avatarInitial(tint: tint)
-                    }
+                CachedRemoteImage(url: thumbnailURL, contentMode: .fill) {
+                    avatarInitial(tint: tint)
                 }
                 .frame(width: 64, height: 64)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))

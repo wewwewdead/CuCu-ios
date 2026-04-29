@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-struct PageStyle: Codable, Hashable {
+nonisolated struct PageStyle: Codable, Hashable {
     var id: UUID
     var height: Double
     var backgroundHex: String
@@ -59,9 +59,9 @@ struct PageStyle: Codable, Hashable {
 /// built — and because the index is derived, equal sources always
 /// produce equal indexes anyway.
 struct ProfileDocument: Codable, Hashable {
-    static let defaultPageWidth: Double = 390
-    static let defaultPageHeight: Double = 1000
-    static let defaultPageBackgroundHex = "#F8F6F2"
+    nonisolated static let defaultPageWidth: Double = 390
+    nonisolated static let defaultPageHeight: Double = 1000
+    nonisolated static let defaultPageBackgroundHex = "#F8F6F2"
 
     var id: UUID
     var pageWidth: Double
@@ -231,7 +231,7 @@ extension ProfileDocument {
         try c.encode(mirroredFirstPage.rootChildrenIDs, forKey: .rootChildrenIDs)
     }
 
-    static func == (lhs: ProfileDocument, rhs: ProfileDocument) -> Bool {
+    nonisolated static func == (lhs: ProfileDocument, rhs: ProfileDocument) -> Bool {
         lhs.id == rhs.id &&
         lhs.pageWidth == rhs.pageWidth &&
         lhs.pageHeight == rhs.pageHeight &&
@@ -274,7 +274,7 @@ extension ProfileDocument {
 // MARK: - Tree queries
 
 extension ProfileDocument {
-    mutating func syncLegacyFieldsFromFirstPage() {
+    nonisolated mutating func syncLegacyFieldsFromFirstPage() {
         guard let first = pages.first else { return }
         pageHeight = first.height
         pageBackgroundHex = first.backgroundHex

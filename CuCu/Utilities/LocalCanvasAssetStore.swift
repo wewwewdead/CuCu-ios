@@ -25,7 +25,7 @@ import UIKit
 /// return nil so the renderer can fall back to a placeholder rather than
 /// crash.
 enum LocalCanvasAssetStore {
-    static let rootDirectoryName = "profile-canvas-assets"
+    nonisolated static let rootDirectoryName = "profile-canvas-assets"
 
     enum SaveError: Error {
         /// `ImageNormalizer` couldn't decode the source bytes or encode JPEG.
@@ -43,7 +43,7 @@ enum LocalCanvasAssetStore {
     /// Application Support is private to the app and persists across launches
     /// (and most OS updates) without being user-visible. Falls back to
     /// Documents if Application Support is unavailable.
-    static var rootURL: URL {
+    nonisolated static var rootURL: URL {
         let fm = FileManager.default
         let base = (try? fm.url(
             for: .applicationSupportDirectory,
@@ -306,7 +306,7 @@ enum LocalCanvasAssetStore {
 
     /// Resolve a stored relative path to an absolute URL, or nil if the file
     /// is missing. Empty/nil paths return nil.
-    static func resolveURL(_ relativePath: String?) -> URL? {
+    nonisolated static func resolveURL(_ relativePath: String?) -> URL? {
         guard let relativePath, !relativePath.isEmpty else { return nil }
         let url = rootURL.appendingPathComponent(relativePath)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil

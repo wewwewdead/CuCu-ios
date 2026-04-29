@@ -37,6 +37,7 @@ struct ProfileCanvasBuilderView: View {
     @State private var pendingDeletePageIndex: Int?
     @State private var legacyDraft: Bool = false
     @State private var titleDraft: String = ""
+    @State private var titleSaveTask: Task<Void, Never>?
     @State private var sheets = CanvasSheetCoordinator()
     // MARK: Reset Profile (full local + cloud wipe)
     @State private var showResetConfirmation = false
@@ -323,6 +324,9 @@ struct ProfileCanvasBuilderView: View {
             }
             loadDraft()
         }
+        .onDisappear {
+            flushTitleSave()
+        }
     }
 
     @ToolbarContentBuilder
@@ -347,8 +351,9 @@ struct ProfileCanvasBuilderView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 220)
                 .onChange(of: titleDraft) { _, newValue in
-                    resolvedStore.updateTitle(draft, title: newValue.isEmpty ? "Untitled" : newValue)
+                    scheduleTitleSave(newValue)
                 }
+                .onSubmit { flushTitleSave() }
         }
         // Three visible trailing items: Add, Publish, Menu.
         // We previously had five (photo, layers, plus, publish,
@@ -501,6 +506,28 @@ struct ProfileCanvasBuilderView: View {
             legacyDraft = false
             resolvedStore.updateDocument(draft, document: document)
         }
+    }
+
+    private func persistedTitle(from value: String) -> String {
+        value.isEmpty ? "Untitled" : value
+    }
+
+    private func scheduleTitleSave(_ value: String) {
+        titleSaveTask?.cancel()
+        let store = resolvedStore
+        let draft = draft
+        let title = persistedTitle(from: value)
+        titleSaveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            store.updateTitle(draft, title: title)
+        }
+    }
+
+    private func flushTitleSave() {
+        titleSaveTask?.cancel()
+        titleSaveTask = nil
+        resolvedStore.updateTitle(draft, title: persistedTitle(from: titleDraft))
     }
 
     // MARK: - Pages

@@ -15,6 +15,7 @@ final class RemoteImageCache {
     private let cache: NSCache<NSString, UIImage> = {
         let c = NSCache<NSString, UIImage>()
         c.countLimit = 128
+        c.totalCostLimit = 80 * 1024 * 1024
         return c
     }()
     private let session: URLSession = {
@@ -68,7 +69,7 @@ final class RemoteImageCache {
         session.dataTask(with: url) { [weak self] data, _, _ in
             let img = data.flatMap { UIImage(data: $0) }
             if let img, let self {
-                self.cache.setObject(img, forKey: key as NSString)
+                self.cache.setObject(img, forKey: key as NSString, cost: self.estimatedCost(of: img))
             }
             // Pull and clear all waiters under the lock, then invoke
             // them on the main queue.
@@ -87,5 +88,13 @@ final class RemoteImageCache {
     /// for QA tooling to confirm fresh fetches.
     func clearMemoryCache() {
         cache.removeAllObjects()
+    }
+
+    private func estimatedCost(of image: UIImage) -> Int {
+        if let cgImage = image.cgImage {
+            return cgImage.bytesPerRow * cgImage.height
+        }
+        let scale = max(image.scale, 1)
+        return Int(image.size.width * scale * image.size.height * scale * 4)
     }
 }

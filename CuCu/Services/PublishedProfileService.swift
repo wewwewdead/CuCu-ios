@@ -39,8 +39,7 @@ enum PublishedProfileError: Error, LocalizedError, Equatable {
 /// readable through the anon key — RLS already enforces this server-side
 /// (see `Supabase/schema_publish_profiles.sql`); the explicit `eq` here
 /// makes the contract obvious at the call site too.
-@MainActor
-struct PublishedProfileService {
+nonisolated struct PublishedProfileService {
     /// Username is normalized to lowercase before the query so the
     /// match is case-insensitive (Postgres comparison is exact, but the
     /// publish-side `UsernameValidator` lowercases on write).

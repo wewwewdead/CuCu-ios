@@ -18,7 +18,7 @@ import Foundation
 /// The local draft document is never mutated. Callers pass the local
 /// `ProfileDocument` in and use the returned copy for the published
 /// `design_json` payload only.
-enum PublishedDocumentTransformer {
+nonisolated enum PublishedDocumentTransformer {
     /// Rewrites every local-relative path in `document` using `pathMap`
     /// (`localRelativePath → publicURL`). Paths not present in the map
     /// are left as-is.

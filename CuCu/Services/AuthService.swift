@@ -36,8 +36,7 @@ enum AuthError: Error, LocalizedError, Equatable {
     }
 }
 
-@MainActor
-struct AuthService {
+nonisolated struct AuthService {
 
     /// Loads the persisted session if any. Returns nil when no user is signed
     /// in or when Supabase isn't configured (the caller treats both as

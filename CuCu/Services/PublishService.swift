@@ -54,7 +54,7 @@ enum PublishError: Error, LocalizedError, Equatable {
 
 /// Username rules mirror the SQL `check` constraint exactly so the client
 /// rejects bad input before we ever round-trip to Postgres.
-enum UsernameValidator {
+nonisolated enum UsernameValidator {
     static func validate(_ raw: String) -> Result<String, PublishError> {
         let username = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard username.count >= 3 && username.count <= 30 else {
@@ -88,12 +88,11 @@ enum UsernameValidator {
 /// `draft.publishedProfileId/publishedUsername/lastPublishedAt` after a
 /// successful return. The local `ProfileDocument` is never mutated —
 /// the published copy lives only inside the cloud row.
-@MainActor
-struct PublishService {
+nonisolated struct PublishService {
     /// Phases the UI can observe while `publish(...)` runs. Surfaced through
     /// the `onPhaseChange` closure so the publish sheet can flip its spinner
     /// label between "Uploading images…" and "Saving profile…".
-    enum Phase {
+    enum Phase: Sendable {
         case uploadingAssets
         case savingProfile
     }
@@ -114,7 +113,7 @@ struct PublishService {
         existingProfileId: String?,
         document: ProfileDocument,
         username rawUsername: String,
-        onPhaseChange: ((Phase) -> Void)? = nil
+        onPhaseChange: (@MainActor (Phase) -> Void)? = nil
     ) async throws -> PublishedProfileResult {
         // 1. Validate
         let username: String
@@ -142,7 +141,7 @@ struct PublishService {
         let canonicalProfileId = profileId.lowercased()
 
         // 3. Walk asset surfaces, deduplicate, upload.
-        onPhaseChange?(.uploadingAssets)
+        await onPhaseChange?(.uploadingAssets)
         let uploads = collectUploads(from: document)
         var pathMap: [String: String] = [:]
         var assetRows: [PublishedAssetRow] = []
@@ -180,7 +179,7 @@ struct PublishService {
         //    the row's `user_id` column matches `auth.uid()` exactly,
         //    which is what every owner-side RLS policy compares
         //    against (`auth.uid() = user_id`).
-        onPhaseChange?(.savingProfile)
+        await onPhaseChange?(.savingProfile)
         let profileRow = PublishedProfileRowEncodable(
             id: canonicalProfileId,
             user_id: canonicalUserId,
@@ -293,7 +292,7 @@ struct PublishService {
         storagePath: String
     ) async throws -> String {
         guard let localURL = LocalCanvasAssetStore.resolveURL(relativeLocalPath),
-              let bytes = try? Data(contentsOf: localURL) else {
+              let bytes = try? await readFileData(at: localURL) else {
             throw PublishError.missingAsset(localPath: relativeLocalPath)
         }
         do {
@@ -352,6 +351,12 @@ struct PublishService {
         }
         return .database(error.localizedDescription)
     }
+
+    private func readFileData(at url: URL) async throws -> Data {
+        try await Task.detached(priority: .utility) {
+            try Data(contentsOf: url)
+        }.value
+    }
     #endif
 }
 
@@ -361,7 +366,7 @@ struct PublishService {
 /// the nested `ProfileDocument` is serialized as a JSON object and stored
 /// in the `jsonb` column so the viewer can decode it back via the same
 /// `Codable` machinery.
-private struct PublishedProfileRowEncodable: Encodable {
+private nonisolated struct PublishedProfileRowEncodable: Encodable {
     let id: String
     let user_id: String
     let username: String
@@ -370,7 +375,7 @@ private struct PublishedProfileRowEncodable: Encodable {
     let published_at: String
 }
 
-private struct PublishedAssetRow: Encodable {
+private nonisolated struct PublishedAssetRow: Encodable {
     let profile_id: String
     let user_id: String
     let local_path: String?

@@ -26,20 +26,20 @@ enum SupabaseClientProvider {
 
     #if canImport(Supabase)
     /// Singleton client. Nil if credentials aren't configured.
-    static let shared: SupabaseClient? = {
+    nonisolated static let shared: SupabaseClient? = {
         guard let url = SupabaseConfig.url, let key = SupabaseConfig.anonKey else {
             return nil
         }
         return SupabaseClient(supabaseURL: url, supabaseKey: key)
     }()
 
-    static var isAvailable: Bool { shared != nil }
+    nonisolated static var isAvailable: Bool { shared != nil }
 
-    static var unavailability: Unavailability? {
+    nonisolated static var unavailability: Unavailability? {
         shared == nil ? .missingCredentials : nil
     }
     #else
-    static var isAvailable: Bool { false }
-    static var unavailability: Unavailability? { .packageNotAdded }
+    nonisolated static var isAvailable: Bool { false }
+    nonisolated static var unavailability: Unavailability? { .packageNotAdded }
     #endif
 }

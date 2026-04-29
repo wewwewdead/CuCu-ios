@@ -12,7 +12,7 @@ import Foundation
 ///   for every public table* (see `Supabase/schema_phase4.sql`).
 /// - The `service_role` key bypasses RLS and **must never** appear in the
 ///   client app or in any committed file. Use it only in server-side tools.
-enum SupabaseConfig {
+nonisolated enum SupabaseConfig {
     /// Project URL (e.g. https://abcd1234.supabase.co).
     /// Returns nil when the plist isn't present or the value is empty — the
     /// app continues to work offline; only publishing is gated on this.

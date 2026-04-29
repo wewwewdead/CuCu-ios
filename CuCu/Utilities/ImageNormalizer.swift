@@ -51,7 +51,7 @@ enum ImageNormalizer {
     /// indistinguishable from quality 1.0 in nearly all cases.
     nonisolated static let defaultCompressionQuality: CGFloat = 0.82
 
-    static func normalizedJPEGData(
+    nonisolated static func normalizedJPEGData(
         from data: Data,
         maxDimension: CGFloat,
         compressionQuality: CGFloat = defaultCompressionQuality
@@ -103,7 +103,7 @@ enum ImageNormalizer {
     /// is a near-free pass-through; if the source had a real alpha
     /// channel we composite over white (the only sensible default for
     /// JPEG which can't represent transparency).
-    private static func opaqueCopy(of cgImage: CGImage) -> CGImage? {
+    private nonisolated static func opaqueCopy(of cgImage: CGImage) -> CGImage? {
         let width = cgImage.width
         let height = cgImage.height
         guard width > 0, height > 0 else { return nil }

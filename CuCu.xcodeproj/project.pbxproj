@@ -33,9 +33,58 @@
 		D950431E2F97A2F300ECE131 /* CuCuUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CuCuUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		D9C0FFEE2FAE000000000001 /* Exceptions for "CuCu" folder in "CuCu" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Design/cucu-handoff/cucu/README.md,
+				"Design/cucu-handoff/cucu/project/01-debug-8.png",
+				"Design/cucu-handoff/cucu/project/01-debug-12.png",
+				"Design/cucu-handoff/cucu/project/01-debug-13.png",
+				"Design/cucu-handoff/cucu/project/02-debug-8.png",
+				"Design/cucu-handoff/cucu/project/02-debug-12.png",
+				"Design/cucu-handoff/cucu/project/02-debug-13.png",
+				"Design/cucu-handoff/cucu/project/03-debug-8.png",
+				"Design/cucu-handoff/cucu/project/03-debug-13.png",
+				"Design/cucu-handoff/cucu/project/app.jsx",
+				"Design/cucu-handoff/cucu/project/canvas.jsx",
+				"Design/cucu-handoff/cucu/project/CuCu Editor.html",
+				"Design/cucu-handoff/cucu/project/CuCu Templates.html",
+				"Design/cucu-handoff/cucu/project/debug-1.png",
+				"Design/cucu-handoff/cucu/project/debug-2.png",
+				"Design/cucu-handoff/cucu/project/debug-3.png",
+				"Design/cucu-handoff/cucu/project/debug-4.png",
+				"Design/cucu-handoff/cucu/project/debug-5.png",
+				"Design/cucu-handoff/cucu/project/debug-6.png",
+				"Design/cucu-handoff/cucu/project/debug-7.png",
+				"Design/cucu-handoff/cucu/project/debug-9.png",
+				"Design/cucu-handoff/cucu/project/debug-10.png",
+				"Design/cucu-handoff/cucu/project/debug-11.png",
+				"Design/cucu-handoff/cucu/project/debug-14.png",
+				"Design/cucu-handoff/cucu/project/editor.jsx",
+				"Design/cucu-handoff/cucu/project/inspector.jsx",
+				"Design/cucu-handoff/cucu/project/ios-frame.jsx",
+				"Design/cucu-handoff/cucu/project/shell.jsx",
+				"Design/cucu-handoff/cucu/project/templates-app.jsx",
+				"Design/cucu-handoff/cucu/project/templates-picker.jsx",
+				"Design/cucu-handoff/cucu/project/templates.jsx",
+				"Design/cucu-handoff/cucu/project/themes.jsx",
+				"Design/cucu-handoff/cucu/project/tweaks-panel.jsx",
+				"design-mocks/inspector-arty.html",
+				"design-mocks/inspector-cute.html",
+				"design-mocks/inspector-faithful.html",
+				MIGRATION_NOTES.md,
+			);
+			target = D95043012F97A2F300ECE131 /* CuCu */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		D95043042F97A2F300ECE131 /* CuCu */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D9C0FFEE2FAE000000000001 /* Exceptions for "CuCu" folder in "CuCu" target */,
+			);
 			path = CuCu;
 			sourceTree = "<group>";
 		};
