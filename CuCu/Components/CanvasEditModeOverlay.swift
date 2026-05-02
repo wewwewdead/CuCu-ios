@@ -129,7 +129,10 @@ final class CanvasEditModeOverlay {
                 pair = makePair(for: id, in: pageView)
                 page.pairs[id] = pair
             }
-            position(pair: pair, for: node, absoluteFrame: absoluteFrame)
+            position(pair: pair,
+                     for: node,
+                     absoluteFrame: absoluteFrame,
+                     pageBoundsWidth: pageView.bounds.width)
             pair.outline.applyStyle(node: node, accent: accent)
             pair.chip.label = CanvasEditChipModel.label(for: node)
             pair.chip.onTap = { [weak self] in self?.onSelectChip?(id) }
@@ -210,7 +213,10 @@ final class CanvasEditModeOverlay {
         }
     }
 
-    private func position(pair: Pair, for node: CanvasNode, absoluteFrame: CGRect) {
+    private func position(pair: Pair,
+                          for node: CanvasNode,
+                          absoluteFrame: CGRect,
+                          pageBoundsWidth: CGFloat) {
         // `absoluteFrame` is already in the host pageView's coordinate
         // space — for top-level nodes that's identical to
         // `node.frame.cgRect`, but for nested nodes (e.g. the hero's
@@ -237,6 +243,16 @@ final class CanvasEditModeOverlay {
         // never bleeds off the left of the page. Spec puts the chip's
         // right edge 4pt inside the node's right edge — `frame.maxX -
         // chipWidth - 4` gives that. Above the node by `chipHeight + 4`.
+        //
+        // Anchor the chip's right edge to the smaller of (node right,
+        // visible page right). When the document's stored `pageWidth`
+        // is larger than the rendered page (e.g. a 430pt-canonical
+        // draft opened on a 393pt iPhone 15 viewport, where the page
+        // is capped to viewport via `applyPageSizing`), node frames
+        // can extend past the rendered bounds and `pageView.clipsToBounds`
+        // would chop the chip in half. Clamping to `pageBoundsWidth`
+        // keeps the chip flush with whatever right edge the user can
+        // actually see.
         let chipWidth: CGFloat = 80
         let chipHeight: CGFloat = 22
         let aboveChipY = frame.minY - chipHeight - 4
@@ -249,7 +265,13 @@ final class CanvasEditModeOverlay {
         // only fires when an above-placement would clip; everything
         // else sits above as the JSX spec specifies.
         let chipY: CGFloat = aboveChipY < 36 ? CGFloat(38) : aboveChipY
-        let chipX = frame.maxX - chipWidth - 4
+        let visibleRight: CGFloat
+        if pageBoundsWidth > 0 {
+            visibleRight = min(frame.maxX, pageBoundsWidth)
+        } else {
+            visibleRight = frame.maxX
+        }
+        let chipX = visibleRight - chipWidth - 4
         let chipFrame = CGRect(
             x: max(4, chipX),
             y: chipY,

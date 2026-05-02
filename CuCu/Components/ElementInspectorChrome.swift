@@ -34,7 +34,20 @@ struct ElementInspectorChrome<Content: View>: View {
         VStack(spacing: 0) {
             header
             if tabs.count > 1 { tabBar }
-            content()
+            // Cap the content area to roughly the lower half of the
+            // screen and let it scroll on its own. Without this the
+            // text inspector's stack (textarea + format toolbar +
+            // size drawer + HSV picker) ends up taller than the
+            // visible canvas on small phones (iPhone 15-class), so
+            // the user can't see the text node they're editing while
+            // the panel is up. `.scrollBounceBehavior(.basedOnSize)`
+            // keeps the panel hugging shorter content (e.g. the
+            // Layout tab) — only tabs that overflow get scrolling.
+            ScrollView(.vertical, showsIndicators: true) {
+                content()
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: Self.maxScrollableContentHeight)
         }
         .background(Color.cucuCard)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -43,6 +56,14 @@ struct ElementInspectorChrome<Content: View>: View {
                 .stroke(Color.cucuInk.opacity(0.14), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.06), radius: 18, x: 0, y: 8)
+    }
+
+    /// Max height for the scrollable content slot. Tuned so total
+    /// panel height (header + tab bar + content) sits at roughly half
+    /// the screen on iPhone 15-class devices, leaving the upper half
+    /// of the canvas visible for the node the user is editing.
+    private static var maxScrollableContentHeight: CGFloat {
+        UIScreen.main.bounds.height * 0.40
     }
 
     // MARK: Header

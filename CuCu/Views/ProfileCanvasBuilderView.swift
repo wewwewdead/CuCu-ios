@@ -31,10 +31,6 @@ struct ProfileCanvasBuilderView: View {
     /// alert when this is `nil` instead of silently dropping the
     /// network call.
     @Environment(AuthViewModel.self) private var auth
-    /// System-provided undo manager. Drives the edit-mode undo /
-    /// redo buttons; their disabled state tracks `canUndo` /
-    /// `canRedo` so the user gets feedback that the stack is empty.
-    @Environment(\.undoManager) private var undoManager
 
     @State private var document: ProfileDocument = .blank
     @State private var selectedID: UUID?
@@ -50,7 +46,32 @@ struct ProfileCanvasBuilderView: View {
     @State private var titleSaveTask: Task<Void, Never>?
     @State private var sheets = CanvasSheetCoordinator()
     @State private var keyboardHeight: CGFloat = 0
+    /// `true` while a text node on the canvas is in in-place editing
+    /// (keyboard up, cursor in the box). Wired from the UIKit canvas's
+    /// `onInlineTextEditingChanged`. Used to hide the bottom editor
+    /// panel while the user is typing — the panel sits above the
+    /// keyboard via `keyboardAwarePanelBottomPadding` and would
+    /// otherwise cover the lifted text node.
+    @State private var isInlineTextEditing: Bool = false
     @FocusState private var isTitleFieldFocused: Bool
+    /// Snapshot stack for undo. Entries are full `ProfileDocument`
+    /// snapshots taken just before a mutation; `performUndo` pops one
+    /// and replaces the live document with it. The trailing snapshot
+    /// equals the pre-mutation state, not the post-mutation one, so a
+    /// single undo always reverses the user's most recent action.
+    @State private var undoStack: [ProfileDocument] = []
+    /// Counterpart redo stack. Pushed onto when the user undoes;
+    /// cleared the moment a fresh mutation arrives so redo never
+    /// resurrects state from a branch the user has moved past.
+    @State private var redoStack: [ProfileDocument] = []
+    /// Run-loop coalesce flag. CanvasMutator actions typically issue
+    /// two or three sequential writes (insert + normalize + render
+    /// rev bump) — without this guard each would land as its own
+    /// undo entry and the user would have to tap Undo three times
+    /// to reverse a single delete. Reset asynchronously so the next
+    /// run-loop tick is treated as a new edit session.
+    @State private var pendingCoalesce: Bool = false
+    private let undoStackLimit = 60
     /// Height the bottom selection panel currently occupies. Driven
     /// by `EditorPanelHeightKey` so the canvas can pad its scroll
     /// inset to match and walk the selected node above the panel
@@ -85,12 +106,80 @@ struct ProfileCanvasBuilderView: View {
 
     private var mutator: CanvasMutator {
         CanvasMutator(
-            document: $document,
+            document: snapshottingDocumentBinding,
             selectedID: $selectedID,
             draft: draft,
             store: resolvedStore,
             context: context,
             rootPageIndex: editingPageIndex
+        )
+    }
+
+    private var canUndo: Bool { !undoStack.isEmpty }
+    private var canRedo: Bool { !redoStack.isEmpty }
+
+    /// Push the current document onto the undo stack as a pre-mutation
+    /// snapshot and clear redo (a fresh mutation invalidates any
+    /// future-branch the user previously undid into). Skips the push
+    /// when the head of the stack already matches `document`, which
+    /// prevents duplicate entries when multiple capture sites all
+    /// fire for the same logical edit (panel open + first slider tick,
+    /// for instance).
+    private func captureSnapshot() {
+        if let last = undoStack.last, last == document { return }
+        undoStack.append(document)
+        if undoStack.count > undoStackLimit {
+            undoStack.removeFirst(undoStack.count - undoStackLimit)
+        }
+        redoStack.removeAll()
+    }
+
+    /// Pop the most recent snapshot, push the current state onto redo,
+    /// and replace the live document. Persists immediately via the
+    /// draft store so the on-disk state stays in sync — we don't want
+    /// undo to be a "ghost" that disappears next launch. Selection
+    /// clears because the snapshot may not contain the currently
+    /// selected node id.
+    private func performUndo() {
+        guard let snapshot = undoStack.popLast() else { return }
+        redoStack.append(document)
+        document = snapshot
+        resolvedStore.updateDocument(draft, document: snapshot)
+        selectedID = nil
+        CucuHaptics.selection()
+    }
+
+    /// Inverse of `performUndo` — pop from redo, push current onto
+    /// undo, replace document, persist, clear selection.
+    private func performRedo() {
+        guard let snapshot = redoStack.popLast() else { return }
+        undoStack.append(document)
+        document = snapshot
+        resolvedStore.updateDocument(draft, document: snapshot)
+        selectedID = nil
+        CucuHaptics.selection()
+    }
+
+    /// Binding wrapper that captures an undo snapshot on first write
+    /// per run-loop tick, then forwards subsequent same-tick writes
+    /// to `document` without piling up extra entries. Drives every
+    /// `CanvasMutator` mutation; canvas-gesture commits and panel-
+    /// open snapshots use the explicit `captureSnapshot()` path
+    /// because their writes are intentional one-shot replacements.
+    private var snapshottingDocumentBinding: Binding<ProfileDocument> {
+        Binding(
+            get: { document },
+            set: { newValue in
+                guard newValue != document else { return }
+                if !pendingCoalesce {
+                    pendingCoalesce = true
+                    captureSnapshot()
+                    DispatchQueue.main.async {
+                        pendingCoalesce = false
+                    }
+                }
+                document = newValue
+            }
         )
     }
 
@@ -185,6 +274,13 @@ struct ProfileCanvasBuilderView: View {
                     onCommit: { doc in
                         var normalized = doc
                         StructuredProfileLayout.normalize(&normalized)
+                        // Drag / resize / in-place text commits arrive
+                        // here. Capture before the assignment so undo
+                        // returns to the pre-gesture state, not a
+                        // halfway-committed copy.
+                        if normalized != document {
+                            captureSnapshot()
+                        }
                         document = normalized
                         resolvedStore.updateDocument(draft, document: normalized)
                     },
@@ -208,6 +304,13 @@ struct ProfileCanvasBuilderView: View {
                         withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
                             editMode = false
                             selectedID = nil
+                        }
+                    },
+                    onInlineTextEditingChanged: { editing in
+                        // Match the panel's spring so the hide / show
+                        // tracks the same curve the keyboard rides on.
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                            isInlineTextEditing = editing
                         }
                     }
                 )
@@ -269,11 +372,20 @@ struct ProfileCanvasBuilderView: View {
         }
         .animation(.easeOut(duration: 0.32), value: canvasIsEmpty)
         .overlay(alignment: .bottom) {
-            if !legacyDraft, let id = selectedID, document.nodes[id] != nil {
+            // While a text node is in in-place editing the keyboard
+            // is up and we lift just that text node above it (see
+            // `keyboardWillChangeFrame` in `CanvasEditorView`). The
+            // bottom panel also rides above the keyboard via
+            // `keyboardAwarePanelBottomPadding`, which puts it right
+            // on top of the lifted text node. Drop the panel for the
+            // duration of the edit; it returns the moment the
+            // keyboard dismisses.
+            if !legacyDraft, !isInlineTextEditing, let id = selectedID, document.nodes[id] != nil {
                 if StructuredProfileLayout.isStructured(document) {
                     structuredNodePanel(for: id, sheets: sheets)
                         .id(id)
                         .padding(.bottom, keyboardAwarePanelBottomPadding)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                 } else {
                     // Legacy/freeform documents keep the previous
                     // selection surface exactly so old drafts retain
@@ -319,7 +431,17 @@ struct ProfileCanvasBuilderView: View {
         .animation(.spring(response: 0.32, dampingFraction: 0.85), value: selectedID)
         .animation(.spring(response: 0.32, dampingFraction: 0.85), value: sheets.isSelectionBarExpanded)
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: editMode)
-        .onChange(of: selectedID) { _, newID in
+        .onChange(of: selectedID) { oldID, newID in
+            // Capture once when the inspector is about to open. The
+            // panel writes to `document` continuously while it's up
+            // (slider drags, color edits, text input), so without a
+            // pre-open snapshot every keystroke would have to push
+            // its own undo entry. The snapshot here is the single
+            // pre-edit state; one Undo tap reverts the whole panel
+            // session.
+            if oldID == nil && newID != nil {
+                captureSnapshot()
+            }
             sheets.handleSelectionChanged(newID: newID)
             // Reset measured panel height when nothing is selected so
             // the canvas's reserved chrome collapses immediately
@@ -476,27 +598,27 @@ struct ProfileCanvasBuilderView: View {
             .accessibilityLabel("Exit edit mode")
 
             Button {
-                undoManager?.undo()
+                performUndo()
             } label: {
                 Image(systemName: "arrow.uturn.backward")
                     .font(.system(size: 19, weight: .light))
-                    .foregroundStyle(Color.cucuInk.opacity(undoManager?.canUndo == true ? 1 : 0.28))
+                    .foregroundStyle(Color.cucuInk.opacity(canUndo ? 1 : 0.28))
                     .frame(width: 30, height: 30)
             }
             .buttonStyle(.plain)
-            .disabled(undoManager?.canUndo != true)
+            .disabled(!canUndo)
             .accessibilityLabel("Undo")
 
             Button {
-                undoManager?.redo()
+                performRedo()
             } label: {
                 Image(systemName: "arrow.uturn.forward")
                     .font(.system(size: 19, weight: .light))
-                    .foregroundStyle(Color.cucuInk.opacity(undoManager?.canRedo == true ? 1 : 0.28))
+                    .foregroundStyle(Color.cucuInk.opacity(canRedo ? 1 : 0.28))
                     .frame(width: 30, height: 30)
             }
             .buttonStyle(.plain)
-            .disabled(undoManager?.canRedo != true)
+            .disabled(!canRedo)
             .accessibilityLabel("Redo")
         }
     }
@@ -579,8 +701,12 @@ struct ProfileCanvasBuilderView: View {
     /// selected, the chrome height is zero so the canvas reverts to a
     /// full-height scroll surface. Threaded into `CanvasEditorView`'s
     /// scroll inset so the selected node always lands above the panel.
+    /// During in-place text editing the panel is hidden and the
+    /// canvas's keyboard avoidance lifts just the editing node — so
+    /// we report zero here too, otherwise the scroll inset would
+    /// reserve space for an invisible panel.
     private var canvasBottomReservedHeight: CGFloat {
-        guard selectedID != nil, editorPanelHeight > 0 else { return 0 }
+        guard selectedID != nil, editorPanelHeight > 0, !isInlineTextEditing else { return 0 }
         return editorPanelHeight + keyboardAwarePanelBottomPadding
     }
 

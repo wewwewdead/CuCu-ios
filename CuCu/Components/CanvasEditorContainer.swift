@@ -71,6 +71,11 @@ struct CanvasEditorContainer: UIViewRepresentable {
     /// returns to the live preview.
     var onRequestExitEditMode: (() -> Void)? = nil
 
+    /// Fires `true` when a text node enters in-place editing and
+    /// `false` when it ends. Host hides the bottom editor panel
+    /// while editing so the panel doesn't cover the lifted text node.
+    var onInlineTextEditingChanged: ((Bool) -> Void)? = nil
+
     /// Viewer-only page scope. nil renders the full editable page stack.
     var viewerPageIndex: Int? = nil
 
@@ -112,6 +117,9 @@ struct CanvasEditorContainer: UIViewRepresentable {
         view.onRequestExitEditMode = {
             onRequestExitEditMode?()
         }
+        view.onInlineTextEditingChanged = { editing in
+            onInlineTextEditingChanged?(editing)
+        }
         view.setEditMode(editMode)
         view.setBottomChromeHeight(bottomChromeHeight)
         view.apply(document: document, selectedID: selectedID)
@@ -149,6 +157,9 @@ struct CanvasEditorContainer: UIViewRepresentable {
         }
         view.onRequestExitEditMode = {
             onRequestExitEditMode?()
+        }
+        view.onInlineTextEditingChanged = { editing in
+            onInlineTextEditingChanged?(editing)
         }
         view.setEditMode(editMode)
         view.setBottomChromeHeight(bottomChromeHeight)

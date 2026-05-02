@@ -293,17 +293,11 @@ struct TextInspectorV2: View {
                             value: bindingStyleOptionalDouble(textID, key: \.lineSpacing, defaultValue: 0),
                             range: 0...16, step: 1)
             }
-            HStack(alignment: .top, spacing: 14) {
-                VStack(alignment: .leading, spacing: 6) {
-                    fieldLabel("BACKGROUND")
-                    bgSwatchRow
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                fieldSlider(label: "PADDING",
-                            valueText: "\(Int(currentNode?.style.padding ?? 0))pt",
-                            value: bindingStyleOptionalDouble(textID, key: \.padding, defaultValue: 0),
-                            range: 0...32, step: 1)
+            VStack(alignment: .leading, spacing: 6) {
+                fieldLabel("BACKGROUND")
+                bgSwatchRow
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -380,6 +374,21 @@ struct TextInspectorV2: View {
                             value: bindingFrameDouble(textID, key: \.height),
                             range: 20...600, step: 1)
             }
+            // Padding lives here (not Style) because it's how the box
+            // around the text grows / shrinks — same family as
+            // width / height. Radius pairs with padding so anyone
+            // dialing in the text box's shape finds both knobs in
+            // the same row instead of having to tab back to Style.
+            HStack(spacing: 14) {
+                fieldSlider(label: "PADDING",
+                            valueText: "\(Int(currentNode?.style.padding ?? 0))pt",
+                            value: bindingStyleOptionalDouble(textID, key: \.padding, defaultValue: 0),
+                            range: 0...32, step: 1)
+                fieldSlider(label: "RADIUS",
+                            valueText: "\(Int(currentNode?.style.cornerRadius ?? 0))pt",
+                            value: cornerRadiusBinding,
+                            range: 0...60, step: 1)
+            }
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 6) {
                     fieldLabel("ALIGN")
@@ -399,6 +408,20 @@ struct TextInspectorV2: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
+    }
+
+    /// `NodeStyle.cornerRadius` is a non-optional `Double` (defaults
+    /// to 0), so neither `bindingStyleDouble` nor
+    /// `bindingStyleOptionalDouble` fits — both expect an optional
+    /// keypath. Inline binding clamps to >= 0 so dragging the slider
+    /// past zero never produces a negative radius.
+    private var cornerRadiusBinding: Binding<Double> {
+        Binding(
+            get: { currentNode?.style.cornerRadius ?? 0 },
+            set: { newValue in
+                mutate { $0.style.cornerRadius = max(0, newValue) }
+            }
+        )
     }
 
     private var alignmentSegmented: some View {

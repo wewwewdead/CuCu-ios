@@ -309,7 +309,18 @@ final class CanvasEditorView: UIView {
     /// ID of the text node currently in editing mode (keyboard up).
     /// Tracked so we can dismiss the keyboard cleanly when the
     /// selection moves elsewhere via path chip / canvas tap / drag.
-    private var editingTextNodeID: UUID?
+    /// `didSet` reports the editing-state flip (nil ↔ non-nil) to the
+    /// host so the SwiftUI bottom editor panel can hide itself while
+    /// the keyboard is up — otherwise it covers the lifted text node.
+    private var editingTextNodeID: UUID? {
+        didSet {
+            let wasEditing = oldValue != nil
+            let isEditing = editingTextNodeID != nil
+            if wasEditing != isEditing {
+                onInlineTextEditingChanged?(isEditing)
+            }
+        }
+    }
 
     private var renderViews: [UUID: NodeRenderView] = [:]
     private var appliedNodeSignatures: [UUID: NodeRenderSignature] = [:]
@@ -464,8 +475,23 @@ final class CanvasEditorView: UIView {
         let topGradientView: UIView
         let topGradientLayer: CAGradientLayer
         let topGradientHeightConstraint: NSLayoutConstraint
+        /// Drives `shadowView`'s rendered (post-scale) width — the
+        /// size the autolayout system sees when it positions the
+        /// page in the stack. Equals `pageWidth * fitScale`, so on
+        /// any iPhone narrower than the document's authored
+        /// `pageWidth` the page collapses inward instead of
+        /// overflowing the viewport.
         let widthConstraint: NSLayoutConstraint
         let heightConstraint: NSLayoutConstraint
+        /// Canonical width of `pageView` itself — i.e. the
+        /// coordinate space children's frames live in. Stays at
+        /// `document.pageWidth` regardless of scale; the transform
+        /// applied to `pageView` shrinks the visual rendering to
+        /// match `widthConstraint`. Decoupling the two lets every
+        /// stored frame keep its authored coords (no reflow on
+        /// iPhone SE / 13 mini) while still fitting the viewport.
+        let pageWidthConstraint: NSLayoutConstraint
+        let pageHeightConstraint: NSLayoutConstraint
     }
 
     private var pageSurfaces: [UUID: PageSurface] = [:]
@@ -624,6 +650,13 @@ final class CanvasEditorView: UIView {
     /// preview. The two-tap-out pattern: first empty tap clears the
     /// inspector, second empty tap exits edit mode.
     var onRequestExitEditMode: (() -> Void)?
+
+    /// Fires `true` when a text node enters in-place editing
+    /// (keyboard rises) and `false` when editing ends (keyboard
+    /// dismisses). The SwiftUI host uses this to hide its bottom
+    /// editor panel while the user is typing — otherwise the panel
+    /// sits above the keyboard and covers the lifted text node.
+    var onInlineTextEditingChanged: ((Bool) -> Void)?
 
     /// Called when the user taps the "View Gallery" chip on a
     /// `.gallery` node while `isInteractive` is `false`. Receives
@@ -1109,6 +1142,13 @@ final class CanvasEditorView: UIView {
 
         let width = shadowView.widthAnchor.constraint(equalToConstant: ProfileDocument.defaultPageWidth)
         let height = shadowView.heightAnchor.constraint(equalToConstant: ProfileDocument.defaultPageHeight)
+        // pageView keeps its canonical size (the coordinate space
+        // children's frames are authored in) and gets centered in
+        // shadowView. `applyPageSizing` then applies a scale
+        // transform so the canonical surface visually matches
+        // shadowView's rendered (smaller-on-narrow-iPhones) size.
+        let pageWidth = pageView.widthAnchor.constraint(equalToConstant: ProfileDocument.defaultPageWidth)
+        let pageHeight = pageView.heightAnchor.constraint(equalToConstant: ProfileDocument.defaultPageHeight)
         let topGradientHeight = topGradientView.heightAnchor.constraint(equalToConstant: 280)
         NSLayoutConstraint.activate([
             width,
@@ -1135,10 +1175,10 @@ final class CanvasEditorView: UIView {
             deleteButton.topAnchor.constraint(equalTo: chromeView.topAnchor, constant: 14),
             deleteButton.widthAnchor.constraint(equalToConstant: 32),
             deleteButton.heightAnchor.constraint(equalToConstant: 32),
-            pageView.leadingAnchor.constraint(equalTo: shadowView.leadingAnchor),
-            pageView.trailingAnchor.constraint(equalTo: shadowView.trailingAnchor),
-            pageView.topAnchor.constraint(equalTo: shadowView.topAnchor),
-            pageView.bottomAnchor.constraint(equalTo: shadowView.bottomAnchor),
+            pageWidth,
+            pageHeight,
+            pageView.centerXAnchor.constraint(equalTo: shadowView.centerXAnchor),
+            pageView.centerYAnchor.constraint(equalTo: shadowView.centerYAnchor),
             backgroundImageView.leadingAnchor.constraint(equalTo: pageView.leadingAnchor),
             backgroundImageView.trailingAnchor.constraint(equalTo: pageView.trailingAnchor),
             backgroundImageView.topAnchor.constraint(equalTo: pageView.topAnchor),
@@ -1175,7 +1215,9 @@ final class CanvasEditorView: UIView {
             topGradientLayer: topGradientLayer,
             topGradientHeightConstraint: topGradientHeight,
             widthConstraint: width,
-            heightConstraint: height
+            heightConstraint: height,
+            pageWidthConstraint: pageWidth,
+            pageHeightConstraint: pageHeight
         )
     }
 
@@ -2466,39 +2508,55 @@ final class CanvasEditorView: UIView {
 
     /// Apply document-level page dimensions to the visible page frame
     /// and keep the scroll content wide/tall enough to show it.
+    ///
+    /// Sizing is done in two layers so children's authored frames
+    /// keep working on every iPhone:
+    ///
+    /// 1. `pageView` is held at the document's *canonical* size
+    ///    (`pageWidth × pageHeight`). Children's `frame.x / .y` are
+    ///    authored in that coordinate space, so anything stored in
+    ///    the document continues to layout exactly where the user
+    ///    placed it.
+    /// 2. `shadowView` (the layout container) gets the *rendered*
+    ///    size (`pageWidth × scale`). When the canonical width
+    ///    exceeds the available viewport, `pageView` is shrunk
+    ///    visually via a scale transform so the whole canvas — page
+    ///    background + every child node + chip overlays — collapses
+    ///    inward to fit.
+    ///
+    /// Net result: a Pro Max-authored draft (430pt canonical) opened
+    /// on an iPhone 15 (393pt viewport) renders at scale ≈ 0.91 with
+    /// every child visible; an iPhone SE (375pt) reading the same
+    /// draft scales to ≈ 0.87. No more right-edge clipping when the
+    /// document's `pageWidth` outsizes the viewport.
     private func applyPageSizing(for document: ProfileDocument) {
         let pageWidth = effectivePageWidth(for: document)
         let viewportWidth = scrollView.bounds.width > 0 ? scrollView.bounds.width : bounds.width
-        // Edge-to-edge on phones: pages render at the full canvas
-        // width regardless of the document's `pageWidth`. The model's
-        // pageWidth stays the canonical coordinate space children are
-        // placed in; the editor stretches the rendered page so the
-        // user perceives a full-screen canvas. On standard iPhones
-        // the drift between viewport (393) and pageWidth (390) is
-        // invisible; on Plus / Max devices a few points of trailing
-        // space remain past the children's reach, which is the right
-        // tradeoff for keeping the persisted document portable
-        // across screen widths.
-        //
-        // On iPad-sized viewports (≥700pt) we *cap* the rendered
-        // page width at a comfortable phone-canvas size and let the
-        // pagesStackView's existing centerXAnchor constraint pin the
-        // surface to the middle of the screen, with desk-color
-        // margin on either side. Without the cap, an iPad would
-        // either stretch the page bg edge-to-edge (children
-        // clustered on the leading edge with empty trailing space)
-        // or render at full iPad width with nodes scattered into
-        // negative space on phone-authored documents — both feel
-        // wrong. The cap matches the published viewer's behaviour
-        // and the editor reads as "phone canvas on desk surface."
+
+        // Compute the per-page scale once. iPad gets a cap so the
+        // canvas reads as a phone-shaped sheet centered on the desk
+        // rather than stretching to a 1024pt tablet edge.
         let iPadBreakpoint: CGFloat = 700
         let iPadCap: CGFloat = 540
-        let renderedPageWidth: CGFloat
+        let availableWidth: CGFloat
         if viewportWidth >= iPadBreakpoint {
-            renderedPageWidth = min(viewportWidth, max(pageWidth, iPadCap))
+            availableWidth = min(viewportWidth, max(pageWidth, iPadCap))
         } else {
-            renderedPageWidth = max(viewportWidth, pageWidth)
+            availableWidth = viewportWidth
         }
+        // Scale only ever shrinks. If the page already fits, render
+        // 1:1 — otherwise downscale just enough that the canonical
+        // surface lands inside the viewport. `availableWidth <= 0`
+        // means we've been called before initial layout (bounds
+        // still zero); fall back to identity so the next layout
+        // pass corrects it.
+        let fitScale: CGFloat
+        if availableWidth > 0, pageWidth > availableWidth {
+            fitScale = availableWidth / pageWidth
+        } else {
+            fitScale = 1
+        }
+
         let topPadding = viewerPageIndex == nil ? pageTopPadding : 0
         if let constraint = pagesStackTopConstraint,
            abs(constraint.constant - topPadding) > 0.5 {
@@ -2509,14 +2567,35 @@ final class CanvasEditorView: UIView {
             let page = document.pages[pageIndex]
             guard let surface = pageSurfaces[page.id] else { continue }
             let pageHeight = effectivePageHeight(for: page)
+            let renderedPageWidth = pageWidth * fitScale
+            let renderedPageHeight = pageHeight * fitScale
+
+            // shadowView holds the rendered (visually-shrunk) size —
+            // that's what `pagesStackView` and `centerXAnchor` use to
+            // place the page inside the viewport.
             if abs(surface.widthConstraint.constant - renderedPageWidth) > 0.5 {
                 surface.widthConstraint.constant = renderedPageWidth
             }
-            if abs(surface.heightConstraint.constant - pageHeight) > 0.5 {
-                surface.heightConstraint.constant = pageHeight
+            if abs(surface.heightConstraint.constant - renderedPageHeight) > 0.5 {
+                surface.heightConstraint.constant = renderedPageHeight
+            }
+            // pageView itself stays canonical so children's frames
+            // keep their stored coords. The transform shrinks the
+            // visual rendering down to shadowView's size.
+            if abs(surface.pageWidthConstraint.constant - pageWidth) > 0.5 {
+                surface.pageWidthConstraint.constant = pageWidth
+            }
+            if abs(surface.pageHeightConstraint.constant - pageHeight) > 0.5 {
+                surface.pageHeightConstraint.constant = pageHeight
+            }
+            let target: CGAffineTransform = fitScale < 1
+                ? CGAffineTransform(scaleX: fitScale, y: fitScale)
+                : .identity
+            if surface.pageView.transform != target {
+                surface.pageView.transform = target
             }
             surface.shadowView.layer.shadowPath = UIBezierPath(
-                rect: CGRect(origin: .zero, size: CGSize(width: renderedPageWidth, height: pageHeight))
+                rect: CGRect(origin: .zero, size: CGSize(width: renderedPageWidth, height: renderedPageHeight))
             ).cgPath
         }
 
@@ -2524,8 +2603,9 @@ final class CanvasEditorView: UIView {
         // in `init` via a layout-anchor equality), so its `.constant`
         // is unused in this path — no manual width math required
         // here anymore. Keep the addPageAffordance synced with the
-        // rendered page width so the "+" affordance also spans
-        // edge-to-edge.
+        // rendered (post-scale) page width so the "+" affordance
+        // visually matches the page width beneath it.
+        let renderedPageWidth = pageWidth * fitScale
         if let constraint = addPageWidthConstraint,
            abs(constraint.constant - renderedPageWidth) > 0.5 {
             constraint.constant = renderedPageWidth
