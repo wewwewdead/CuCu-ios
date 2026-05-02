@@ -123,9 +123,9 @@ nonisolated struct AuthService {
         if text.contains("password") && text.contains("short") {
             return .weakPassword
         }
-        if (error as NSError).domain == NSURLErrorDomain {
+        if SupabaseErrorMapper.isNetwork(error) {
             return .network
         }
-        return .unknown(error.localizedDescription)
+        return .unknown(SupabaseErrorMapper.detail(error))
     }
 }

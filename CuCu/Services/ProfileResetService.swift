@@ -33,10 +33,11 @@ enum ProfileResetError: Error, LocalizedError, Equatable {
 
 /// Removes a published profile from the cloud:
 ///
-///   1. List + delete every object under
+///   1. Delete the row from `profiles` (cascades `profile_assets`).
+///   2. Best-effort delete from `profile_assets` for older schemas or
+///      partial cascades.
+///   3. List + delete every object under
 ///      `profile-assets/user_<userId>/profile_<profileId>/`.
-///   2. Best-effort delete from `profile_assets` (bookkeeping rows).
-///   3. Delete the row from `profiles`.
 ///
 /// Path canonicalisation matches `PublishService` exactly — Supabase's
 /// storage RLS policies and the `profiles.id` column compare against
@@ -72,12 +73,45 @@ struct ProfileResetService {
         let canonicalProfileId = profileId.lowercased()
         let folderPath = "user_\(canonicalUserId)/profile_\(canonicalProfileId)"
 
-        // 1. List + delete every storage object under the profile folder.
+        // 1. Delete the `profiles` row first. That makes the public profile
+        //    disappear before any storage deletion happens, so a storage
+        //    failure cannot leave a live row pointing at broken images.
+        do {
+            try await client
+                .from("profiles")
+                .delete()
+                .eq("id", value: canonicalProfileId)
+                .execute()
+        } catch {
+            if SupabaseErrorMapper.isNetwork(error) {
+                throw ProfileResetError.network
+            }
+            throw ProfileResetError.database(SupabaseErrorMapper.detail(error))
+        }
+
+        // 2. Best-effort: drop the bookkeeping rows in `profile_assets`.
+        //    Wrapped in a swallowed catch because these rows are
+        //    derivative — the `profiles.id` cascade in step 1 already
+        //    handles the row from the user's perspective. If this fails
+        //    (RLS / network blip) the next publish overwrites it anyway.
+        do {
+            try await client
+                .from("profile_assets")
+                .delete()
+                .eq("profile_id", value: canonicalProfileId)
+                .execute()
+        } catch {
+            // Non-fatal — see comment above.
+        }
+
+        // 3. List + delete every storage object under the profile folder.
         //    Loop until the folder reads empty so we don't strand
         //    orphaned objects past the 100-item default page. The
         //    iteration cap is generous (5000 objects-worth of pages)
         //    but bounded so a remove call that silently no-ops can't
-        //    spin forever.
+        //    spin forever. A failure here surfaces so the local draft
+        //    keeps its published profile id and the user can retry the
+        //    cloud cleanup.
         do {
             let maxPages = 50
             var page = 0
@@ -94,42 +128,10 @@ struct ProfileResetService {
                     .remove(paths: fullPaths)
             }
         } catch {
-            if (error as NSError).domain == NSURLErrorDomain {
+            if SupabaseErrorMapper.isNetwork(error) {
                 throw ProfileResetError.network
             }
-            throw ProfileResetError.storage(error.localizedDescription)
-        }
-
-        // 2. Best-effort: drop the bookkeeping rows in `profile_assets`.
-        //    Wrapped in a swallowed catch because these rows are
-        //    derivative — the storage objects above are the canonical
-        //    artifact, and the `profiles.id` cascade in step 3 already
-        //    handles the row from the user's perspective. If this fails
-        //    (RLS / network blip) the next publish overwrites it anyway.
-        do {
-            try await client
-                .from("profile_assets")
-                .delete()
-                .eq("profile_id", value: canonicalProfileId)
-                .execute()
-        } catch {
-            // Non-fatal — see comment above.
-        }
-
-        // 3. Delete the `profiles` row itself. This is the user-visible
-        //    "is this profile gone from the cloud?" check, so failures
-        //    here have to surface as errors.
-        do {
-            try await client
-                .from("profiles")
-                .delete()
-                .eq("id", value: canonicalProfileId)
-                .execute()
-        } catch {
-            if (error as NSError).domain == NSURLErrorDomain {
-                throw ProfileResetError.network
-            }
-            throw ProfileResetError.database(error.localizedDescription)
+            throw ProfileResetError.storage(SupabaseErrorMapper.detail(error))
         }
         #else
         throw ProfileResetError.notConfigured(reason: .packageNotAdded)

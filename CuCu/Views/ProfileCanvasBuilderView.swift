@@ -31,6 +31,10 @@ struct ProfileCanvasBuilderView: View {
     /// alert when this is `nil` instead of silently dropping the
     /// network call.
     @Environment(AuthViewModel.self) private var auth
+    /// System-provided undo manager. Drives the edit-mode undo /
+    /// redo buttons; their disabled state tracks `canUndo` /
+    /// `canRedo` so the user gets feedback that the stack is empty.
+    @Environment(\.undoManager) private var undoManager
 
     @State private var document: ProfileDocument = .blank
     @State private var selectedID: UUID?
@@ -46,6 +50,13 @@ struct ProfileCanvasBuilderView: View {
     @State private var titleSaveTask: Task<Void, Never>?
     @State private var sheets = CanvasSheetCoordinator()
     @State private var keyboardHeight: CGFloat = 0
+    @FocusState private var isTitleFieldFocused: Bool
+    /// Height the bottom selection panel currently occupies. Driven
+    /// by `EditorPanelHeightKey` so the canvas can pad its scroll
+    /// inset to match and walk the selected node above the panel
+    /// even as the panel reflows (HSV picker open/close, segmented
+    /// tab switch, etc.).
+    @State private var editorPanelHeight: CGFloat = 0
     // MARK: Reset Profile (full local + cloud wipe)
     @State private var showResetConfirmation = false
     @State private var isResetting = false
@@ -186,11 +197,29 @@ struct ProfileCanvasBuilderView: View {
                     onEditingPageChanged: { index in
                         editingPageIndex = index
                     },
-                    editMode: editMode
+                    editMode: editMode,
+                    bottomChromeHeight: canvasBottomReservedHeight,
+                    onRequestExitEditMode: {
+                        // Two-tap-out pattern: first empty-canvas tap
+                        // clears the selection, second one drops out
+                        // of edit mode. Animation matches the entry
+                        // toggle so the inset glow / chips fade out
+                        // on the same curve they appeared on.
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                            editMode = false
+                            selectedID = nil
+                        }
+                    }
                 )
                 .overlay(alignment: .topLeading) {
-                    EditCanvasToggleButton(editMode: editMode) {
-                        toggleEditMode()
+                    Group {
+                        if editMode {
+                            editModeLeftChrome
+                        } else {
+                            EditCanvasToggleButton(editMode: editMode) {
+                                toggleEditMode()
+                            }
+                        }
                     }
                     .padding(.leading, 14)
                     .padding(.top, 12)
@@ -198,11 +227,26 @@ struct ProfileCanvasBuilderView: View {
                     .opacity(canvasIsEmpty ? 0 : 1)
                 }
                 .overlay(alignment: .topTrailing) {
-                    CanvasModeStatusLabel(editMode: editMode)
-                        .padding(.trailing, 14)
-                        .padding(.top, 14)
-                        .opacity(canvasIsEmpty ? 0 : 1)
-                        .allowsHitTesting(false)
+                    Group {
+                        if editMode {
+                            editModeDoneButton
+                        } else {
+                            CanvasModeStatusLabel(editMode: editMode)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .padding(.trailing, 14)
+                    .padding(.top, 14)
+                    .opacity(canvasIsEmpty ? 0 : 1)
+                }
+                .overlay(alignment: .top) {
+                    // Title chip lives on the canvas instead of in
+                    // the navigation bar so it sits in the same plane
+                    // as the Edit / Editing chrome. The chevron suffix
+                    // hints at the rename affordance — tap anywhere
+                    // on the chip to focus the field.
+                    canvasTitleOverlay
+                        .padding(.top, 10)
                 }
 
                 // Empty-state overlay — fades on top of the (empty)
@@ -277,6 +321,20 @@ struct ProfileCanvasBuilderView: View {
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: editMode)
         .onChange(of: selectedID) { _, newID in
             sheets.handleSelectionChanged(newID: newID)
+            // Reset measured panel height when nothing is selected so
+            // the canvas's reserved chrome collapses immediately
+            // instead of hanging on to last-selection's value.
+            if newID == nil {
+                editorPanelHeight = 0
+            }
+        }
+        .onPreferenceChange(EditorPanelHeightKey.self) { newValue in
+            // The panel is only mounted while a selection exists, so a
+            // zero value here means "no panel right now" — keep zero
+            // and let the next selection re-publish.
+            if abs(editorPanelHeight - newValue) > 0.5 {
+                editorPanelHeight = newValue
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             updateKeyboardHeight(from: note)
@@ -397,6 +455,135 @@ struct ProfileCanvasBuilderView: View {
         keyboardHeight > 0 ? keyboardHeight + 8 : 8
     }
 
+    /// Left-side chrome row shown in edit mode in place of the
+    /// EditCanvasToggleButton: × close + undo + redo, in plain icon
+    /// form (no capsule). The × shares a destination with the Done
+    /// button on the trailing edge — both flip `editMode` off and
+    /// clear `selectedID` — so users have an exit affordance on
+    /// either side of the title pill.
+    @ViewBuilder
+    private var editModeLeftChrome: some View {
+        HStack(spacing: 18) {
+            Button {
+                toggleEditMode()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 19, weight: .light))
+                    .foregroundStyle(Color.cucuInk)
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Exit edit mode")
+
+            Button {
+                undoManager?.undo()
+            } label: {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.system(size: 19, weight: .light))
+                    .foregroundStyle(Color.cucuInk.opacity(undoManager?.canUndo == true ? 1 : 0.28))
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .disabled(undoManager?.canUndo != true)
+            .accessibilityLabel("Undo")
+
+            Button {
+                undoManager?.redo()
+            } label: {
+                Image(systemName: "arrow.uturn.forward")
+                    .font(.system(size: 19, weight: .light))
+                    .foregroundStyle(Color.cucuInk.opacity(undoManager?.canRedo == true ? 1 : 0.28))
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .disabled(undoManager?.canRedo != true)
+            .accessibilityLabel("Redo")
+        }
+    }
+
+    /// Trailing "Done" button shown in edit mode in place of the
+    /// Live/Editing status label. Bare text — matches the reference
+    /// where Done sits as a single airy word rather than a chip.
+    private var editModeDoneButton: some View {
+        Button {
+            toggleEditMode()
+        } label: {
+            Text("Done")
+                .font(.cucuSans(17, weight: .medium))
+                .foregroundStyle(Color.cucuInk)
+                .frame(height: 30)
+                .padding(.horizontal, 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Done editing")
+    }
+
+    /// Centered title pill that sits at the top of the canvas
+    /// between the Edit toggle (top-left) and the Editing/Live
+    /// status label (top-right). The text field stays editable in
+    /// place — same `titleDraft` binding the navigation bar used to
+    /// own — and the trailing chevron is a visual cue, not a menu
+    /// trigger (rename is the only affordance the title currently
+    /// surfaces).
+    @ViewBuilder
+    private var canvasTitleOverlay: some View {
+        if !canvasIsEmpty && !legacyDraft {
+            HStack(spacing: 5) {
+                TextField("Untitled", text: $titleDraft)
+                    .textFieldStyle(.plain)
+                    .multilineTextAlignment(.center)
+                    .font(.cucuSans(17, weight: .medium))
+                    .foregroundStyle(Color.cucuInk)
+                    .focused($isTitleFieldFocused)
+                    .submitLabel(.done)
+                    .frame(minWidth: 60, maxWidth: 220)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .onChange(of: titleDraft) { _, newValue in
+                        scheduleTitleSave(newValue)
+                    }
+                    .onSubmit {
+                        flushTitleSave()
+                        isTitleFieldFocused = false
+                    }
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.cucuInk.opacity(0.55))
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            // Reference uses bare text directly on the canvas — but our
+            // canvas can ship any image / dark theme behind the title,
+            // so we keep a near-invisible card backing that only
+            // becomes visible while the user is editing. Idle: pure
+            // text. Focused: thin pill so the field reads as "armed".
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.cucuCard.opacity(isTitleFieldFocused ? 0.95 : 0.0))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color.cucuInk.opacity(isTitleFieldFocused ? 0.40 : 0.0),
+                            lineWidth: isTitleFieldFocused ? 1.5 : 0)
+            )
+            .animation(.easeInOut(duration: 0.18), value: isTitleFieldFocused)
+            .contentShape(Capsule(style: .continuous))
+            .onTapGesture {
+                isTitleFieldFocused = true
+            }
+        }
+    }
+
+    /// Bottom area the canvas should treat as covered chrome. When a
+    /// selection panel is up, this is its measured height plus the
+    /// keyboard-aware padding the panel itself adds; when nothing is
+    /// selected, the chrome height is zero so the canvas reverts to a
+    /// full-height scroll surface. Threaded into `CanvasEditorView`'s
+    /// scroll inset so the selected node always lands above the panel.
+    private var canvasBottomReservedHeight: CGFloat {
+        guard selectedID != nil, editorPanelHeight > 0 else { return 0 }
+        return editorPanelHeight + keyboardAwarePanelBottomPadding
+    }
+
     private func updateKeyboardHeight(from notification: Notification) {
         guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else {
             return
@@ -458,6 +645,11 @@ struct ProfileCanvasBuilderView: View {
             canMoveDown: { mutator.canMoveSelectedDown() },
             onAppendGalleryPhotos: { nodeID, dataList in
                 mutator.appendGalleryImages(for: nodeID, with: dataList)
+            },
+            onClose: {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                    selectedID = nil
+                }
             }
         )
     }
@@ -485,16 +677,13 @@ struct ProfileCanvasBuilderView: View {
             .disabled(legacyDraft)
         }
 
-        ToolbarItem(placement: .principal) {
-            TextField("Untitled", text: $titleDraft)
-                .textFieldStyle(.plain)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 220)
-                .onChange(of: titleDraft) { _, newValue in
-                    scheduleTitleSave(newValue)
-                }
-                .onSubmit { flushTitleSave() }
-        }
+        // Title moved out of the navigation bar onto the canvas
+        // surface (see `canvasTitleOverlay`) so it sits as part of
+        // the editing chrome instead of fighting for room with the
+        // five trailing buttons. Principal slot is intentionally left
+        // empty — iOS centers the title there by default, and an
+        // empty principal lets the trailing group claim the freed
+        // width on small iPhones.
         // Three visible trailing items: Add, Publish, Menu.
         // We previously had five (photo, layers, plus, publish,
         // …) which on smaller iPhones overflowed the nav bar
@@ -779,9 +968,9 @@ struct ProfileCanvasBuilderView: View {
     /// about the cloud wipe in addition to the local one.
     private var resetConfirmationMessage: String {
         if draft.publishedProfileId != nil {
-            return "This will remove every node and image on your canvas, take down your published profile, and delete every image you've uploaded from the cloud. This can't be undone."
+            return "Local reset: remove every node and image on this draft. Cloud delete: take down your published profile and delete uploaded images if you're signed in. This can't be undone."
         }
-        return "This will remove every node and image on your canvas. This can't be undone."
+        return "Local reset only: remove every node and image on this draft. No published profile is connected to this draft. This can't be undone."
     }
 
     /// Confirmation copy for the cloud-only Delete Published Profile

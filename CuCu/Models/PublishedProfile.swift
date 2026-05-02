@@ -68,6 +68,10 @@ nonisolated struct PublishedProfileSummary: Identifiable, Sendable, Equatable {
     let thumbnailURL: String?
     let publishedAt: Date?
     let updatedAt: Date?
+    let voteCount: Int
+    let votesLast24Hours: Int
+    let votesLast7Days: Int
+    let hotScore: Int
 
     /// `publishedAt` if the row has one (the publish flow always sets
     /// it on success), else `updatedAt`. Used both as the surface
@@ -79,21 +83,57 @@ nonisolated struct PublishedProfileSummary: Identifiable, Sendable, Equatable {
 /// Wire-level summary row. Mirrors `PublishedProfileSummary`'s shape
 /// in snake_case to match the Postgres column names.
 nonisolated struct PublishedProfileSummaryRow: Decodable, Sendable {
-    let id: String
+    let id: String?
+    let profile_id: String?
     let username: String
     let thumbnail_url: String?
     let published_at: String?
     let updated_at: String?
+    let vote_count: Int?
+    let votes_last_24h: Int?
+    let votes_last_7d: Int?
+    let hot_score: Int?
 
     func toModel() -> PublishedProfileSummary {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return PublishedProfileSummary(
-            id: id,
+            id: profile_id ?? id ?? "",
             username: username,
             thumbnailURL: thumbnail_url,
             publishedAt: published_at.flatMap { formatter.date(from: $0) },
-            updatedAt: updated_at.flatMap { formatter.date(from: $0) }
+            updatedAt: updated_at.flatMap { formatter.date(from: $0) },
+            voteCount: vote_count ?? 0,
+            votesLast24Hours: votes_last_24h ?? 0,
+            votesLast7Days: votes_last_7d ?? 0,
+            hotScore: hot_score ?? 0
+        )
+    }
+}
+
+/// Aggregate voting state used by the public viewer and Explore cards.
+nonisolated struct PublishedProfileStats: Sendable, Equatable {
+    let profileId: String
+    let voteCount: Int
+    let votesLast24Hours: Int
+    let votesLast7Days: Int
+    let hotScore: Int
+}
+
+nonisolated struct PublishedProfileStatsRow: Decodable, Sendable {
+    let profile_id: String
+    let vote_count: Int?
+    let votes_last_24h: Int?
+    let votes_last_7d: Int?
+    let hot_score: Int?
+
+    func toModel() -> PublishedProfileStats {
+        PublishedProfileStats(
+            profileId: profile_id,
+            voteCount: vote_count ?? 0,
+            votesLast24Hours: votes_last_24h ?? 0,
+            votesLast7Days: votes_last_7d ?? 0,
+            hotScore: hot_score ?? 0
         )
     }
 }

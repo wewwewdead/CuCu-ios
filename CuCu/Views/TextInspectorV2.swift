@@ -1,0 +1,682 @@
+import SwiftUI
+
+/// Redesigned bottom panel for `.text` nodes. Replaces the horizontal-card
+/// strip with a tabbed surface: a dark capsule TabBar (Text / Style /
+/// Layout), a format toolbar, and an inline HSV color picker. Drives the
+/// existing `NodeStyle` fields plus the three new ones added for this
+/// design (`textItalic`, `textStrikethrough`, `letterSpacing`).
+struct TextInspectorV2: View {
+    @Binding var document: ProfileDocument
+    let textID: UUID
+
+    var onDuplicate: () -> Void
+    var onDelete: () -> Void
+    var onClose: () -> Void
+
+    enum PickerTarget: Hashable { case textColor, highlight }
+
+    @State private var selectedTabIndex: Int = 0
+    @State private var pickerTarget: PickerTarget = .textColor
+    @State private var sizeOpen: Bool = false
+    @State private var paragraphPreset: ParagraphPreset = .body
+
+    var body: some View {
+        ElementInspectorChrome(
+            typeLabel: "TEXT",
+            idTag: ElementInspectorChrome<EmptyView>.idTag(for: textID),
+            tabs: ["Text", "Style", "Layout"],
+            selectedIndex: $selectedTabIndex,
+            onDuplicate: onDuplicate,
+            onDelete: onDelete,
+            onClose: onClose
+        ) {
+            Group {
+                switch selectedTabIndex {
+                case 0: textTab
+                case 1: styleTab
+                default: layoutTab
+                }
+            }
+        }
+    }
+
+    // MARK: Text tab
+
+    @ViewBuilder
+    private var textTab: some View {
+        VStack(spacing: 0) {
+            inlineTextarea
+            formatToolbar
+            if sizeOpen {
+                sizeDrawer
+                Divider().background(Color.cucuInk.opacity(0.08))
+            }
+            colorPickerDrawer
+        }
+    }
+
+    private var inlineTextarea: some View {
+        TextField("Text", text: bindingNodeText(textID),
+                  axis: .vertical)
+            .lineLimit(2...6)
+            .font(.cucuSans(14, weight: .regular))
+            .foregroundStyle(Color.cucuInk)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.cucuInk.opacity(0.16), lineWidth: 1)
+            )
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
+    }
+
+    // MARK: Format toolbar
+
+    private var formatToolbar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                paragraphPresetButton
+                vRule
+                textColorButton
+                highlightButton
+                vRule
+                weightButton
+                italicButton
+                underlineButton
+                strikeButton
+                vRule
+                sizeButton
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .background(Color.cucuCard)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.cucuInk.opacity(0.08)).frame(height: 1)
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.cucuInk.opacity(0.08)).frame(height: 1)
+        }
+    }
+
+    private var vRule: some View {
+        Rectangle()
+            .fill(Color.cucuInk.opacity(0.14))
+            .frame(width: 1, height: 22)
+            .padding(.horizontal, 4)
+    }
+
+    private var paragraphPresetButton: some View {
+        Button {
+            paragraphPreset = paragraphPreset.next
+            paragraphPreset.apply(to: textID, in: $document)
+        } label: {
+            HStack(spacing: 4) {
+                Text(paragraphPreset.label)
+                    .font(.cucuSans(13, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.cucuInk.opacity(0.55))
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var textColorButton: some View {
+        toolbarButton(active: pickerTarget == .textColor) {
+            pickerTarget = .textColor
+        } content: {
+            VStack(spacing: 1) {
+                Text("A")
+                    .font(.system(size: 15, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.cucuInk)
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(currentTextColor)
+                    .frame(width: 18, height: 4)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 1, style: .continuous)
+                            .stroke(Color.cucuInk.opacity(0.35), lineWidth: 0.5)
+                    )
+            }
+        }
+    }
+
+    private var highlightButton: some View {
+        toolbarButton(active: pickerTarget == .highlight) {
+            pickerTarget = .highlight
+        } content: {
+            ZStack {
+                Image(systemName: "pencil.tip")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
+            }
+        }
+    }
+
+    private var weightButton: some View {
+        let isBold = (currentNode?.style.fontWeight ?? .regular) == .bold ||
+                     (currentNode?.style.fontWeight ?? .regular) == .semibold
+        return toolbarButton(active: isBold) {
+            mutate { $0.style.fontWeight = isBold ? .regular : .bold }
+        } content: {
+            Text("B").font(.system(size: 14, weight: .heavy))
+        }
+    }
+
+    private var italicButton: some View {
+        let isItalic = currentNode?.style.textItalic == true
+        return toolbarButton(active: isItalic) {
+            mutate { $0.style.textItalic = isItalic ? nil : true }
+        } content: {
+            Text("I")
+                .font(.custom("Georgia-Italic", size: 14))
+                .italic()
+        }
+    }
+
+    private var underlineButton: some View {
+        let isOn = currentNode?.style.textUnderlined == true
+        return toolbarButton(active: isOn) {
+            mutate { $0.style.textUnderlined = isOn ? nil : true }
+        } content: {
+            Text("U")
+                .font(.system(size: 14, weight: .semibold))
+                .underline()
+        }
+    }
+
+    private var strikeButton: some View {
+        let isOn = currentNode?.style.textStrikethrough == true
+        return toolbarButton(active: isOn) {
+            mutate { $0.style.textStrikethrough = isOn ? nil : true }
+        } content: {
+            Text("S")
+                .font(.system(size: 14, weight: .semibold))
+                .strikethrough()
+        }
+    }
+
+    private var sizeButton: some View {
+        Button {
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                sizeOpen.toggle()
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text("Aa")
+                    .font(.system(size: 13, design: .serif))
+                    .foregroundStyle(Color.cucuInk)
+                Text("\(currentSize)")
+                    .font(.cucuMono(11, weight: .regular))
+                    .foregroundStyle(Color.cucuInk)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(sizeOpen ? Color.cucuInk.opacity(0.10) : .clear)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func toolbarButton<Label: View>(active: Bool,
+                                            action: @escaping () -> Void,
+                                            @ViewBuilder content: () -> Label) -> some View {
+        Button(action: action) {
+            content()
+                .frame(minWidth: 32)
+                .padding(.horizontal, 8)
+                .frame(height: 32)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(active ? Color.cucuInk.opacity(0.10) : .clear)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: Size drawer
+
+    private var sizeDrawer: some View {
+        HStack(spacing: 10) {
+            Text("SIZE")
+                .font(.cucuMono(11, weight: .semibold))
+                .tracking(1.4)
+                .foregroundStyle(Color.cucuInk.opacity(0.6))
+            Slider(
+                value: bindingStyleDouble(textID, key: \.fontSize, defaultValue: 17),
+                in: 8...72,
+                step: 1
+            )
+            Text("\(currentSize)pt")
+                .font(.cucuMono(12, weight: .semibold))
+                .foregroundStyle(Color.cucuInk)
+                .frame(width: 48, alignment: .trailing)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    // MARK: Color picker drawer
+
+    private var colorPickerDrawer: some View {
+        HSVColorPicker(
+            hex: pickerHexBinding,
+            alpha: pickerAlphaBinding,
+            onBack: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    pickerTarget = .textColor
+                }
+            }
+        )
+    }
+
+    // MARK: Style tab
+
+    private var styleTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                fieldSlider(label: "LETTER SPACING",
+                            valueText: letterSpacingValueText,
+                            value: bindingStyleOptionalDouble(textID, key: \.letterSpacing, defaultValue: 0),
+                            range: -2...10, step: 0.1)
+                fieldSlider(label: "LINE HEIGHT",
+                            valueText: "\(Int(currentNode?.style.lineSpacing ?? 0))pt",
+                            value: bindingStyleOptionalDouble(textID, key: \.lineSpacing, defaultValue: 0),
+                            range: 0...16, step: 1)
+            }
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    fieldLabel("BACKGROUND")
+                    bgSwatchRow
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                fieldSlider(label: "PADDING",
+                            valueText: "\(Int(currentNode?.style.padding ?? 0))pt",
+                            value: bindingStyleOptionalDouble(textID, key: \.padding, defaultValue: 0),
+                            range: 0...32, step: 1)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
+
+    private var bgSwatchRow: some View {
+        HStack(spacing: 6) {
+            ForEach(Self.bgSwatchHexes, id: \.self) { hex in
+                let isSelected = (currentNode?.style.backgroundColorHex ?? "") == hex
+                Button {
+                    mutate {
+                        if hex == "transparent" {
+                            $0.style.backgroundColorHex = nil
+                        } else {
+                            $0.style.backgroundColorHex = hex
+                        }
+                    }
+                } label: {
+                    swatchCircle(hex: hex, selected: isSelected)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private static let bgSwatchHexes = [
+        "transparent", "#FFE3EC", "#FFF1B8", "#DDF1D5", "#D9E5F5", "#3A1A1F"
+    ]
+
+    private func swatchCircle(hex: String, selected: Bool) -> some View {
+        ZStack {
+            if hex == "transparent" {
+                Circle()
+                    .fill(LinearGradient(
+                        stops: [
+                            .init(color: Color.cucuInk.opacity(0.10), location: 0.5),
+                            .init(color: Color.white, location: 0.5),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ))
+            } else {
+                Circle().fill(Color(hex: hex))
+            }
+        }
+        .frame(width: 26, height: 26)
+        .overlay(
+            Circle().stroke(Color.cucuInk.opacity(selected ? 1 : 0.18),
+                            lineWidth: selected ? 2 : 1)
+        )
+    }
+
+    // MARK: Layout tab
+
+    private var layoutTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 14) {
+                fieldSlider(label: "X",
+                            valueText: "\(Int(currentNode?.frame.x ?? 0))pt",
+                            value: bindingFrameDouble(textID, key: \.x),
+                            range: -200...500, step: 1)
+                fieldSlider(label: "Y",
+                            valueText: "\(Int(currentNode?.frame.y ?? 0))pt",
+                            value: bindingFrameDouble(textID, key: \.y),
+                            range: -200...1200, step: 1)
+            }
+            HStack(spacing: 14) {
+                fieldSlider(label: "WIDTH",
+                            valueText: "\(Int(currentNode?.frame.width ?? 0))pt",
+                            value: bindingFrameDouble(textID, key: \.width),
+                            range: 40...500, step: 1)
+                fieldSlider(label: "HEIGHT",
+                            valueText: "\(Int(currentNode?.frame.height ?? 0))pt",
+                            value: bindingFrameDouble(textID, key: \.height),
+                            range: 20...600, step: 1)
+            }
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    fieldLabel("ALIGN")
+                    alignmentSegmented
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                fieldSlider(label: "OPACITY",
+                            valueText: "\(Int((currentNode?.opacity ?? 1) * 100))%",
+                            value: Binding(
+                                get: { (currentNode?.opacity ?? 1) * 100 },
+                                set: { newValue in
+                                    mutateNode { $0.opacity = max(0, min(1, newValue / 100)) }
+                                }
+                            ),
+                            range: 0...100, step: 1)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
+
+    private var alignmentSegmented: some View {
+        HStack(spacing: 4) {
+            alignChip(.leading, system: "text.alignleft")
+            alignChip(.center,  system: "text.aligncenter")
+            alignChip(.trailing, system: "text.alignright")
+        }
+    }
+
+    private func alignChip(_ value: NodeTextAlignment, system: String) -> some View {
+        let active = (currentNode?.style.textAlignment ?? .leading) == value
+        return Button {
+            mutate { $0.style.textAlignment = value }
+        } label: {
+            Image(systemName: system)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(active ? Color.cucuCard : Color.cucuInk)
+                .frame(maxWidth: .infinity)
+                .frame(height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(active ? Color.cucuInk : .clear)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.cucuInk.opacity(active ? 0 : 0.18), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: Field helpers
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.cucuMono(9, weight: .semibold))
+            .tracking(1.4)
+            .foregroundStyle(Color.cucuInk.opacity(0.6))
+    }
+
+    private func fieldSlider(label: String,
+                             valueText: String,
+                             value: Binding<Double>,
+                             range: ClosedRange<Double>,
+                             step: Double) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            fieldLabel(label)
+            HStack(spacing: 8) {
+                Slider(value: value, in: range, step: step)
+                Text(valueText)
+                    .font(.cucuMono(11, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
+                    .frame(width: 44, alignment: .trailing)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Bindings
+
+    private var currentNode: CanvasNode? { document.nodes[textID] }
+    private var currentSize: Int {
+        Int(currentNode?.style.fontSize ?? 17)
+    }
+    private var currentTextColor: Color {
+        Color(hex: currentNode?.style.textColorHex ?? "#1A140E")
+    }
+
+    private var letterSpacingValueText: String {
+        let value = currentNode?.style.letterSpacing ?? 0
+        if abs(value) < 0.01 { return "0" }
+        return String(format: "%.1fpt", value)
+    }
+
+    private var pickerHexBinding: Binding<String> {
+        Binding(
+            get: {
+                let stored = storedTargetHex(default: pickerTarget == .highlight ? "#FFD93D" : "#1A140E")
+                return Self.splitHex(stored).rgb
+            },
+            set: { newRgb in
+                let alpha = Self.splitHex(storedTargetHex(default: "#000000")).alpha
+                let merged = Self.mergeHex(rgb: newRgb, alpha: alpha)
+                writeTargetHex(merged)
+            }
+        )
+    }
+
+    private var pickerAlphaBinding: Binding<Double> {
+        Binding(
+            get: {
+                Self.splitHex(storedTargetHex(default: pickerTarget == .highlight ? "#FFD93D" : "#1A140E")).alpha
+            },
+            set: { newAlpha in
+                let rgb = Self.splitHex(storedTargetHex(default: "#000000")).rgb
+                let merged = Self.mergeHex(rgb: rgb, alpha: newAlpha)
+                writeTargetHex(merged)
+            }
+        )
+    }
+
+    /// Reads the hex currently bound to whichever target the picker is
+    /// editing. Falls back to the supplied default when the field is
+    /// nil/empty so the picker's HSV state is always populated.
+    private func storedTargetHex(default fallback: String) -> String {
+        switch pickerTarget {
+        case .textColor:
+            let raw = currentNode?.style.textColorHex
+            return (raw?.isEmpty ?? true) ? fallback : raw!
+        case .highlight:
+            let raw = currentNode?.style.backgroundColorHex
+            if let raw, !raw.isEmpty, raw != "transparent" { return raw }
+            return fallback
+        }
+    }
+
+    private func writeTargetHex(_ hex: String) {
+        mutate { node in
+            switch pickerTarget {
+            case .textColor:
+                node.style.textColorHex = hex
+                node.style.textColorAuto = false
+            case .highlight:
+                node.style.backgroundColorHex = hex
+            }
+        }
+    }
+
+    /// Decompose a `#RRGGBB` or `#RRGGBBAA` value into a 6-char rgb
+    /// string + alpha (0...1). Uses the same parsing rules as
+    /// `Color(hex:)` so the picker's view of "what's stored" matches
+    /// what the renderer will display. Returns ink black + opaque on
+    /// malformed input rather than crashing — the picker's cursor will
+    /// just show top-left of the saturation square.
+    static func splitHex(_ hex: String) -> (rgb: String, alpha: Double) {
+        let trimmed = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
+        if cleaned.count == 8,
+           let alphaByte = UInt8(String(cleaned.suffix(2)), radix: 16) {
+            return ("#" + String(cleaned.prefix(6)).uppercased(),
+                    Double(alphaByte) / 255)
+        }
+        if cleaned.count == 6 {
+            return ("#" + cleaned.uppercased(), 1.0)
+        }
+        return ("#1A140E", 1.0)
+    }
+
+    /// Combine a 6-char rgb with an alpha value into the canonical
+    /// hex form. Drops the alpha byte entirely when the user has the
+    /// slider at 100% so opaque colors round-trip as `#RRGGBB`
+    /// (matches every default in the codebase) instead of
+    /// `#RRGGBBFF`.
+    static func mergeHex(rgb: String, alpha: Double) -> String {
+        let cleaned = rgb.hasPrefix("#") ? String(rgb.dropFirst()) : rgb
+        let safe6: String
+        if cleaned.count == 6 {
+            safe6 = cleaned.uppercased()
+        } else if cleaned.count == 8 {
+            safe6 = String(cleaned.prefix(6)).uppercased()
+        } else {
+            safe6 = "1A140E"
+        }
+        let clamped = max(0, min(1, alpha))
+        if clamped >= 0.999 { return "#" + safe6 }
+        let alphaByte = Int((clamped * 255).rounded())
+        return String(format: "#%@%02X", safe6, alphaByte)
+    }
+
+    private func bindingNodeText(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: { document.nodes[id]?.content.text ?? "" },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.content.text = newValue
+                document.nodes[id] = node
+            }
+        )
+    }
+
+    private func bindingStyleDouble(_ id: UUID,
+                                    key: WritableKeyPath<NodeStyle, Double?>,
+                                    defaultValue: Double) -> Binding<Double> {
+        Binding(
+            get: { document.nodes[id]?.style[keyPath: key] ?? defaultValue },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.style[keyPath: key] = newValue
+                document.nodes[id] = node
+            }
+        )
+    }
+
+    private func bindingStyleOptionalDouble(_ id: UUID,
+                                            key: WritableKeyPath<NodeStyle, Double?>,
+                                            defaultValue: Double = 0) -> Binding<Double> {
+        Binding(
+            get: { document.nodes[id]?.style[keyPath: key] ?? defaultValue },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.style[keyPath: key] = abs(newValue) > 0.001 ? newValue : nil
+                document.nodes[id] = node
+            }
+        )
+    }
+
+    private func bindingFrameDouble(_ id: UUID,
+                                    key: WritableKeyPath<NodeFrame, Double>) -> Binding<Double> {
+        Binding(
+            get: { document.nodes[id]?.frame[keyPath: key] ?? 0 },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.frame[keyPath: key] = newValue
+                document.nodes[id] = node
+            }
+        )
+    }
+
+    private func mutate(_ change: (inout CanvasNode) -> Void) {
+        guard var node = document.nodes[textID] else { return }
+        change(&node)
+        document.nodes[textID] = node
+    }
+
+    private func mutateNode(_ change: (inout CanvasNode) -> Void) { mutate(change) }
+}
+
+// MARK: - Paragraph presets
+
+extension TextInspectorV2 {
+    enum ParagraphPreset: String, CaseIterable {
+        case title, heading, subhead, body, caption
+
+        var label: String {
+            switch self {
+            case .title: return "Title"
+            case .heading: return "Heading"
+            case .subhead: return "Subhead"
+            case .body: return "Body"
+            case .caption: return "Caption"
+            }
+        }
+
+        var next: ParagraphPreset {
+            let all = ParagraphPreset.allCases
+            let idx = all.firstIndex(of: self) ?? 0
+            return all[(idx + 1) % all.count]
+        }
+
+        /// Pick the size + weight that this preset implies; values match
+        /// the JSX prototype's expected hierarchy.
+        var size: Double {
+            switch self {
+            case .title:   return 32
+            case .heading: return 24
+            case .subhead: return 18
+            case .body:    return 15
+            case .caption: return 12
+            }
+        }
+        var weight: NodeFontWeight {
+            switch self {
+            case .title, .heading: return .bold
+            case .subhead:         return .semibold
+            case .body:            return .regular
+            case .caption:         return .medium
+            }
+        }
+
+        func apply(to id: UUID, in document: Binding<ProfileDocument>) {
+            var doc = document.wrappedValue
+            guard var node = doc.nodes[id] else { return }
+            node.style.fontSize = size
+            node.style.fontWeight = weight
+            doc.nodes[id] = node
+            document.wrappedValue = doc
+        }
+    }
+}

@@ -36,6 +36,14 @@ struct CanvasEditorContainer: UIViewRepresentable {
     /// reads as "armed". Off by default; bound from the SwiftUI host.
     var editMode: Bool = false
 
+    /// Height of the bottom chrome (selection panel + keyboard
+    /// avoidance padding) the SwiftUI host is reserving above the
+    /// canvas. The canvas pads its scroll view's bottom inset by this
+    /// amount and walks the selected node above it on every change,
+    /// so the inspector subject is never hidden behind the panel.
+    /// `0` means no panel is showing.
+    var bottomChromeHeight: CGFloat = 0
+
     /// Called when a `.link` node is tapped while `isInteractive` is
     /// `false`. Receives the resolved URL — strings that don't parse
     /// or are obviously not URLs are filtered upstream so the host
@@ -56,6 +64,12 @@ struct CanvasEditorContainer: UIViewRepresentable {
     /// `isInteractive` is `false`. Receives the gallery's full URL
     /// list so the host can present the paginated grid.
     var onOpenFullGallery: (([URL]) -> Void)? = nil
+
+    /// Fires when the user taps an empty canvas area in edit mode
+    /// with nothing selected — the second tap of the two-tap-out
+    /// pattern. Host clears its `editMode` state so the canvas
+    /// returns to the live preview.
+    var onRequestExitEditMode: (() -> Void)? = nil
 
     /// Viewer-only page scope. nil renders the full editable page stack.
     var viewerPageIndex: Int? = nil
@@ -95,7 +109,11 @@ struct CanvasEditorContainer: UIViewRepresentable {
         view.onOpenFullGallery = { urls in
             onOpenFullGallery?(urls)
         }
+        view.onRequestExitEditMode = {
+            onRequestExitEditMode?()
+        }
         view.setEditMode(editMode)
+        view.setBottomChromeHeight(bottomChromeHeight)
         view.apply(document: document, selectedID: selectedID)
         return view
     }
@@ -129,7 +147,11 @@ struct CanvasEditorContainer: UIViewRepresentable {
         view.onOpenFullGallery = { urls in
             onOpenFullGallery?(urls)
         }
+        view.onRequestExitEditMode = {
+            onRequestExitEditMode?()
+        }
         view.setEditMode(editMode)
+        view.setBottomChromeHeight(bottomChromeHeight)
         view.apply(document: document, selectedID: selectedID)
     }
 }

@@ -17,6 +17,18 @@ struct NodeStyle: Codable, Hashable {
     /// Optional underline for text-rendering nodes. Nil/false both
     /// render as no underline so old drafts decode unchanged.
     var textUnderlined: Bool?
+    /// Italic toggle for text-rendering nodes. Resolved by the font
+    /// pipeline as a `UIFontDescriptorTraitItalic` symbolic-trait
+    /// addition; families that lack an italic face fall back to a
+    /// per-glyph oblique skew so the toggle never renders as a no-op.
+    var textItalic: Bool?
+    /// Strikethrough toggle. Maps to
+    /// `NSAttributedString.Key.strikethroughStyle = .single` when on.
+    var textStrikethrough: Bool?
+    /// Per-character kerning in points. Drives the kern attribute
+    /// directly so a slider value of `1.5` reads as 1.5 points of
+    /// extra spacing between every glyph.
+    var letterSpacing: Double?
     /// When `true`, the structured-profile normalizer recomputes
     /// `textColorHex` from the page's background luminance on every
     /// commit so the hero's name / @username / bio always read with
@@ -131,6 +143,9 @@ struct NodeStyle: Codable, Hashable {
          textColorHex: String? = nil,
          textAlignment: NodeTextAlignment? = nil,
          textUnderlined: Bool? = nil,
+         textItalic: Bool? = nil,
+         textStrikethrough: Bool? = nil,
+         letterSpacing: Double? = nil,
          textColorAuto: Bool? = nil,
          imageFit: NodeImageFit? = nil,
          clipShape: NodeClipShape? = nil,
@@ -160,6 +175,9 @@ struct NodeStyle: Codable, Hashable {
         self.textColorHex = textColorHex
         self.textAlignment = textAlignment
         self.textUnderlined = textUnderlined
+        self.textItalic = textItalic
+        self.textStrikethrough = textStrikethrough
+        self.letterSpacing = letterSpacing
         self.textColorAuto = textColorAuto
         self.imageFit = imageFit
         self.clipShape = clipShape
@@ -194,6 +212,9 @@ extension NodeStyle {
         case textColorHex
         case textAlignment
         case textUnderlined
+        case textItalic
+        case textStrikethrough
+        case letterSpacing
         case textColorAuto
         case imageFit
         case clipShape
@@ -230,6 +251,9 @@ extension NodeStyle {
         self.textColorHex = try c.decodeIfPresent(String.self, forKey: .textColorHex)
         self.textAlignment = try c.decodeIfPresent(NodeTextAlignment.self, forKey: .textAlignment)
         self.textUnderlined = try c.decodeIfPresent(Bool.self, forKey: .textUnderlined)
+        self.textItalic = try c.decodeIfPresent(Bool.self, forKey: .textItalic)
+        self.textStrikethrough = try c.decodeIfPresent(Bool.self, forKey: .textStrikethrough)
+        self.letterSpacing = try c.decodeIfPresent(Double.self, forKey: .letterSpacing)
         self.textColorAuto = try c.decodeIfPresent(Bool.self, forKey: .textColorAuto)
         self.imageFit = try c.decodeIfPresent(NodeImageFit.self, forKey: .imageFit)
         self.clipShape = try c.decodeIfPresent(NodeClipShape.self, forKey: .clipShape)

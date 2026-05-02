@@ -325,6 +325,51 @@ final class CanvasEditorView: UIView {
     /// and routes Esc-key + Done-button changes through `setEditMode`.
     private(set) var editMode: Bool = false
 
+    /// Bottom chrome height the SwiftUI host has reserved for the
+    /// editor panel (and any keyboard avoidance padding). The scroll
+    /// view's bottom inset is held to this value so the visible
+    /// canvas region equals `bounds.height - bottomChromeHeight`,
+    /// and `scrollRectToVisible` for the selected node respects the
+    /// reserved space.
+    private var bottomChromeHeight: CGFloat = 0
+
+    /// Updates the reserved chrome height and, if it changed,
+    /// re-applies the scroll inset and walks the selected node back
+    /// into the visible region. Called once per `update(_:)` on the
+    /// representable, plus on every selection change so a freshly
+    /// tapped chip lands above the panel even if its node was
+    /// off-screen.
+    func setBottomChromeHeight(_ height: CGFloat) {
+        let target = max(0, height)
+        let changed = abs(bottomChromeHeight - target) > 0.5
+        bottomChromeHeight = target
+        if changed {
+            scrollView.contentInset.bottom = target
+            scrollView.verticalScrollIndicatorInsets.bottom = target
+        }
+        if changed || selectedID != nil {
+            ensureSelectedNodeVisible(animated: changed)
+        }
+    }
+
+    /// Scroll the currently-selected node into the visible region
+    /// above `bottomChromeHeight`. No-op when nothing is selected or
+    /// the node already sits inside the visible window. Called from
+    /// `setBottomChromeHeight`, the chip-select path, and the
+    /// `apply(...)` tail so first-load + selection-change both land
+    /// the inspector subject above the panel.
+    fileprivate func ensureSelectedNodeVisible(animated: Bool) {
+        guard let id = selectedID,
+              let view = renderViews[id],
+              scrollView.bounds.height > 0 else { return }
+        let frame = contentView.convert(view.bounds, from: view)
+        // Pad the rect on top + bottom so the node never lands flush
+        // against the panel's leading edge or the toolbar.
+        let breathingRoom: CGFloat = 16
+        let padded = frame.insetBy(dx: 0, dy: -breathingRoom)
+        scrollView.scrollRectToVisible(padded, animated: animated)
+    }
+
     /// Public mutator that drives `editMode` and re-runs the overlay
     /// reconciliation. Pulled out as its own method so the SwiftUI
     /// representable can flip it without re-applying the whole document
@@ -573,6 +618,13 @@ final class CanvasEditorView: UIView {
     /// cards (e.g. "Journal card") still trigger.
     var onOpenJournal: ((UUID) -> Void)?
 
+    /// Fired when the user taps an empty area of the canvas while
+    /// edit mode is on AND no selection is active. The host responds
+    /// by clearing `editMode` so the canvas drops back to the live
+    /// preview. The two-tap-out pattern: first empty tap clears the
+    /// inspector, second empty tap exits edit mode.
+    var onRequestExitEditMode: (() -> Void)?
+
     /// Called when the user taps the "View Gallery" chip on a
     /// `.gallery` node while `isInteractive` is `false`. Receives
     /// the gallery's full URL list so the host can present the
@@ -682,6 +734,16 @@ final class CanvasEditorView: UIView {
             self.selectedID = id
             self.onSelectionChanged?(id)
             self.updateEditingPageForCurrentState()
+            // The host's panel measures itself off-axis after this
+            // selection lands, so the chrome height we know about is
+            // still last-frame's. A second pass on the next runloop
+            // tick uses the freshly-published height. Both passes go
+            // through `ensureSelectedNodeVisible` so the node is
+            // walked above the panel either way.
+            self.ensureSelectedNodeVisible(animated: true)
+            DispatchQueue.main.async {
+                self.ensureSelectedNodeVisible(animated: true)
+            }
         }
 
         // Lift only the *editing text node* (not the whole canvas)
@@ -1471,6 +1533,24 @@ final class CanvasEditorView: UIView {
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        // The contentView tap recognizer has `cancelsTouchesInView =
+        // false` so it observes every touch even when a child UIControl
+        // (notably the floating edit chips) consumes it. When the user
+        // taps a chip, the chip's own `touchUpInside` already drove
+        // `selectedID = id` through `onSelectChip` — running the rest
+        // of this handler would either re-clear that selection (since
+        // chips sit *above* their node and miss `hitTestNode`) or trip
+        // the two-tap-out exit. Hit-test the touch's actual landing
+        // view and bail when it ends inside a chip's hit area.
+        let tapPoint = gesture.location(in: contentView)
+        if let landingView = contentView.hitTest(tapPoint, with: nil) {
+            var ancestor: UIView? = landingView
+            while let view = ancestor {
+                if view is NodeEditChipView { return }
+                ancestor = view.superview
+            }
+        }
+
         // Viewer mode: nothing to select. The recognizer stays
         // attached because it lives on `contentView` (we don't need
         // to tear it down per render-view), but it short-circuits
@@ -1500,11 +1580,9 @@ final class CanvasEditorView: UIView {
         let hit = hitTestNode(at: point)
 
         // Already-selected text node: a second tap drops directly into
-        // in-place text editing (keyboard up, cursor in the box). This
-        // is the only case where a node-body tap *acts* in edit mode
-        // — the user has already chosen the text node via its chip,
-        // so a follow-up tap on the body is a deliberate "edit text"
-        // gesture, not a selection event.
+        // in-place text editing (keyboard up, cursor in the box). The
+        // first tap on a text body now selects (below) — the second
+        // tap on the same node escalates to inline editing.
         if let hit, hit == selectedID,
            document.nodes[hit]?.type == .text,
            let textView = renderViews[hit] as? TextNodeView,
@@ -1515,15 +1593,42 @@ final class CanvasEditorView: UIView {
             return
         }
 
-        // Anywhere else — empty canvas, a node body that isn't the
-        // currently-selected text node, or a nested element — closes
-        // the inspector but keeps edit mode armed. Selection in edit
-        // mode comes from chips, never from body taps, so there is no
-        // "select on tap" branch here.
+        // Body-tap selection: in edit mode, tapping a node's body
+        // opens the inspector for it — same effect as tapping the
+        // floating chip above. The hero wrapper itself and the
+        // fixed-divider root stay non-selectable because neither
+        // surface a chip either; the hero's children (avatar / name /
+        // meta / bio) are reachable because hitTestNode descends to
+        // the deepest hit, so a tap inside the hero lands on whichever
+        // child the finger covered.
+        if let hit, document.nodes[hit] != nil {
+            let role = document.nodes[hit]?.role
+            let bodyTapDisabled = role == .profileHero || role == .fixedDivider
+            if !bodyTapDisabled {
+                endActiveTextEditingIfNeeded(except: hit)
+                selectedID = hit
+                onSelectionChanged?(hit)
+                updateEditingPageForCurrentState()
+                ensureSelectedNodeVisible(animated: true)
+                DispatchQueue.main.async { [weak self] in
+                    self?.ensureSelectedNodeVisible(animated: true)
+                }
+                return
+            }
+        }
+
+        // Empty canvas in edit mode follows a two-step exit pattern:
+        //   1. Tap with an open inspector → close the inspector
+        //      (clear `selectedID`), stay in edit mode so the user
+        //      can pick another element.
+        //   2. Tap again with nothing selected → request exit edit
+        //      mode so the canvas drops back to the live preview.
         if selectedID != nil {
             endActiveTextEditingIfNeeded(except: nil)
             selectedID = nil
             onSelectionChanged?(nil)
+        } else {
+            onRequestExitEditMode?()
         }
     }
 
@@ -1786,17 +1891,23 @@ final class CanvasEditorView: UIView {
             return
         }
 
-        // In structured-profile mode every nested node — image, text,
-        // icon, link, anything inside a Section Card, and the hero's
-        // own children — is position-locked. Position edits go
-        // through the Layout tab of the inspector, not the canvas.
-        // Legacy / freeform documents (no structured hero) keep the
-        // original freeform drag so older drafts don't regress.
-        if StructuredProfileLayout.isStructured(document) {
+        // System-owned subtree (hero + its children, the fixed
+        // divider) is laid out by `StructuredProfileLayout.normalize`
+        // — letting the user drag those nodes by hand would just be
+        // overwritten on the next commit, so they stay non-draggable.
+        if StructuredProfileLayout.isInSystemProfileSubtree(id, in: document) {
             return
         }
 
-        guard StructuredProfileLayout.canMove(id, in: document) else { return }
+        // User-added nested elements drag freely in edit mode. We
+        // bypass the canMove gate (which returns `.locked` for
+        // image/link/gallery/divider/carousel — that lock is about
+        // the corner *resize* handles, not movement). In live mode
+        // the original strict gate stays so a published preview
+        // doesn't accidentally let users drag locked types around.
+        if !editMode {
+            guard StructuredProfileLayout.canMove(id, in: document) else { return }
+        }
 
         switch gesture.state {
         case .began:
@@ -2740,9 +2851,20 @@ extension CanvasEditorView: UIGestureRecognizerDelegate, UIScrollViewDelegate {
         // the node is the active selection.
         let isTopLevel = document.parent(of: viewID) == nil
         let isSystemOwned = document.nodes[viewID]?.role?.isSystemOwned == true
+        let inSystemSubtree = StructuredProfileLayout.isInSystemProfileSubtree(viewID, in: document)
         let isTopLevelReorder = isTopLevel && !isSystemOwned && editMode
+        // User-added elements nested inside a Section Card or a
+        // user-created container drag freely in edit mode. The
+        // canMove gate (which returns `.locked` for the
+        // content-bearing leaf primitives) is about the resize
+        // *handles*, not move — without this bypass an image
+        // dropped into a section couldn't be repositioned via
+        // drag, only via the Layout tab. The system-owned hero
+        // subtree stays locked because its layout is owned by the
+        // structured normalizer.
+        let isNestedFreeformInEdit = !isTopLevel && !inSystemSubtree && editMode
 
-        if !isTopLevelReorder {
+        if !isTopLevelReorder && !isNestedFreeformInEdit {
             guard StructuredProfileLayout.canMove(viewID, in: document) else {
                 return false
             }

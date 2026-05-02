@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Explore feed: a single-column list of the latest published
-/// profiles. Aesthetic continues the editorial-scrapbook direction
+/// Explore feed: a single-column list of published profiles with
+/// Latest/Hottest modes. Aesthetic continues the editorial-scrapbook direction
 /// the rest of the editor uses — cream paper backdrop, ink-stroked
 /// cream cards per profile, mono small-caps timestamps, italic-
 /// serif bios, ❦ fleurons between paginated batches.
@@ -22,6 +22,7 @@ struct PublishedProfilesListView: View {
     @State private var profiles: [PublishedProfileSummary] = []
     @State private var status: Status = .loading
     @State private var query: String = ""
+    @State private var feedMode: FeedMode = .latest
     @State private var canLoadMore: Bool = true
     @State private var isLoadingMore: Bool = false
     /// Debounce token for the search field — re-fired on every
@@ -37,10 +38,20 @@ struct PublishedProfilesListView: View {
         case error(String)
     }
 
+    private enum FeedMode: String, CaseIterable, Identifiable {
+        case latest = "Latest"
+        case hottest = "Hottest"
+
+        var id: String { rawValue }
+    }
+
     var body: some View {
         ZStack {
             Color.cucuPaper.ignoresSafeArea()
-            content
+            VStack(spacing: 0) {
+                modePicker
+                content
+            }
         }
         .navigationTitle("")
         .toolbar {
@@ -65,6 +76,9 @@ struct PublishedProfilesListView: View {
         #endif
         .onChange(of: query) { _, newValue in
             scheduleSearch(rawQuery: newValue)
+        }
+        .onChange(of: feedMode) { _, _ in
+            Task { await initialLoad() }
         }
         .refreshable {
             await initialLoad()
@@ -102,10 +116,7 @@ struct PublishedProfilesListView: View {
         switch status {
         case .loading:    loadingState
         case .loaded:     feedList
-        case .emptyFeed:  emptyState(
-            title: "Nothing published yet",
-            subtitle: "Be the first — publish a draft and it'll show up here."
-        )
+        case .emptyFeed:  emptyState(title: emptyFeedTitle, subtitle: emptyFeedSubtitle)
         case .emptySearch: emptyState(
             title: "No profiles match",
             subtitle: "Try a different name or word."
@@ -172,6 +183,32 @@ struct PublishedProfilesListView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var modePicker: some View {
+        Picker("Feed", selection: $feedMode) {
+            ForEach(FeedMode.allCases) { mode in
+                Text(mode.rawValue).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+    }
+
+    private var emptyFeedTitle: String {
+        switch feedMode {
+        case .latest: return "Nothing published yet"
+        case .hottest: return "No votes yet"
+        }
+    }
+
+    private var emptyFeedSubtitle: String {
+        switch feedMode {
+        case .latest: return "Be the first — publish a draft and it'll show up here."
+        case .hottest: return "Published profiles will appear here once votes arrive."
+        }
+    }
+
     // MARK: - Feed list
 
     private var feedList: some View {
@@ -235,9 +272,16 @@ struct PublishedProfilesListView: View {
         }
         status = .loading
         do {
-            let next = try await PublishedProfileService().fetchLatest()
+            let next: [PublishedProfileSummary]
+            switch feedMode {
+            case .latest:
+                next = try await PublishedProfileService().fetchLatest()
+                canLoadMore = next.count >= PublishedProfileService.listPageSize
+            case .hottest:
+                next = try await PublishedProfileService().fetchHottest()
+                canLoadMore = false
+            }
             profiles = next
-            canLoadMore = next.count >= PublishedProfileService.listPageSize
             isLoadingMore = false
             status = next.isEmpty ? .emptyFeed : .loaded
         } catch let err as PublishedProfileError {
@@ -253,6 +297,7 @@ struct PublishedProfilesListView: View {
     /// more rows are available).
     private func maybeLoadMore(triggeredBy profile: PublishedProfileSummary) {
         guard query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard feedMode == .latest else { return }
         guard canLoadMore, !isLoadingMore else { return }
         guard let last = profiles.last, last.id == profile.id else { return }
         Task { await loadMore() }
@@ -337,6 +382,13 @@ struct ExploreProfileRow: View {
                     .foregroundStyle(Color.cucuInkFaded)
             }
             Spacer(minLength: 0)
+            HStack(spacing: 4) {
+                Image(systemName: "heart.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(voteCountLabel)
+                    .font(.cucuMono(10, weight: .medium))
+            }
+            .foregroundStyle(Color.cucuCherry)
             Image(systemName: "chevron.right")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color.cucuInkFaded)
@@ -421,5 +473,12 @@ struct ExploreProfileRow: View {
         formatter.unitsStyle = .abbreviated
         let relative = formatter.localizedString(for: date, relativeTo: .now)
         return relative.uppercased()
+    }
+
+    private var voteCountLabel: String {
+        if profile.voteCount >= 1_000 {
+            return "\(profile.voteCount / 1_000)K"
+        }
+        return "\(profile.voteCount)"
     }
 }

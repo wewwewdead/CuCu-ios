@@ -40,6 +40,8 @@ enum PublishedProfileError: Error, LocalizedError, Equatable {
 /// (see `Supabase/schema_publish_profiles.sql`); the explicit `eq` here
 /// makes the contract obvious at the call site too.
 nonisolated struct PublishedProfileService {
+    private static let summarySelect = "profile_id,username,thumbnail_url,published_at,updated_at,vote_count,votes_last_24h,votes_last_7d,hot_score"
+
     /// Username is normalized to lowercase before the query so the
     /// match is case-insensitive (Postgres comparison is exact, but the
     /// publish-side `UsernameValidator` lowercases on write).
@@ -73,10 +75,10 @@ nonisolated struct PublishedProfileService {
             if text.contains("pgrst116") || text.contains("0 rows") || text.contains("no rows") {
                 throw PublishedProfileError.notFound
             }
-            if (error as NSError).domain == NSURLErrorDomain {
+            if SupabaseErrorMapper.isNetwork(error) {
                 throw PublishedProfileError.network
             }
-            throw PublishedProfileError.unknown(error.localizedDescription)
+            throw PublishedProfileError.unknown(SupabaseErrorMapper.detail(error))
         }
         #else
         throw PublishedProfileError.notConfigured(reason: .packageNotAdded)
@@ -92,11 +94,10 @@ nonisolated struct PublishedProfileService {
     /// boundary (Swift 6 strict-concurrency-friendly).
     nonisolated static let listPageSize: Int = 20
 
-    /// Fetch the latest published profiles, ordered by `published_at`
-    /// (falling back to `updated_at` for older rows that predate the
-    /// `published_at` column). The query selects only the summary
-    /// columns — `design_json` is intentionally omitted so 20 rows of
-    /// the feed stay light.
+    /// Fetch the latest published profiles, ordered by `published_at`.
+    /// The query reads the `published_profile_stats` view so card vote
+    /// counts travel with the same lightweight summary rows. `design_json`
+    /// is intentionally omitted so 20 rows of the feed stay light.
     ///
     /// Pagination is **cursor-based** via the `before` parameter: pass
     /// the `sortDate` of the last row from the previous page and the
@@ -104,10 +105,9 @@ nonisolated struct PublishedProfileService {
     /// timestamp. Cursor pagination beats offset-based here because
     /// new publishes inserted at the top can't shift the page window.
     ///
-    /// RLS: only `is_published = true` rows are returned, both via
-    /// the `eq` here and the `Published profiles are public-readable`
-    /// policy on the `profiles` table — anonymous viewers see the
-    /// same set the policy permits.
+    /// RLS: the SQL view filters to `profiles.is_published = true`, and
+    /// its `security_invoker` setting keeps the underlying table policies
+    /// active for anonymous viewers.
     func fetchLatest(limit: Int = listPageSize,
                      before cursor: Date? = nil) async throws -> [PublishedProfileSummary] {
         #if canImport(Supabase)
@@ -120,9 +120,8 @@ nonisolated struct PublishedProfileService {
             // `.lt`, so a `var` of one nominal type doesn't work —
             // each branch executes its own end-to-end pipeline.
             let baseSelect = client
-                .from("profiles")
-                .select("id,username,thumbnail_url,published_at,updated_at")
-                .eq("is_published", value: true)
+                .from("published_profile_stats")
+                .select(Self.summarySelect)
 
             let rows: [PublishedProfileSummaryRow]
             if let cursor {
@@ -146,10 +145,10 @@ nonisolated struct PublishedProfileService {
         } catch let decodeErr as DecodingError {
             throw PublishedProfileError.decode(String(describing: decodeErr))
         } catch {
-            if (error as NSError).domain == NSURLErrorDomain {
+            if SupabaseErrorMapper.isNetwork(error) {
                 throw PublishedProfileError.network
             }
-            throw PublishedProfileError.unknown(error.localizedDescription)
+            throw PublishedProfileError.unknown(SupabaseErrorMapper.detail(error))
         }
         #else
         throw PublishedProfileError.notConfigured(reason: .packageNotAdded)
@@ -186,9 +185,8 @@ nonisolated struct PublishedProfileService {
 
         do {
             let rows: [PublishedProfileSummaryRow] = try await client
-                .from("profiles")
-                .select("id,username,thumbnail_url,published_at,updated_at")
-                .eq("is_published", value: true)
+                .from("published_profile_stats")
+                .select(Self.summarySelect)
                 .ilike("username", pattern: pattern)
                 .order("published_at", ascending: false)
                 .limit(limit)
@@ -198,10 +196,41 @@ nonisolated struct PublishedProfileService {
         } catch let decodeErr as DecodingError {
             throw PublishedProfileError.decode(String(describing: decodeErr))
         } catch {
-            if (error as NSError).domain == NSURLErrorDomain {
+            if SupabaseErrorMapper.isNetwork(error) {
                 throw PublishedProfileError.network
             }
-            throw PublishedProfileError.unknown(error.localizedDescription)
+            throw PublishedProfileError.unknown(SupabaseErrorMapper.detail(error))
+        }
+        #else
+        throw PublishedProfileError.notConfigured(reason: .packageNotAdded)
+        #endif
+    }
+
+    /// Fetch the published profile feed ranked by the SQL view's MVP hot
+    /// score: votes in the last 24h carry the most weight, then votes in the
+    /// last 7d, then total votes.
+    func fetchHottest(limit: Int = listPageSize) async throws -> [PublishedProfileSummary] {
+        #if canImport(Supabase)
+        guard let client = SupabaseClientProvider.shared else {
+            throw PublishedProfileError.notConfigured(reason: .missingCredentials)
+        }
+        do {
+            let rows: [PublishedProfileSummaryRow] = try await client
+                .from("published_profile_stats")
+                .select(Self.summarySelect)
+                .order("hot_score", ascending: false)
+                .order("published_at", ascending: false)
+                .limit(limit)
+                .execute()
+                .value
+            return rows.map { $0.toModel() }
+        } catch let decodeErr as DecodingError {
+            throw PublishedProfileError.decode(String(describing: decodeErr))
+        } catch {
+            if SupabaseErrorMapper.isNetwork(error) {
+                throw PublishedProfileError.network
+            }
+            throw PublishedProfileError.unknown(SupabaseErrorMapper.detail(error))
         }
         #else
         throw PublishedProfileError.notConfigured(reason: .packageNotAdded)

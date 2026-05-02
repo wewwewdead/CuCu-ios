@@ -1,6 +1,17 @@
 import PhotosUI
 import SwiftUI
 
+/// Published by the bottom panel so the host can reserve canvas
+/// scroll-area below the selected node. Reduces by `max` so the
+/// largest reported height wins when multiple sources publish (e.g.,
+/// the panel re-emits while its content reflows).
+struct EditorPanelHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 /// Bottom, keyboard-aware editor for structured profile nodes. It covers the
 /// common mobile edits inline so users do not have to open the full inspector
 /// for every text/style/layout change.
@@ -42,6 +53,10 @@ struct NodeEditingPanelView: View {
     /// a gallery uses this to grow the grid in place via PhotosPicker.
     /// Wired to `CanvasMutator.appendGalleryImages`.
     var onAppendGalleryPhotos: (UUID, [Data]) -> Bool
+    /// Optional close affordance — wired by the host to clear the
+    /// selection (which collapses the panel). Used by the redesigned
+    /// text inspector's `✕` button.
+    var onClose: () -> Void = {}
 
     @State private var selectedTab: Tab = .text
     @State private var containerBackgroundSelection: PhotosPickerItem?
@@ -59,46 +74,114 @@ struct NodeEditingPanelView: View {
 
     var body: some View {
         if let node = document.nodes[selectedID] {
-            VStack(spacing: 10) {
-                header(for: node)
-                Picker("", selection: $selectedTab) {
-                    ForEach(Tab.allCases) { tab in
-                        Text(label(for: tab, on: node)).tag(tab)
+            // Text nodes (including the hero's name/meta/bio children
+            // and any user-added text) get the redesigned tabbed
+            // inspector. Everything else stays on the existing
+            // segmented-picker + horizontal-card layout — those types
+            // have their own type-specific cards (image replace,
+            // gallery append, etc.) that the text redesign never
+            // covered.
+            if node.type == .text {
+                TextInspectorV2(
+                    document: $document,
+                    textID: selectedID,
+                    onDuplicate: onDuplicate,
+                    onDelete: onDelete,
+                    onClose: onClose
+                )
+                .padding(.horizontal, 10)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .background(panelHeightReporter)
+                .onDisappear {
+                    commitTask?.cancel()
+                    onCommit(document)
+                }
+            } else {
+                ElementInspectorChrome(
+                    typeLabel: ElementInspectorChrome<EmptyView>.typeLabel(for: node),
+                    idTag: ElementInspectorChrome<EmptyView>.idTag(for: node.id),
+                    tabs: chromeTabLabels(for: node),
+                    selectedIndex: chromeTabIndex,
+                    onDuplicate: onDuplicate,
+                    canDuplicate: StructuredProfileLayout.canDuplicate(selectedID, in: document),
+                    onDelete: onDelete,
+                    canDelete: StructuredProfileLayout.canDelete(selectedID, in: document),
+                    onClose: onClose
+                ) {
+                    VStack(spacing: 10) {
+                        tabContent(for: node)
+                            .padding(.top, 4)
+
+                        if let pickerError {
+                            Text(pickerError)
+                                .font(.cucuSans(11, weight: .medium))
+                                .foregroundStyle(Color.cucuCherry)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
                 }
-                .pickerStyle(.segmented)
-
-                tabContent(for: node)
-
-                if let pickerError {
-                    Text(pickerError)
-                        .font(.cucuSans(11, weight: .medium))
-                        .foregroundStyle(Color.cucuCherry)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .background(panelHeightReporter)
+                .onChange(of: containerBackgroundSelection) { _, item in
+                    loadContainerBackground(item)
+                }
+                .onChange(of: imageReplaceSelection) { _, item in
+                    loadImageReplacement(item)
+                }
+                .onChange(of: galleryAppendSelection) { _, items in
+                    loadGalleryAppend(items)
+                }
+                .onDisappear {
+                    commitTask?.cancel()
+                    onCommit(document)
                 }
             }
-            .padding(12)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 1)
+        }
+    }
+
+    /// Tab labels for the new dark-capsule TabBar. The first label
+    /// adapts to the node type so the leftmost segment reads as the
+    /// most-natural action ("Photos" for galleries, "Items" for
+    /// carousels, etc.). Style and Layout are universal.
+    private func chromeTabLabels(for node: CanvasNode) -> [String] {
+        [label(for: .text, on: node), "Style", "Layout"]
+    }
+
+    /// Bridges the legacy `Tab` enum to the chrome's index-based
+    /// `selectedIndex` binding so the existing `tabContent(for:)`
+    /// switch keeps working unchanged.
+    private var chromeTabIndex: Binding<Int> {
+        Binding(
+            get: {
+                switch selectedTab {
+                case .text:   return 0
+                case .style:  return 1
+                case .layout: return 2
+                }
+            },
+            set: { newValue in
+                switch newValue {
+                case 0:  selectedTab = .text
+                case 1:  selectedTab = .style
+                default: selectedTab = .layout
+                }
+            }
+        )
+    }
+
+    /// Hidden GeometryReader that publishes the panel's measured
+    /// height to the host via `EditorPanelHeightKey`. Drawn behind
+    /// every panel surface so any reflow (TabBar swap, HSV picker
+    /// open/close, format toolbar drawer) republishes immediately.
+    private var panelHeightReporter: some View {
+        GeometryReader { geo in
+            Color.clear.preference(
+                key: EditorPanelHeightKey.self,
+                value: geo.size.height
             )
-            .shadow(color: Color.cucuInk.opacity(0.18), radius: 18, x: 0, y: 8)
-            .padding(.horizontal, 10)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-            .onChange(of: containerBackgroundSelection) { _, item in
-                loadContainerBackground(item)
-            }
-            .onChange(of: imageReplaceSelection) { _, item in
-                loadImageReplacement(item)
-            }
-            .onChange(of: galleryAppendSelection) { _, items in
-                loadGalleryAppend(items)
-            }
-            .onDisappear {
-                commitTask?.cancel()
-                onCommit(document)
-            }
         }
     }
 

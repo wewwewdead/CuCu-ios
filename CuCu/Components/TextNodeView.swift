@@ -98,7 +98,24 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
         let size = CGFloat(node.style.fontSize ?? 17)
         let weight = (node.style.fontWeight ?? .regular).uiFontWeight
         let family = node.style.fontFamily ?? .system
-        let font = family.uiFont(size: size, weight: weight)
+        let baseFont = family.uiFont(size: size, weight: weight)
+        // Italic toggle: prefer the family's real italic face (looks
+        // hand-drawn, kerning baked in). Fall back to obliqueness so
+        // pixel-retro / bungee-style families that ship without an
+        // italic face still slant — the inspector toggle never reads
+        // as a no-op.
+        let italicEnabled = node.style.textItalic == true
+        let font: UIFont
+        var fallbackObliqueness: CGFloat = 0
+        if italicEnabled,
+           let italicDescriptor = baseFont.fontDescriptor.withSymbolicTraits(
+               baseFont.fontDescriptor.symbolicTraits.union(.traitItalic)
+           ) {
+            font = UIFont(descriptor: italicDescriptor, size: size)
+        } else {
+            font = baseFont
+            if italicEnabled { fallbackObliqueness = 0.18 }
+        }
         let textColor: UIColor = node.style.textColorHex.map(uiColor(hex:)) ?? .label
 
         let alignment: NSTextAlignment
@@ -119,6 +136,16 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
         ]
         if node.style.textUnderlined == true {
             attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        }
+        if node.style.textStrikethrough == true {
+            attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            attrs[.strikethroughColor] = textColor
+        }
+        if let kern = node.style.letterSpacing, kern != 0 {
+            attrs[.kern] = CGFloat(kern)
+        }
+        if fallbackObliqueness != 0 {
+            attrs[.obliqueness] = fallbackObliqueness
         }
 
         // 2. Apply the attributed text. Source-of-truth for the string

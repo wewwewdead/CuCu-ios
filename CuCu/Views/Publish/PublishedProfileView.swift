@@ -25,6 +25,7 @@ struct PublishedProfileView: View {
 
     @Environment(\.openURL) private var openURL
     @Environment(\.cucuWidthClass) private var widthClass
+    @Environment(AuthViewModel.self) private var auth
     @State private var state: ViewState = .loading
     /// A binding sink the canvas container needs but the viewer doesn't
     /// use — selection has no meaning in view-only mode.
@@ -44,6 +45,9 @@ struct PublishedProfileView: View {
     @State private var fullGalleryState: FullGalleryState?
     @State private var loadedPageCount: Int = 1
     @State private var visiblePageIndex: Int = 0
+    @State private var voteState: ProfileVoteState?
+    @State private var isVoting = false
+    @State private var voteMessage: String?
 
     private let nextPageLoadThreshold: CGFloat = 520
 
@@ -168,6 +172,11 @@ struct PublishedProfileView: View {
         .animation(.spring(response: 0.46, dampingFraction: 0.78), value: journalContent)
         .animation(.spring(response: 0.46, dampingFraction: 0.78), value: fullGalleryState)
         .navigationTitle("@\(username)")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                voteToolbarButton
+            }
+        }
         #if os(iOS) || os(visionOS)
         .navigationBarTitleDisplayMode(.inline)
         // Hide the nav bar while the lightbox is up so the photo
@@ -180,6 +189,22 @@ struct PublishedProfileView: View {
         #endif
         .task(id: username) {
             await fetch()
+        }
+        .onChange(of: auth.currentUser?.id) { _, _ in
+            if case .loaded(let profile) = state {
+                Task { await loadVoteState(profileId: profile.id) }
+            }
+        }
+        .alert(
+            "Voting",
+            isPresented: Binding(
+                get: { voteMessage != nil },
+                set: { if !$0 { voteMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { voteMessage = nil }
+        } message: {
+            Text(voteMessage ?? "")
         }
     }
 
@@ -259,6 +284,20 @@ struct PublishedProfileView: View {
         // the publish flow. Identity is whatever the author drew on
         // the canvas itself, so it gets the full screen.
         incrementalScrollCanvas(profile: profile)
+    }
+
+    @ViewBuilder
+    private var voteToolbarButton: some View {
+        if case .loaded(let profile) = state {
+            Button {
+                Task { await toggleVote(for: profile) }
+            } label: {
+                Label(voteCountLabel, systemImage: voteState?.hasVoted == true ? "heart.fill" : "heart")
+                    .labelStyle(.titleAndIcon)
+            }
+            .disabled(isVoting)
+            .accessibilityLabel(voteState?.hasVoted == true ? "Remove vote" : "Vote for profile")
+        }
     }
 
     /// The published canvas, rendered as threshold-loaded infinite scroll.
@@ -448,6 +487,7 @@ struct PublishedProfileView: View {
             loadedPageCount = 1
             visiblePageIndex = 0
             state = .loaded(profile)
+            await loadVoteState(profileId: profile.id)
         } catch let err as PublishedProfileError {
             switch err {
             case .notFound: state = .notFound
@@ -456,6 +496,66 @@ struct PublishedProfileView: View {
         } catch {
             state = .error(error.localizedDescription)
         }
+    }
+
+    private var voteCountLabel: String {
+        let count = voteState?.voteCount ?? 0
+        if count >= 1_000 {
+            return "\(count / 1_000)k"
+        }
+        return "\(count)"
+    }
+
+    private func loadVoteState(profileId: String) async {
+        do {
+            voteState = try await ProfileVoteService().fetchVoteState(
+                profileId: profileId,
+                user: auth.currentUser
+            )
+        } catch {
+            // Keep the viewer usable even if voting stats are temporarily
+            // unavailable. Tapping the button will surface a concrete error.
+            voteState = ProfileVoteState(profileId: profileId, voteCount: 0, hasVoted: false)
+        }
+    }
+
+    private func toggleVote(for profile: PublishedProfile) async {
+        guard let user = auth.currentUser else {
+            voteMessage = "Sign in from the Publish sheet to vote on profiles."
+            return
+        }
+
+        let previous = voteState ?? ProfileVoteState(
+            profileId: profile.id,
+            voteCount: 0,
+            hasVoted: false
+        )
+        let next = ProfileVoteState(
+            profileId: profile.id,
+            voteCount: max(0, previous.voteCount + (previous.hasVoted ? -1 : 1)),
+            hasVoted: !previous.hasVoted
+        )
+
+        isVoting = true
+        voteState = next
+        do {
+            if previous.hasVoted {
+                try await ProfileVoteService().unvote(profileId: profile.id, user: user)
+            } else {
+                try await ProfileVoteService().vote(profileId: profile.id, user: user)
+            }
+            voteState = try await ProfileVoteService().fetchVoteState(
+                profileId: profile.id,
+                user: user
+            )
+        } catch let err as ProfileVoteError {
+            voteState = previous
+            voteMessage = err.errorDescription ?? "Couldn't update your vote."
+        } catch {
+            voteState = previous
+            voteMessage = error.localizedDescription
+        }
+        isVoting = false
     }
 }
 

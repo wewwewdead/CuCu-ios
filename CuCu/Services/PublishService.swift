@@ -41,7 +41,7 @@ enum PublishError: Error, LocalizedError, Equatable {
         case .uploadFailed(let detail):
             return "Image upload failed: \(detail)"
         case .storagePolicyDenied:
-            return "Image upload was blocked by your Supabase storage policy. Check that the `profile-assets` bucket exists and that the storage policies in `Supabase/schema_phase4.sql` (lines 175-208) have been applied. If the bucket and policies are in place, sign out and sign back in to refresh your session."
+            return "Image upload was blocked by your Supabase storage policy. Check that the `profile-assets` bucket exists and that the storage policies in `Supabase/schema_publish_profiles.sql` have been applied. If the bucket and policies are in place, sign out and sign back in to refresh your session."
         case .database(let detail):
             return "Couldn't save your profile: \(detail)"
         case .network:
@@ -140,9 +140,11 @@ nonisolated struct PublishService {
         let canonicalUserId = user.id.lowercased()
         let canonicalProfileId = profileId.lowercased()
 
+        let uploads = collectUploads(from: document)
+        try validateLocalAssets(uploads)
+
         // 3. Walk asset surfaces, deduplicate, upload.
         await onPhaseChange?(.uploadingAssets)
-        let uploads = collectUploads(from: document)
         var pathMap: [String: String] = [:]
         var assetRows: [PublishedAssetRow] = []
 
@@ -185,6 +187,7 @@ nonisolated struct PublishService {
             user_id: canonicalUserId,
             username: username,
             design_json: publishedDocument,
+            thumbnail_url: thumbnailURL(from: assetRows),
             is_published: true,
             published_at: ISO8601DateFormatter().string(from: .now)
         )
@@ -280,6 +283,29 @@ nonisolated struct PublishService {
         return uploads
     }
 
+    /// Check every local asset before the first upload starts. This prevents
+    /// a half-uploaded publish when the third image in a gallery is missing.
+    private func validateLocalAssets(_ uploads: [PendingUpload]) throws {
+        for upload in uploads {
+            guard let url = LocalCanvasAssetStore.resolveURL(upload.localPath),
+                  FileManager.default.isReadableFile(atPath: url.path) else {
+                throw PublishError.missingAsset(localPath: upload.localPath)
+            }
+        }
+    }
+
+    private func thumbnailURL(from rows: [PublishedAssetRow]) -> String? {
+        let preferredTypes = ["image_node", "gallery_image", "page_background", "container_background"]
+        for assetType in preferredTypes {
+            if let row = rows.first(where: { $0.asset_type == assetType }),
+               let publicURL = row.public_url,
+               !publicURL.isEmpty {
+                return publicURL
+            }
+        }
+        return nil
+    }
+
     #if canImport(Supabase)
     /// Reads bytes for `relativeLocalPath` (resolved through
     /// `LocalCanvasAssetStore`), uploads to `storagePath` in the
@@ -312,15 +338,13 @@ nonisolated struct PublishService {
             // Surface these as a typed `.storagePolicyDenied` so the UI can
             // explain how to fix the bucket setup, instead of dumping the
             // raw Postgres message at the user.
-            let detail = error.localizedDescription.lowercased()
-            if detail.contains("row-level security") || detail.contains("violates")
-                && (detail.contains("policy") || detail.contains("rls")) {
+            if SupabaseErrorMapper.isStoragePolicyDenied(error) {
                 throw PublishError.storagePolicyDenied
             }
-            if (error as NSError).domain == NSURLErrorDomain {
+            if SupabaseErrorMapper.isNetwork(error) {
                 throw PublishError.network
             }
-            throw PublishError.uploadFailed(error.localizedDescription)
+            throw PublishError.uploadFailed(SupabaseErrorMapper.detail(error))
         }
         do {
             let url = try client.storage
@@ -328,7 +352,7 @@ nonisolated struct PublishService {
                 .getPublicURL(path: storagePath)
             return url.absoluteString
         } catch {
-            throw PublishError.uploadFailed(error.localizedDescription)
+            throw PublishError.uploadFailed(SupabaseErrorMapper.detail(error))
         }
     }
 
@@ -337,19 +361,13 @@ nonisolated struct PublishService {
         // on `String(describing:)` is brittle across SDK versions. SQLSTATE
         // 23505 is `unique_violation`; on the `profiles` upsert it's
         // overwhelmingly the username unique constraint.
-        if let pgErr = error as? PostgrestError, pgErr.code == "23505" {
+        if SupabaseErrorMapper.isUsernameUniqueViolation(error) {
             return .usernameTaken
         }
-        let text = String(describing: error).lowercased()
-        if text.contains("23505") || text.contains("duplicate key") || text.contains("unique") {
-            if text.contains("username") {
-                return .usernameTaken
-            }
-        }
-        if (error as NSError).domain == NSURLErrorDomain {
+        if SupabaseErrorMapper.isNetwork(error) {
             return .network
         }
-        return .database(error.localizedDescription)
+        return .database(SupabaseErrorMapper.detail(error))
     }
 
     private func readFileData(at url: URL) async throws -> Data {
@@ -371,6 +389,7 @@ private nonisolated struct PublishedProfileRowEncodable: Encodable {
     let user_id: String
     let username: String
     let design_json: ProfileDocument
+    let thumbnail_url: String?
     let is_published: Bool
     let published_at: String
 }
