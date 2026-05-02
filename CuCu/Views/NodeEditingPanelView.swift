@@ -26,6 +26,7 @@ struct NodeEditingPanelView: View {
 
     @Binding var document: ProfileDocument
     let selectedID: UUID
+    var selectedTextRange: NSRange?
 
     var onCommit: (ProfileDocument) -> Void
     var onAddElement: () -> Void
@@ -85,6 +86,7 @@ struct NodeEditingPanelView: View {
                 TextInspectorV2(
                     document: $document,
                     textID: selectedID,
+                    selectedTextRange: selectedTextRange,
                     onDuplicate: onDuplicate,
                     onDelete: onDelete,
                     onClose: onClose
@@ -1072,7 +1074,9 @@ struct NodeEditingPanelView: View {
             get: { document.nodes[id]?.content.text ?? "" },
             set: { newValue in
                 guard var node = document.nodes[id] else { return }
+                let oldText = node.content.text ?? ""
                 node.content.text = newValue
+                reconcileTextStyleSpans(afterTextChangeFrom: oldText, to: newValue, in: &node)
                 document.nodes[id] = node
                 scheduleCommit()
             }

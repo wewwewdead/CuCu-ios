@@ -76,6 +76,15 @@ struct CanvasEditorContainer: UIViewRepresentable {
     /// while editing so the panel doesn't cover the lifted text node.
     var onInlineTextEditingChanged: ((Bool) -> Void)? = nil
 
+    /// Mirrors in-flight text edits into SwiftUI state without asking
+    /// the host to persist. This keeps toolbar range math aligned with
+    /// the live `UITextView` string.
+    var onLiveTextChanged: ((UUID, String) -> Void)? = nil
+
+    /// Reports the selected glyph range for the active text node.
+    /// `nil` means the text selection is collapsed or no longer relevant.
+    var onTextSelectionRangeChanged: ((UUID, NSRange?) -> Void)? = nil
+
     /// Viewer-only page scope. nil renders the full editable page stack.
     var viewerPageIndex: Int? = nil
 
@@ -120,6 +129,12 @@ struct CanvasEditorContainer: UIViewRepresentable {
         view.onInlineTextEditingChanged = { editing in
             onInlineTextEditingChanged?(editing)
         }
+        view.onLiveTextChanged = { id, text in
+            onLiveTextChanged?(id, text)
+        }
+        view.onTextSelectionRangeChanged = { id, range in
+            onTextSelectionRangeChanged?(id, range)
+        }
         view.setEditMode(editMode)
         view.setBottomChromeHeight(bottomChromeHeight)
         view.apply(document: document, selectedID: selectedID)
@@ -160,6 +175,12 @@ struct CanvasEditorContainer: UIViewRepresentable {
         }
         view.onInlineTextEditingChanged = { editing in
             onInlineTextEditingChanged?(editing)
+        }
+        view.onLiveTextChanged = { id, text in
+            onLiveTextChanged?(id, text)
+        }
+        view.onTextSelectionRangeChanged = { id, range in
+            onTextSelectionRangeChanged?(id, range)
         }
         view.setEditMode(editMode)
         view.setBottomChromeHeight(bottomChromeHeight)

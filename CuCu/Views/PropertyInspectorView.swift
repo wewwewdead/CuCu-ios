@@ -23,6 +23,7 @@ import UIKit
 struct PropertyInspectorView: View {
     @Binding var document: ProfileDocument
     let selectedID: UUID
+    var selectedTextRange: NSRange?
     var onCommit: (ProfileDocument) -> Void
     var onReplaceImage: (UUID, Data) -> Bool
     var onSetContainerBackground: (UUID, Data) -> Bool
@@ -370,6 +371,75 @@ struct PropertyInspectorView: View {
                     .foregroundStyle(Color.cucuInkSoft)
                     .lineLimit(1)
                 Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private func inlineTextStyleColorCard(title: String,
+                                          hex: Binding<String>,
+                                          noSelection: Bool,
+                                          supportsAlpha: Bool = false,
+                                          onClear: @escaping () -> Void) -> some View {
+        cardShell(title: title, width: 220) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 10) {
+                    ColorPicker("", selection: hex.asColor(), supportsOpacity: supportsAlpha)
+                        .labelsHidden()
+                        .frame(width: 32, height: 32)
+                        .onChange(of: hex.wrappedValue) { _, _ in onCommit(document) }
+                    Text(hex.wrappedValue.uppercased())
+                        .font(.cucuMono(11, weight: .medium))
+                        .foregroundStyle(Color.cucuInkSoft)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button {
+                        onClear()
+                        onCommit(document)
+                    } label: {
+                        Image(systemName: "eraser")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.cucuInkSoft)
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear \(title)")
+                }
+                if noSelection {
+                    Text("No text selected — applies to all text")
+                        .font(.cucuSans(9, weight: .medium))
+                        .foregroundStyle(Color.cucuInkFaded)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.82)
+                }
+            }
+        }
+    }
+
+    private func clearInlineStyleCard(noSelection: Bool,
+                                      onClear: @escaping () -> Void) -> some View {
+        cardShell(title: "Clear Style", width: 170) {
+            VStack(alignment: .leading, spacing: 4) {
+                Button {
+                    onClear()
+                    onCommit(document)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "eraser")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text("Clear Style")
+                            .font(.cucuSerif(14, weight: .semibold))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(Color.cucuInk)
+                }
+                .buttonStyle(.plain)
+                if noSelection {
+                    Text("No text selected — clears all inline styles")
+                        .font(.cucuSans(9, weight: .medium))
+                        .foregroundStyle(Color.cucuInkFaded)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.82)
+                }
             }
         }
     }
@@ -767,9 +837,22 @@ struct PropertyInspectorView: View {
             step: 0.5,
             valueLabel: String(format: "%.1f", bindingLineSpacing(node.id).wrappedValue)
         )
-        colorCard(
-            title: "Text Color",
-            hex: bindingHex(node.id, key: \.style.textColorHex, defaultHex: "#1C1C1E")
+        inlineTextStyleColorCard(
+            title: "Selected Color",
+            hex: bindingSelectedTextColor(node.id, defaultHex: "#1C1C1E"),
+            noSelection: activeSelectedTextRange(for: node) == nil,
+            onClear: { clearSelectedTextColor(node.id) }
+        )
+        inlineTextStyleColorCard(
+            title: "Highlight",
+            hex: bindingTextHighlight(node.id, defaultHex: "#DDF1D5"),
+            noSelection: activeSelectedTextRange(for: node) == nil,
+            supportsAlpha: true,
+            onClear: { clearSelectedTextHighlight(node.id) }
+        )
+        clearInlineStyleCard(
+            noSelection: activeSelectedTextRange(for: node) == nil,
+            onClear: { clearSelectedInlineStyles(node.id) }
         )
         segmentedCard(
             title: "Align",
@@ -1482,10 +1565,88 @@ struct PropertyInspectorView: View {
             get: { document.nodes[id]?.content.text ?? "" },
             set: { newValue in
                 guard var node = document.nodes[id] else { return }
+                let oldText = node.content.text ?? ""
                 node.content.text = newValue
+                reconcileTextStyleSpans(afterTextChangeFrom: oldText, to: newValue, in: &node)
                 document.nodes[id] = node
             }
         )
+    }
+
+    private func bindingSelectedTextColor(_ id: UUID, defaultHex: String) -> Binding<String> {
+        Binding(
+            get: {
+                guard let node = document.nodes[id] else { return defaultHex }
+                if let range = activeSelectedTextRange(for: node),
+                   let inline = inlineTextColorHex(in: node, range: range) {
+                    return inline
+                }
+                return node.style.textColorHex ?? defaultHex
+            },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                if let range = activeSelectedTextRange(for: node) {
+                    applyTextColor(hex: newValue, range: range, to: &node)
+                } else {
+                    node.style.textColorHex = newValue
+                    node.style.textColorAuto = false
+                    let range = normalizedRange(selection: nil, text: node.content.text ?? "")
+                    clearTextColor(range: range, from: &node)
+                }
+                document.nodes[id] = node
+            }
+        )
+    }
+
+    private func bindingTextHighlight(_ id: UUID, defaultHex: String) -> Binding<String> {
+        Binding(
+            get: {
+                guard let node = document.nodes[id] else { return defaultHex }
+                let range = normalizedRange(selection: activeSelectedTextRange(for: node),
+                                            text: node.content.text ?? "")
+                return inlineHighlightHex(in: node, range: range) ?? defaultHex
+            },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                let range = normalizedRange(selection: activeSelectedTextRange(for: node),
+                                            text: node.content.text ?? "")
+                applyHighlight(hex: newValue, range: range, to: &node)
+                document.nodes[id] = node
+            }
+        )
+    }
+
+    private func clearSelectedTextColor(_ id: UUID) {
+        guard var node = document.nodes[id] else { return }
+        let range = normalizedRange(selection: activeSelectedTextRange(for: node),
+                                    text: node.content.text ?? "")
+        clearTextColor(range: range, from: &node)
+        document.nodes[id] = node
+    }
+
+    private func clearSelectedTextHighlight(_ id: UUID) {
+        guard var node = document.nodes[id] else { return }
+        let range = normalizedRange(selection: activeSelectedTextRange(for: node),
+                                    text: node.content.text ?? "")
+        clearHighlight(range: range, from: &node)
+        document.nodes[id] = node
+    }
+
+    private func clearSelectedInlineStyles(_ id: UUID) {
+        guard var node = document.nodes[id] else { return }
+        clearInlineStyles(range: activeSelectedTextRange(for: node), from: &node)
+        document.nodes[id] = node
+    }
+
+    private func activeSelectedTextRange(for node: CanvasNode) -> NSRange? {
+        guard node.id == selectedID,
+              node.type == .text,
+              let selectedTextRange,
+              selectedTextRange.length > 0 else {
+            return nil
+        }
+        let range = normalizedRange(selection: selectedTextRange, text: node.content.text ?? "")
+        return range.length > 0 ? range : nil
     }
 
     private func bindingName(_ id: UUID) -> Binding<String> {

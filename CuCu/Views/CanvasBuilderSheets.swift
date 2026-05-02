@@ -11,6 +11,7 @@ import SwiftUI
 struct CanvasBuilderSheetsModifier: ViewModifier {
     @Binding var document: ProfileDocument
     @Binding var selectedID: UUID?
+    let selectedTextRangeByNodeID: [UUID: NSRange]
     let draft: ProfileDraft
     @Bindable var sheets: CanvasSheetCoordinator
     let mutator: CanvasMutator
@@ -51,6 +52,7 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
                     PropertyInspectorView(
                         document: $document,
                         selectedID: id,
+                        selectedTextRange: selectedTextRangeByNodeID[id],
                         onCommit: { doc in
                             var normalized = doc
                             StructuredProfileLayout.normalize(&normalized)

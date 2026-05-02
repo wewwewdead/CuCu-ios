@@ -240,10 +240,16 @@ struct HSVColorPicker: View {
                         .filter { "0123456789ABCDEF".contains($0) }
                     let trimmed = String(cleaned.prefix(6))
                     if trimmed != hexDraft { hexDraft = trimmed; return }
-                    if trimmed.count == 6 {
-                        hex = "#" + trimmed
-                        syncStateFromHex()
-                    }
+                    guard trimmed.count == 6 else { return }
+                    // Skip write-back when the draft was just synced
+                    // from `hex` itself; otherwise the picker bounces
+                    // its own value out through the binding and any
+                    // host that treats a same-value `set` as an active
+                    // pick (e.g. clearing per-range overrides) misfires.
+                    let next = "#" + trimmed
+                    guard next != hex else { return }
+                    hex = next
+                    syncStateFromHex()
                 }
         }
         .padding(.horizontal, 12)

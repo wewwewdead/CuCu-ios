@@ -316,6 +316,7 @@ final class CanvasEditorView: UIView {
         didSet {
             let wasEditing = oldValue != nil
             let isEditing = editingTextNodeID != nil
+            refreshTextEditingGestureState(previousID: oldValue, currentID: editingTextNodeID)
             if wasEditing != isEditing {
                 onInlineTextEditingChanged?(isEditing)
             }
@@ -343,6 +344,7 @@ final class CanvasEditorView: UIView {
     /// and `scrollRectToVisible` for the selected node respects the
     /// reserved space.
     private var bottomChromeHeight: CGFloat = 0
+    private var lastKeyboardEndFrame: CGRect?
 
     /// Updates the reserved chrome height and, if it changed,
     /// re-applies the scroll inset and walks the selected node back
@@ -360,6 +362,13 @@ final class CanvasEditorView: UIView {
         }
         if changed || selectedID != nil {
             ensureSelectedNodeVisible(animated: changed)
+        }
+        if changed, let frame = lastKeyboardEndFrame {
+            applyKeyboardLift(
+                endFrame: frame,
+                duration: 0.2,
+                options: [.curveEaseInOut, .beginFromCurrentState]
+            )
         }
     }
 
@@ -658,6 +667,18 @@ final class CanvasEditorView: UIView {
     /// sits above the keyboard and covers the lifted text node.
     var onInlineTextEditingChanged: ((Bool) -> Void)?
 
+    /// Mirrors live `UITextView` text to the SwiftUI host without
+    /// implying persistence. Inline style controls live above the
+    /// canvas in SwiftUI, so they need the same string that UIKit is
+    /// currently editing in order for UTF-16 selection offsets to
+    /// land on the intended glyphs.
+    var onLiveTextChanged: ((UUID, String) -> Void)?
+
+    /// Reports a text node's current UTF-16 selection range while the
+    /// `UITextView` is editing. `nil` means no active selected glyph range
+    /// for that node (collapsed cursor, stale node, or deselection).
+    var onTextSelectionRangeChanged: ((UUID, NSRange?) -> Void)?
+
     /// Called when the user taps the "View Gallery" chip on a
     /// `.gallery` node while `isInteractive` is `false`. Receives
     /// the gallery's full URL list so the host can present the
@@ -736,6 +757,11 @@ final class CanvasEditorView: UIView {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.cancelsTouchesInView = false
         contentView.addGestureRecognizer(tap)
+
+        let textLongPress = UILongPressGestureRecognizer(target: self, action: #selector(handleTextNodeLongPress(_:)))
+        textLongPress.minimumPressDuration = 0.35
+        textLongPress.cancelsTouchesInView = false
+        contentView.addGestureRecognizer(textLongPress)
         scrollView.delegate = self
 
         // Selection overlay lives inside `contentView` so it scrolls
@@ -905,7 +931,7 @@ final class CanvasEditorView: UIView {
         // Selection overlay tracks the selected node, regardless of nesting.
         contentView.bringSubviewToFront(overlay)
         CATransaction.commit()
-        if let selectedID, let node = renderViews[selectedID], editMode {
+        if let selectedID, let node = renderViews[selectedID], editMode, editingTextNodeID == nil {
             // Resize handles are an editing affordance — only relevant
             // while edit mode is on. In live mode the bottom panel is
             // the sole selection indicator; the canvas itself stays
@@ -1427,9 +1453,22 @@ final class CanvasEditorView: UIView {
             view.onTextChanged = { [weak self, weak view] newText in
                 guard let self, let view else { return }
                 if var node = self.document.nodes[view.nodeID] {
+                    let oldText = node.content.text ?? ""
                     node.content.text = newText
+                    reconcileTextStyleSpans(afterTextChangeFrom: oldText, to: newText, in: &node)
                     self.document.nodes[view.nodeID] = node
+                    self.onLiveTextChanged?(view.nodeID, newText)
                 }
+            }
+            view.onSelectionRangeChanged = { [weak self, weak view] range in
+                guard let self, let view else { return }
+                guard self.selectedID == view.nodeID,
+                      self.document.nodes[view.nodeID]?.type == .text,
+                      range.length > 0 else {
+                    self.onTextSelectionRangeChanged?(view.nodeID, nil)
+                    return
+                }
+                self.onTextSelectionRangeChanged?(view.nodeID, range)
             }
             view.onEditingEnded = { [weak self, weak view] in
                 guard let self else { return }
@@ -1631,7 +1670,7 @@ final class CanvasEditorView: UIView {
            !textView.isEditing {
             editingTextNodeID = hit
             bringEditingNodeChainToFront(view: textView)
-            textView.beginEditing()
+            textView.beginEditing(at: contentView.convert(point, to: textView))
             return
         }
 
@@ -1790,7 +1829,7 @@ final class CanvasEditorView: UIView {
     }
 
     private func applyOverlayForCurrentSelection() {
-        if let selectedID, let node = renderViews[selectedID], editMode {
+        if let selectedID, let node = renderViews[selectedID], editMode, editingTextNodeID == nil {
             // Mirrors the rule in `apply(...)`: the resize-handle
             // overlay only surfaces while edit mode is on. Live mode
             // never shows it, even after a fresh add — selection
@@ -1804,6 +1843,20 @@ final class CanvasEditorView: UIView {
         }
     }
 
+    /// While a `UITextView` is actively editing, UIKit's native text
+    /// gestures need first claim on touches inside the node. The node
+    /// pan recognizer is for canvas movement, so temporarily disabling
+    /// it prevents press/drag selection from being stolen as a move.
+    private func refreshTextEditingGestureState(previousID: UUID?, currentID: UUID?) {
+        if let previousID, previousID != currentID {
+            nodePanGestures[previousID]?.isEnabled = editMode
+        }
+        if let currentID {
+            nodePanGestures[currentID]?.isEnabled = false
+            overlay.isHidden = true
+        }
+    }
+
     private func selectionOverlayResizeMode(for id: UUID) -> SelectionOverlayView.ResizeMode {
         switch StructuredProfileLayout.resizeBehavior(for: id, in: document) {
         case .locked:
@@ -1813,6 +1866,35 @@ final class CanvasEditorView: UIView {
         case .freeform:
             return .freeform
         }
+    }
+
+    @objc private func handleTextNodeLongPress(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began,
+              isInteractive,
+              editMode else { return }
+
+        let point = gesture.location(in: contentView)
+        if let landingView = contentView.hitTest(point, with: nil) {
+            var ancestor: UIView? = landingView
+            while let view = ancestor {
+                if view is NodeEditChipView || view is ResizeHandleView { return }
+                ancestor = view.superview
+            }
+        }
+
+        guard let hit = hitTestNode(at: point),
+              document.nodes[hit]?.type == .text,
+              let textView = renderViews[hit] as? TextNodeView else { return }
+
+        endActiveTextEditingIfNeeded(except: hit)
+        if selectedID != hit {
+            selectedID = hit
+            onSelectionChanged?(hit)
+        }
+        updateEditingPageForCurrentState()
+        editingTextNodeID = hit
+        bringEditingNodeChainToFront(view: textView)
+        textView.beginEditing(at: contentView.convert(point, to: textView), selectingWord: true)
     }
 
     // MARK: - Gestures: drag-to-move
@@ -2685,16 +2767,23 @@ final class CanvasEditorView: UIView {
     /// all respect the transform, so the user can keep editing as if
     /// the node were always at its original location.
     @objc private func keyboardWillChangeFrame(_ note: Notification) {
-        guard let editingID = editingTextNodeID,
-              let textView = renderViews[editingID],
-              let userInfo = note.userInfo,
-              let endFrame = (userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue,
-              let window = window
+        guard let userInfo = note.userInfo,
+              let endFrame = (userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
         else { return }
 
         let duration = (userInfo[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
         let curveRaw = (userInfo[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.uintValue ?? UInt(UIView.AnimationCurve.easeInOut.rawValue)
         let options = UIView.AnimationOptions(rawValue: curveRaw << 16)
+        lastKeyboardEndFrame = endFrame
+        applyKeyboardLift(endFrame: endFrame, duration: duration, options: options)
+    }
+
+    private func applyKeyboardLift(endFrame: CGRect,
+                                   duration: TimeInterval,
+                                   options: UIView.AnimationOptions) {
+        guard let editingID = editingTextNodeID,
+              let textView = renderViews[editingID],
+              let window = window else { return }
 
         let screenHeight = window.bounds.height
         let keyboardIsHiding = endFrame.origin.y >= screenHeight - 1
@@ -2705,7 +2794,7 @@ final class CanvasEditorView: UIView {
         let currentLift = -textView.transform.ty
         let baseTextBottom = window.convert(textView.bounds, from: textView).maxY + currentLift
         let keyboardTop = endFrame.origin.y
-        let margin: CGFloat = 16
+        let margin: CGFloat = 16 + bottomChromeHeight
 
         let targetLift: CGFloat
         if keyboardIsHiding {
@@ -2862,7 +2951,7 @@ final class CanvasEditorView: UIView {
             // re-enables interaction on user-added top-level nodes.
             let systemOwned = document.nodes[id]?.role?.isSystemOwned == true
             view.isUserInteractionEnabled = editMode && !systemOwned
-            nodePanGestures[id]?.isEnabled = editMode && !systemOwned
+            nodePanGestures[id]?.isEnabled = editMode && !systemOwned && id != editingTextNodeID
         }
     }
 }
@@ -2902,6 +2991,11 @@ extension CanvasEditorView: UIGestureRecognizerDelegate, UIScrollViewDelegate {
         let touchPoint = pan.location(in: pan.view ?? self)
         guard let view else { return true }
         let viewID = view.nodeID
+
+        if viewID == editingTextNodeID,
+           (view as? TextNodeView)?.isEditing == true {
+            return false
+        }
 
         // ---------- PAN (drag-to-move) ----------
         //

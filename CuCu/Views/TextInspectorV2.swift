@@ -8,6 +8,7 @@ import SwiftUI
 struct TextInspectorV2: View {
     @Binding var document: ProfileDocument
     let textID: UUID
+    var selectedTextRange: NSRange?
 
     var onDuplicate: () -> Void
     var onDelete: () -> Void
@@ -267,8 +268,16 @@ struct TextInspectorV2: View {
 
     // MARK: Color picker drawer
 
+    /// When the user is editing the highlight target the grayscale
+    /// palette rides along inside the same `cucuCard` surface as the
+    /// HSV picker, so the two read as one drawer rather than a stack
+    /// of unrelated rows. The wrapping `VStack` clips both children to
+    /// the same rounded shape via the picker's own background — no
+    /// separate corner-radius work needed because the grayscale row
+    /// sits flush above the picker's existing padded card.
+    @ViewBuilder
     private var colorPickerDrawer: some View {
-        HSVColorPicker(
+        let picker = HSVColorPicker(
             hex: pickerHexBinding,
             alpha: pickerAlphaBinding,
             onBack: {
@@ -277,6 +286,82 @@ struct TextInspectorV2: View {
                 }
             }
         )
+        if pickerTarget == .highlight {
+            VStack(spacing: 0) {
+                grayscaleHighlightPalette
+                    .background(Color.cucuCard)
+                picker
+            }
+        } else {
+            picker
+        }
+    }
+
+    // MARK: Grayscale highlight palette
+
+    /// Neutral / earthy highlight tones mirroring the "Grayscale" row in
+    /// the inspector mock — kept on the warm side of true gray so the
+    /// swatches still read as paper-like highlights, not screen-gray.
+    /// Exposed at module scope so the keyboard-up
+    /// `RichTextSelectionToolbar` can render the same palette without
+    /// drifting from the panel inspector.
+    static let grayscaleHighlightHexes = [
+        "#F4E8D4", "#D5D5D5", "#3F4030", "#6B4A2A",
+        "#4A4A4A", "#A8A8A8", "#7A7A7A", "#C8C8C8"
+    ]
+
+    private var grayscaleHighlightPalette: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Grayscale")
+                .font(.cucuSans(13, weight: .semibold))
+                .foregroundStyle(Color.cucuInk)
+            HStack(spacing: 6) {
+                ForEach(Self.grayscaleHighlightHexes, id: \.self) { hex in
+                    grayscaleSwatch(hex: hex)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 4)
+    }
+
+    private func grayscaleSwatch(hex: String) -> some View {
+        let isSelected = currentHighlightSelectionHex == hex
+        return Button {
+            applyGrayscaleHighlight(hex: hex)
+        } label: {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color(hex: hex))
+                .frame(height: 28)
+                .frame(maxWidth: .infinity)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color.cucuInk.opacity(isSelected ? 1 : 0.18),
+                                lineWidth: isSelected ? 2 : 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Grayscale highlight \(hex)")
+    }
+
+    /// What the active selection (or whole-text fallback) currently
+    /// resolves to for highlight. Used to outline the matching swatch.
+    /// Compared case-insensitively against the palette's canonical
+    /// uppercase hexes so a stored `#f4e8d4` still highlights its row.
+    private var currentHighlightSelectionHex: String? {
+        guard let node = currentNode else { return nil }
+        let range = normalizedRange(selection: activeSelectedTextRange,
+                                    text: node.content.text ?? "")
+        return inlineHighlightHex(in: node, range: range)?.uppercased()
+    }
+
+    private func applyGrayscaleHighlight(hex: String) {
+        mutate { node in
+            let range = normalizedRange(selection: activeSelectedTextRange,
+                                        text: node.content.text ?? "")
+            applyHighlight(hex: hex, range: range, to: &node)
+        }
     }
 
     // MARK: Style tab
@@ -489,7 +574,16 @@ struct TextInspectorV2: View {
         Int(currentNode?.style.fontSize ?? 17)
     }
     private var currentTextColor: Color {
-        Color(hex: currentNode?.style.textColorHex ?? "#1A140E")
+        Color(hex: currentTextColorHex)
+    }
+
+    private var currentTextColorHex: String {
+        guard let node = currentNode else { return "#1A140E" }
+        if let range = activeSelectedTextRange,
+           let inline = inlineTextColorHex(in: node, range: range) {
+            return inline
+        }
+        return node.style.textColorHex ?? "#1A140E"
     }
 
     private var letterSpacingValueText: String {
@@ -529,14 +623,15 @@ struct TextInspectorV2: View {
     /// editing. Falls back to the supplied default when the field is
     /// nil/empty so the picker's HSV state is always populated.
     private func storedTargetHex(default fallback: String) -> String {
+        guard let node = currentNode else { return fallback }
         switch pickerTarget {
         case .textColor:
-            let raw = currentNode?.style.textColorHex
-            return (raw?.isEmpty ?? true) ? fallback : raw!
+            let raw = currentTextColorHex
+            return raw.isEmpty ? fallback : raw
         case .highlight:
-            let raw = currentNode?.style.backgroundColorHex
-            if let raw, !raw.isEmpty, raw != "transparent" { return raw }
-            return fallback
+            let range = normalizedRange(selection: activeSelectedTextRange,
+                                        text: node.content.text ?? "")
+            return inlineHighlightHex(in: node, range: range) ?? fallback
         }
     }
 
@@ -544,10 +639,18 @@ struct TextInspectorV2: View {
         mutate { node in
             switch pickerTarget {
             case .textColor:
-                node.style.textColorHex = hex
-                node.style.textColorAuto = false
+                if let range = activeSelectedTextRange {
+                    applyTextColor(hex: hex, range: range, to: &node)
+                } else {
+                    node.style.textColorHex = hex
+                    node.style.textColorAuto = false
+                    let range = normalizedRange(selection: nil, text: node.content.text ?? "")
+                    clearTextColor(range: range, from: &node)
+                }
             case .highlight:
-                node.style.backgroundColorHex = hex
+                let range = normalizedRange(selection: activeSelectedTextRange,
+                                            text: node.content.text ?? "")
+                applyHighlight(hex: hex, range: range, to: &node)
             }
         }
     }
@@ -598,10 +701,21 @@ struct TextInspectorV2: View {
             get: { document.nodes[id]?.content.text ?? "" },
             set: { newValue in
                 guard var node = document.nodes[id] else { return }
+                let oldText = node.content.text ?? ""
                 node.content.text = newValue
+                reconcileTextStyleSpans(afterTextChangeFrom: oldText, to: newValue, in: &node)
                 document.nodes[id] = node
             }
         )
+    }
+
+    private var activeSelectedTextRange: NSRange? {
+        guard let node = currentNode,
+              selectedTextRange?.length ?? 0 > 0 else {
+            return nil
+        }
+        let range = normalizedRange(selection: selectedTextRange, text: node.content.text ?? "")
+        return range.length > 0 ? range : nil
     }
 
     private func bindingStyleDouble(_ id: UUID,

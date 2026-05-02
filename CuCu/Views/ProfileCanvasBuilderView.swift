@@ -31,6 +31,10 @@ struct ProfileCanvasBuilderView: View {
     /// alert when this is `nil` instead of silently dropping the
     /// network call.
     @Environment(AuthViewModel.self) private var auth
+    /// Drives the compact-vs-regular sizing of the edit-mode chrome row.
+    /// iPhone portrait reports `.compact`, which crowds against the
+    /// centered title pill if the chrome stays at iPad-sized icons.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var document: ProfileDocument = .blank
     @State private var selectedID: UUID?
@@ -53,6 +57,10 @@ struct ProfileCanvasBuilderView: View {
     /// keyboard via `keyboardAwarePanelBottomPadding` and would
     /// otherwise cover the lifted text node.
     @State private var isInlineTextEditing: Bool = false
+    /// Last non-collapsed UTF-16 selection reported by an actively edited
+    /// text node. Cleared when node selection changes so a stale range never
+    /// applies to a different element.
+    @State private var selectedTextRangeByNodeID: [UUID: NSRange] = [:]
     @FocusState private var isTitleFieldFocused: Bool
     /// Snapshot stack for undo. Entries are full `ProfileDocument`
     /// snapshots taken just before a mutation; `performUndo` pops one
@@ -85,6 +93,7 @@ struct ProfileCanvasBuilderView: View {
     /// skipped because the user is signed out). Drives the secondary
     /// "Couldn't fully reset" alert; the local wipe still proceeded.
     @State private var resetErrorMessage: String?
+    private let richTextToolbarReservedHeight: CGFloat = 58
 
     // MARK: Delete Published Profile (cloud-only wipe)
     @State private var showUnpublishConfirmation = false
@@ -312,6 +321,25 @@ struct ProfileCanvasBuilderView: View {
                         withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                             isInlineTextEditing = editing
                         }
+                    },
+                    onLiveTextChanged: { nodeID, text in
+                        guard var node = document.nodes[nodeID],
+                              node.type == .text else { return }
+                        let oldText = node.content.text ?? ""
+                        guard oldText != text else { return }
+                        node.content.text = text
+                        reconcileTextStyleSpans(afterTextChangeFrom: oldText, to: text, in: &node)
+                        document.nodes[nodeID] = node
+                    },
+                    onTextSelectionRangeChanged: { nodeID, range in
+                        guard selectedID == nodeID,
+                              document.nodes[nodeID]?.type == .text,
+                              let range,
+                              range.length > 0 else {
+                            selectedTextRangeByNodeID.removeValue(forKey: nodeID)
+                            return
+                        }
+                        selectedTextRangeByNodeID = [nodeID: range]
                     }
                 )
                 .overlay(alignment: .topLeading) {
@@ -372,6 +400,13 @@ struct ProfileCanvasBuilderView: View {
         }
         .animation(.easeOut(duration: 0.32), value: canvasIsEmpty)
         .overlay(alignment: .bottom) {
+            if let target = activeRichTextSelection {
+                richTextSelectionToolbar(nodeID: target.nodeID, range: target.range)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, keyboardAwarePanelBottomPadding)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
             // While a text node is in in-place editing the keyboard
             // is up and we lift just that text node above it (see
             // `keyboardWillChangeFrame` in `CanvasEditorView`). The
@@ -449,6 +484,15 @@ struct ProfileCanvasBuilderView: View {
             if newID == nil {
                 editorPanelHeight = 0
             }
+            if let oldID, oldID != newID {
+                selectedTextRangeByNodeID.removeValue(forKey: oldID)
+            }
+            guard let newID,
+                  document.nodes[newID]?.type == .text else {
+                selectedTextRangeByNodeID.removeAll()
+                return
+            }
+            selectedTextRangeByNodeID = selectedTextRangeByNodeID[newID].map { [newID: $0] } ?? [:]
         }
         .onPreferenceChange(EditorPanelHeightKey.self) { newValue in
             // The panel is only mounted while a selection exists, so a
@@ -482,6 +526,7 @@ struct ProfileCanvasBuilderView: View {
         .modifier(CanvasBuilderSheetsModifier(
             document: $document,
             selectedID: $selectedID,
+            selectedTextRangeByNodeID: selectedTextRangeByNodeID,
             draft: draft,
             sheets: sheets,
             mutator: mutator,
@@ -577,6 +622,20 @@ struct ProfileCanvasBuilderView: View {
         keyboardHeight > 0 ? keyboardHeight + 8 : 8
     }
 
+    private var activeRichTextSelection: (nodeID: UUID, range: NSRange)? {
+        guard isInlineTextEditing,
+              let selectedID,
+              let node = document.nodes[selectedID],
+              node.type == .text,
+              let selection = selectedTextRangeByNodeID[selectedID],
+              selection.length > 0 else {
+            return nil
+        }
+        let range = normalizedRange(selection: selection, text: node.content.text ?? "")
+        guard range.length > 0 else { return nil }
+        return (selectedID, range)
+    }
+
     /// Left-side chrome row shown in edit mode in place of the
     /// EditCanvasToggleButton: × close + undo + redo, in plain icon
     /// form (no capsule). The × shares a destination with the Done
@@ -585,14 +644,18 @@ struct ProfileCanvasBuilderView: View {
     /// either side of the title pill.
     @ViewBuilder
     private var editModeLeftChrome: some View {
-        HStack(spacing: 18) {
+        let compact = horizontalSizeClass == .compact
+        let iconSize: CGFloat = compact ? 16 : 19
+        let frameSide: CGFloat = compact ? 26 : 30
+        let rowSpacing: CGFloat = compact ? 8 : 18
+        HStack(spacing: rowSpacing) {
             Button {
                 toggleEditMode()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 19, weight: .light))
+                    .font(.system(size: iconSize, weight: .light))
                     .foregroundStyle(Color.cucuInk)
-                    .frame(width: 30, height: 30)
+                    .frame(width: frameSide, height: frameSide)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Exit edit mode")
@@ -601,9 +664,9 @@ struct ProfileCanvasBuilderView: View {
                 performUndo()
             } label: {
                 Image(systemName: "arrow.uturn.backward")
-                    .font(.system(size: 19, weight: .light))
+                    .font(.system(size: iconSize, weight: .light))
                     .foregroundStyle(Color.cucuInk.opacity(canUndo ? 1 : 0.28))
-                    .frame(width: 30, height: 30)
+                    .frame(width: frameSide, height: frameSide)
             }
             .buttonStyle(.plain)
             .disabled(!canUndo)
@@ -613,9 +676,9 @@ struct ProfileCanvasBuilderView: View {
                 performRedo()
             } label: {
                 Image(systemName: "arrow.uturn.forward")
-                    .font(.system(size: 19, weight: .light))
+                    .font(.system(size: iconSize, weight: .light))
                     .foregroundStyle(Color.cucuInk.opacity(canRedo ? 1 : 0.28))
-                    .frame(width: 30, height: 30)
+                    .frame(width: frameSide, height: frameSide)
             }
             .buttonStyle(.plain)
             .disabled(!canRedo)
@@ -706,6 +769,9 @@ struct ProfileCanvasBuilderView: View {
     /// we report zero here too, otherwise the scroll inset would
     /// reserve space for an invisible panel.
     private var canvasBottomReservedHeight: CGFloat {
+        if activeRichTextSelection != nil {
+            return richTextToolbarReservedHeight
+        }
         guard selectedID != nil, editorPanelHeight > 0, !isInlineTextEditing else { return 0 }
         return editorPanelHeight + keyboardAwarePanelBottomPadding
     }
@@ -747,6 +813,7 @@ struct ProfileCanvasBuilderView: View {
         NodeEditingPanelView(
             document: $document,
             selectedID: id,
+            selectedTextRange: selectedTextRangeByNodeID[id],
             onCommit: commitPanelDocument,
             onAddElement: { sheets.showAddSheet = true },
             onOpenInspector: { sheets.showInspector = true },
@@ -778,6 +845,87 @@ struct ProfileCanvasBuilderView: View {
                 }
             }
         )
+    }
+
+    private func richTextSelectionToolbar(nodeID: UUID, range: NSRange) -> some View {
+        RichTextSelectionToolbar(
+            textColorHex: richTextColorBinding(nodeID: nodeID, range: range),
+            highlightColorHex: richTextHighlightBinding(nodeID: nodeID, range: range),
+            boldActive: inlineBoolActive(nodeID: nodeID, range: range, reader: inlineBold),
+            italicActive: inlineBoolActive(nodeID: nodeID, range: range, reader: inlineItalic),
+            underlineActive: inlineBoolActive(nodeID: nodeID, range: range, reader: inlineUnderline),
+            onBold: {
+                mutateRichTextSpan(nodeID: nodeID, range: range) { node, normalized in
+                    applyBold(range: normalized, to: &node)
+                }
+            },
+            onItalic: {
+                mutateRichTextSpan(nodeID: nodeID, range: range) { node, normalized in
+                    applyItalic(range: normalized, to: &node)
+                }
+            },
+            onUnderline: {
+                mutateRichTextSpan(nodeID: nodeID, range: range) { node, normalized in
+                    applyUnderline(range: normalized, to: &node)
+                }
+            },
+            onClearStyle: {
+                mutateRichTextSpan(nodeID: nodeID, range: range) { node, normalized in
+                    clearInlineStyles(range: normalized, from: &node)
+                }
+            }
+        )
+    }
+
+    private func richTextColorBinding(nodeID: UUID, range: NSRange) -> Binding<String> {
+        Binding(
+            get: {
+                guard let node = document.nodes[nodeID] else { return "#1A140E" }
+                let normalized = normalizedRange(selection: range, text: node.content.text ?? "")
+                return inlineTextColorHex(in: node, range: normalized)
+                    ?? node.style.textColorHex
+                    ?? "#1A140E"
+            },
+            set: { newValue in
+                mutateRichTextSpan(nodeID: nodeID, range: range) { node, normalized in
+                    applyTextColor(hex: newValue, range: normalized, to: &node)
+                }
+            }
+        )
+    }
+
+    private func richTextHighlightBinding(nodeID: UUID, range: NSRange) -> Binding<String> {
+        Binding(
+            get: {
+                guard let node = document.nodes[nodeID] else { return "#DDF1D5" }
+                let normalized = normalizedRange(selection: range, text: node.content.text ?? "")
+                return inlineHighlightHex(in: node, range: normalized) ?? "#DDF1D5"
+            },
+            set: { newValue in
+                mutateRichTextSpan(nodeID: nodeID, range: range) { node, normalized in
+                    applyHighlight(hex: newValue, range: normalized, to: &node)
+                }
+            }
+        )
+    }
+
+    private func inlineBoolActive(nodeID: UUID,
+                                  range: NSRange,
+                                  reader: (CanvasNode, NSRange) -> Bool?) -> Bool {
+        guard let node = document.nodes[nodeID] else { return false }
+        let normalized = normalizedRange(selection: range, text: node.content.text ?? "")
+        return reader(node, normalized) == true
+    }
+
+    private func mutateRichTextSpan(nodeID: UUID,
+                                    range: NSRange,
+                                    update: (inout CanvasNode, NSRange) -> Void) {
+        guard var node = document.nodes[nodeID], node.type == .text else { return }
+        let normalized = normalizedRange(selection: range, text: node.content.text ?? "")
+        guard normalized.length > 0 else { return }
+        update(&node, normalized)
+        document.nodes[nodeID] = node
+        selectedTextRangeByNodeID = [nodeID: normalized]
     }
 
     private func commitPanelDocument(_ doc: ProfileDocument) {
@@ -1219,5 +1367,274 @@ struct ProfileCanvasBuilderView: View {
         try? context.save()
 
         CucuHaptics.delete()
+    }
+}
+
+private struct RichTextSelectionToolbar: View {
+    @Binding var textColorHex: String
+    @Binding var highlightColorHex: String
+
+    let boldActive: Bool
+    let italicActive: Bool
+    let underlineActive: Bool
+    let onBold: () -> Void
+    let onItalic: () -> Void
+    let onUnderline: () -> Void
+    let onClearStyle: () -> Void
+
+    /// Drives the popover that hosts the highlight palette. State kept
+    /// on the toolbar (not lifted) because the popover is a transient
+    /// presentation owned by the picker control itself.
+    @State private var showingHighlightPalette: Bool = false
+    /// Drives the standalone sheet that hosts the system color picker.
+    /// Kept separate from `showingHighlightPalette` (and presented from
+    /// the toolbar's `.sheet` rather than from inside the popover) so
+    /// the system picker isn't nested under the popover — that nesting
+    /// is what produced the flicker on exit, since SwiftUI re-renders
+    /// popover contents during dismissal and the embedded `ColorPicker`
+    /// would briefly re-trigger its UIKit presentation.
+    @State private var showingCustomColorPicker: Bool = false
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                colorControl(
+                    title: "Text Color",
+                    systemImage: "textformat",
+                    hex: $textColorHex,
+                    supportsAlpha: false
+                )
+                highlightPaletteControl
+                toolbarButton(title: "Bold", active: boldActive, action: onBold) {
+                    Text("B")
+                        .font(.system(size: 14, weight: .heavy))
+                }
+                toolbarButton(title: "Italic", active: italicActive, action: onItalic) {
+                    Text("I")
+                        .font(.custom("Georgia-Italic", size: 14))
+                        .italic()
+                }
+                toolbarButton(title: "Underline", active: underlineActive, action: onUnderline) {
+                    Text("U")
+                        .font(.system(size: 14, weight: .semibold))
+                        .underline()
+                }
+                toolbarButton(title: "Clear Style", active: false, action: onClearStyle) {
+                    Image(systemName: "eraser")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+        }
+        .scrollClipDisabled()
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.cucuCard)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.cucuInkRule, lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.14), radius: 10, x: 0, y: 4)
+        .sheet(isPresented: $showingCustomColorPicker) {
+            SystemColorPickerSheet(
+                hex: $highlightColorHex,
+                isPresented: $showingCustomColorPicker,
+                supportsAlpha: true
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
+    }
+
+    /// Pencil.tip button mirroring the `colorControl` chrome but
+    /// hosting the grayscale palette inside its popover instead of
+    /// deferring to UIKit's `UIColorPickerViewController`. The palette
+    /// itself shares hexes with `TextInspectorV2.grayscaleHighlightHexes`
+    /// so both inspectors stay in sync. `presentationCompactAdaptation`
+    /// forces a real popover on iPhone — without it, iOS would fall
+    /// back to a sheet, which would push the keyboard down and break
+    /// the in-flight selection.
+    private var highlightPaletteControl: some View {
+        Button {
+            showingHighlightPalette.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "pencil.tip")
+                    .font(.system(size: 13, weight: .semibold))
+                Circle()
+                    .fill(Color(hex: highlightColorHex))
+                    .frame(width: 12, height: 12)
+                    .overlay(Circle().stroke(Color.cucuInk.opacity(0.25), lineWidth: 0.5))
+            }
+            .foregroundStyle(Color.cucuInk)
+            .padding(.horizontal, 8)
+            .frame(height: 32)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.cucuInk.opacity(0.06))
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Highlight")
+        .popover(isPresented: $showingHighlightPalette,
+                 attachmentAnchor: .point(.top),
+                 arrowEdge: .bottom) {
+            highlightPalettePopover
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private var highlightPalettePopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Grayscale")
+                .font(.cucuSans(13, weight: .semibold))
+                .foregroundStyle(Color.cucuInk)
+            HStack(spacing: 6) {
+                ForEach(TextInspectorV2.grayscaleHighlightHexes, id: \.self) { hex in
+                    Button {
+                        highlightColorHex = hex
+                        showingHighlightPalette = false
+                    } label: {
+                        let selected = highlightColorHex.uppercased() == hex.uppercased()
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color(hex: hex))
+                            .frame(width: 28, height: 28)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .stroke(Color.cucuInk.opacity(selected ? 1 : 0.18),
+                                            lineWidth: selected ? 2 : 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Highlight \(hex)")
+                }
+            }
+            Divider()
+            // "Custom color" is a plain Button — not a SwiftUI
+            // `ColorPicker` — so the system picker isn't owned by this
+            // popover. Tapping it closes the popover, then schedules
+            // the system picker to present from the toolbar's own
+            // `.sheet` modifier on the next animation tick. The delay
+            // gives the popover time to finish dismissing first;
+            // otherwise SwiftUI tries to animate the popover collapse
+            // while a sheet is rising from the same view tree, which
+            // is what made the picker visibly "pop" during exit.
+            Button {
+                showingHighlightPalette = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    showingCustomColorPicker = true
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "paintpalette")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.cucuInk)
+                    Text("Custom color")
+                        .font(.cucuSans(13, weight: .medium))
+                        .foregroundStyle(Color.cucuInk)
+                    Spacer()
+                    Circle()
+                        .fill(Color(hex: highlightColorHex))
+                        .frame(width: 14, height: 14)
+                        .overlay(Circle().stroke(Color.cucuInk.opacity(0.25), lineWidth: 0.5))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(14)
+        .background(Color.cucuCard)
+    }
+
+    private func colorControl(title: String,
+                              systemImage: String,
+                              hex: Binding<String>,
+                              supportsAlpha: Bool) -> some View {
+        ColorPicker(selection: hex.asColor(), supportsOpacity: supportsAlpha) {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 13, weight: .semibold))
+                Circle()
+                    .fill(Color(hex: hex.wrappedValue))
+                    .frame(width: 12, height: 12)
+                    .overlay(Circle().stroke(Color.cucuInk.opacity(0.25), lineWidth: 0.5))
+            }
+            .foregroundStyle(Color.cucuInk)
+            .padding(.horizontal, 8)
+            .frame(height: 32)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.cucuInk.opacity(0.06))
+            )
+        }
+        .accessibilityLabel(title)
+    }
+
+    private func toolbarButton<Label: View>(title: String,
+                                            active: Bool,
+                                            action: @escaping () -> Void,
+                                            @ViewBuilder label: () -> Label) -> some View {
+        Button(action: action) {
+            label()
+                .foregroundStyle(active ? Color.cucuCard : Color.cucuInk)
+                .frame(width: 34, height: 32)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(active ? Color.cucuInk : Color.cucuInk.opacity(0.06))
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+}
+
+/// UIKit bridge for the system color picker. We can't open SwiftUI's
+/// `ColorPicker` programmatically (it only presents on user tap of its
+/// own view), so when the highlight popover wants to defer to the full
+/// picker we present `UIColorPickerViewController` ourselves through a
+/// state-driven `.sheet`. This keeps the picker out of the popover's
+/// view tree entirely — no nested presentation, no flicker on exit.
+private struct SystemColorPickerSheet: UIViewControllerRepresentable {
+    @Binding var hex: String
+    @Binding var isPresented: Bool
+    var supportsAlpha: Bool
+
+    func makeUIViewController(context: Context) -> UIColorPickerViewController {
+        let vc = UIColorPickerViewController()
+        vc.delegate = context.coordinator
+        vc.supportsAlpha = supportsAlpha
+        vc.selectedColor = UIColor(Color(hex: hex))
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: UIColorPickerViewController, context: Context) {
+        // Re-sync only when the hex actually drifted from outside (e.g.
+        // the user picked a swatch in another surface). Skipping equal
+        // assignments avoids a feedback loop where setting the same
+        // color re-fires `didSelect` and bounces the binding.
+        let target = UIColor(Color(hex: hex))
+        if uiViewController.selectedColor != target {
+            uiViewController.selectedColor = target
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UIColorPickerViewControllerDelegate {
+        let parent: SystemColorPickerSheet
+        init(_ parent: SystemColorPickerSheet) { self.parent = parent }
+
+        func colorPickerViewController(_ viewController: UIColorPickerViewController,
+                                       didSelect color: UIColor,
+                                       continuously: Bool) {
+            parent.hex = Color(uiColor: color).toHex()
+        }
+
+        func colorPickerViewControllerDidFinish(_ viewController: UIColorPickerViewController) {
+            parent.isPresented = false
+        }
     }
 }

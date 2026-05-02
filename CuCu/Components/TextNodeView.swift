@@ -22,10 +22,25 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
         let t = UITextView()
         t.translatesAutoresizingMaskIntoConstraints = false
         // Defaults match a UILabel-style display: no internal padding,
-        // no scroll, transparent background, not editable.
+        // no scroll, transparent background.
+        //
+        // `isEditable` and `isSelectable` stay TRUE for the life of the
+        // view. Toggling them off→on is what causes UIKit to internally
+        // call `setText` over its `textStorage` using the view's own
+        // `textColor` / `font` properties, which destructively flattens
+        // any range-level foregroundColor / backgroundColor attributes
+        // (the inline color + highlight spans). Keeping the editor in
+        // "editable" mode permanently means UIKit never runs that
+        // transition, so the spans survive across editing sessions.
+        //
+        // Touch routing is controlled by `isUserInteractionEnabled`
+        // instead: false in the static display state so taps fall
+        // through to the canvas (which handles tap-to-edit), true once
+        // the canvas escalates to inline editing via `beginEditing`.
         t.isScrollEnabled = false
-        t.isEditable = false
-        t.isSelectable = false
+        t.isEditable = true
+        t.isSelectable = true
+        t.isUserInteractionEnabled = false
         t.backgroundColor = .clear
         t.textContainerInset = .zero
         t.textContainer.lineFragmentPadding = 0
@@ -54,6 +69,10 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
     /// Fired once when editing finishes (return key, lose focus,
     /// programmatic `endEditing()`). Host persists here.
     var onEditingEnded: (() -> Void)?
+    /// Reports the current UTF-16 selection range while the text view
+    /// owns editing. Collapsed selections are still reported; the SwiftUI
+    /// host decides whether to treat them as "no selected text".
+    var onSelectionRangeChanged: ((NSRange) -> Void)?
 
     /// Padding constraints stored as members so `apply(node:)` can
     /// drive their constants from `node.style.padding`. Initial
@@ -148,6 +167,15 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
             attrs[.obliqueness] = fallbackObliqueness
         }
 
+        // Keep these UIKit properties in sync for empty-text editing
+        // and system insertion behavior, but set them before assigning
+        // `attributedText`. Setting `textColor` / `font` afterwards can
+        // cause UITextView to restyle the full string and visually wipe
+        // range-level foreground-color spans.
+        textView.font = font
+        textView.textColor = textColor
+        textView.textAlignment = alignment
+
         // 2. Apply the attributed text. Source-of-truth for the string
         //    differs by edit state:
         //    - Not editing: pull `node.content.text` (last committed).
@@ -167,18 +195,20 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
             incoming = node.content.text ?? ""
             savedSelection = nil
         }
-        textView.attributedText = NSAttributedString(string: incoming, attributes: attrs)
+        let attributed = NSMutableAttributedString(string: incoming, attributes: attrs)
+        applyInlineSpans(
+            node.content.textStyleSpans,
+            family: family,
+            size: size,
+            baseWeight: node.style.fontWeight ?? .regular,
+            baseItalic: italicEnabled,
+            to: attributed
+        )
+        textView.attributedText = attributed
         if let savedSelection {
             textView.selectedRange = savedSelection
         }
         textView.typingAttributes = attrs
-
-        // The legacy property setters still matter for empty-text
-        // placeholder rendering, focus rings, and the few UIKit
-        // surfaces that read these directly instead of attributedText.
-        textView.font = font
-        textView.textColor = textColor
-        textView.textAlignment = alignment
 
         // 3. Apply padding. `nil` falls back to the historical
         //    4pt-horizontal / 2pt-vertical split so drafts that
@@ -225,18 +255,27 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
     /// selection inside its bounds (which means dragging the node is
     /// suspended for the duration — tap outside to commit and reclaim
     /// the move gesture).
-    func beginEditing() {
-        textView.isEditable = true
-        textView.isSelectable = true
+    func beginEditing(at point: CGPoint? = nil, selectingWord: Bool = false) {
+        // Light up touch routing on the text view so the user's
+        // subsequent taps land on UITextView (cursor placement, word
+        // select, drag-select) instead of falling through to the
+        // canvas. `becomeFirstResponder` only succeeds when
+        // interaction is enabled, so the order matters.
+        textView.isUserInteractionEnabled = true
         // Scroll on while editing so the cursor stays visible if the
         // user types past the node's visible bounds. Off again on end
         // so the static display matches a label.
         textView.isScrollEnabled = true
         textView.becomeFirstResponder()
-        // Place cursor at the end so a quick tap-and-type adds rather
-        // than overwrites.
-        let end = textView.text.count
-        textView.selectedRange = NSRange(location: end, length: 0)
+        if let point {
+            updateSelection(at: point, selectingWord: selectingWord)
+        } else {
+            // Place cursor at the end so a quick tap-and-type adds rather
+            // than overwrites.
+            let end = ((textView.text ?? "") as NSString).length
+            textView.selectedRange = NSRange(location: end, length: 0)
+            onSelectionRangeChanged?(textView.selectedRange)
+        }
     }
 
     /// Leave edit mode programmatically. Safe to call when not
@@ -261,11 +300,160 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
         onTextChanged?(textView.text)
     }
 
+    func textViewDidChangeSelection(_ textView: UITextView) {
+        onSelectionRangeChanged?(textView.selectedRange)
+    }
+
     func textViewDidEndEditing(_ textView: UITextView) {
-        textView.isEditable = false
-        textView.isSelectable = false
+        // Hand touches back to the canvas so the next tap can route
+        // through the canvas's tap recognizer (selection / chip / etc.).
+        // `isEditable` / `isSelectable` deliberately stay true — see
+        // the textView initializer comment for why we don't toggle
+        // those.
+        textView.isUserInteractionEnabled = false
         textView.isScrollEnabled = false
         onEditingEnded?()
+    }
+
+    private func updateSelection(at point: CGPoint, selectingWord: Bool) {
+        let textPoint = convert(point, to: textView)
+        guard let position = textView.closestPosition(to: textPoint) else {
+            let end = ((textView.text ?? "") as NSString).length
+            textView.selectedRange = NSRange(location: end, length: 0)
+            onSelectionRangeChanged?(textView.selectedRange)
+            return
+        }
+
+        let offset = textView.offset(from: textView.beginningOfDocument, to: position)
+        let textLength = ((textView.text ?? "") as NSString).length
+        let clampedOffset = max(0, min(offset, textLength))
+        if selectingWord,
+           let wordRange = wordRange(containing: clampedOffset) {
+            textView.selectedRange = wordRange
+        } else {
+            textView.selectedRange = NSRange(location: clampedOffset, length: 0)
+        }
+        onSelectionRangeChanged?(textView.selectedRange)
+    }
+
+    private func wordRange(containing utf16Offset: Int) -> NSRange? {
+        let nsText = (textView.text ?? "") as NSString
+        let length = nsText.length
+        guard length > 0 else { return nil }
+
+        let separators = CharacterSet.whitespacesAndNewlines
+        let seed = max(0, min(utf16Offset, length - 1))
+        guard !isSeparator(at: seed, in: nsText, separators: separators) else {
+            return nil
+        }
+
+        var start = seed
+        while start > 0,
+              !isSeparator(at: start - 1, in: nsText, separators: separators) {
+            start -= 1
+        }
+
+        var end = seed
+        while end < length,
+              !isSeparator(at: end, in: nsText, separators: separators) {
+            end += 1
+        }
+
+        guard end > start else { return nil }
+        return NSRange(location: start, length: end - start)
+    }
+
+    private func isSeparator(at index: Int, in text: NSString, separators: CharacterSet) -> Bool {
+        guard index >= 0, index < text.length,
+              let scalar = UnicodeScalar(UInt32(text.character(at: index))) else {
+            return false
+        }
+        return separators.contains(scalar)
+    }
+
+    private func applyInlineSpans(_ spans: [TextStyleSpan]?,
+                                  family: NodeFontFamily,
+                                  size: CGFloat,
+                                  baseWeight: NodeFontWeight,
+                                  baseItalic: Bool,
+                                  to attributed: NSMutableAttributedString) {
+        let textLength = attributed.length
+        guard textLength > 0 else { return }
+
+        for span in spans ?? [] {
+            guard let range = clampedRange(for: span, textLength: textLength) else {
+                continue
+            }
+            if let hex = span.textColorHex,
+               let color = uiColorIfValid(hex: hex) {
+                attributed.addAttribute(.foregroundColor, value: color, range: range)
+            }
+            if let hex = span.highlightColorHex,
+               let color = uiColorIfValid(hex: hex) {
+                attributed.addAttribute(.backgroundColor, value: color, range: range)
+            }
+            if span.bold == true || span.italic == true {
+                attributed.addAttributes(
+                    fontAttributes(
+                        family: family,
+                        size: size,
+                        weight: span.bold == true ? .bold : baseWeight,
+                        italic: baseItalic || span.italic == true
+                    ),
+                    range: range
+                )
+            }
+            if span.underline == true {
+                attributed.addAttribute(
+                    .underlineStyle,
+                    value: NSUnderlineStyle.single.rawValue,
+                    range: range
+                )
+            }
+        }
+    }
+
+    private func fontAttributes(family: NodeFontFamily,
+                                size: CGFloat,
+                                weight: NodeFontWeight,
+                                italic: Bool) -> [NSAttributedString.Key: Any] {
+        let baseFont = family.uiFont(size: size, weight: weight.uiFontWeight)
+        guard italic else {
+            return [.font: baseFont]
+        }
+
+        if let italicDescriptor = baseFont.fontDescriptor.withSymbolicTraits(
+            baseFont.fontDescriptor.symbolicTraits.union(.traitItalic)
+        ) {
+            return [.font: UIFont(descriptor: italicDescriptor, size: size)]
+        }
+        return [
+            .font: baseFont,
+            .obliqueness: CGFloat(0.18),
+        ]
+    }
+
+    private func clampedRange(for span: TextStyleSpan, textLength: Int) -> NSRange? {
+        guard span.start >= 0,
+              span.length > 0,
+              span.start < textLength else {
+            return nil
+        }
+        let (rawEnd, overflow) = span.start.addingReportingOverflow(span.length)
+        let end = min(textLength, overflow ? textLength : rawEnd)
+        let length = max(0, end - span.start)
+        guard length > 0 else { return nil }
+        return NSRange(location: span.start, length: length)
+    }
+
+    private func uiColorIfValid(hex: String) -> UIColor? {
+        let trimmed = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
+        guard [3, 6, 8].contains(cleaned.count),
+              UInt64(cleaned, radix: 16) != nil else {
+            return nil
+        }
+        return uiColor(hex: hex)
     }
 }
 
