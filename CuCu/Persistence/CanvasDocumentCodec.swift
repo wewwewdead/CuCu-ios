@@ -60,10 +60,10 @@ enum CanvasDocumentCodec {
         return .legacy
     }
 
-    /// JSON for a fresh blank canvas. Used as the seed for new drafts so a
-    /// blank `ProfileCanvasBuilderView` always lands on the document path
-    /// (not `.legacy` or `.empty`).
+    /// JSON for a fresh structured profile canvas. Used as the seed for new
+    /// drafts so `ProfileCanvasBuilderView` always lands on the document path
+    /// with the fixed profile header + divider already present.
     static var fallbackJSON: String {
-        (try? encode(.blank)) ?? "{\"schemaVersion\":2,\"document\":{\"id\":\"00000000-0000-0000-0000-000000000000\",\"nodes\":{},\"pageBackgroundHex\":\"#F8F6F2\",\"rootChildrenIDs\":[]}}"
+        (try? encode(.structuredProfileBlank)) ?? "{\"schemaVersion\":2,\"document\":{\"id\":\"00000000-0000-0000-0000-000000000000\",\"nodes\":{},\"pageBackgroundHex\":\"#F8F6F2\",\"rootChildrenIDs\":[]}}"
     }
 }

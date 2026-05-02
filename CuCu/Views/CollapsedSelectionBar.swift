@@ -72,16 +72,19 @@ struct CollapsedSelectionBar: View {
             } label: {
                 Label("Duplicate", systemImage: "plus.square.on.square")
             }
+            .disabled(!canDuplicateSelection)
             Button {
                 tapHaptic(); onBringToFront()
             } label: {
                 Label("Bring Front", systemImage: "square.stack.3d.up")
             }
+            .disabled(!canReorderSelection)
             Button {
                 tapHaptic(); onSendBackward()
             } label: {
                 Label("Send Back", systemImage: "square.stack.3d.down.right")
             }
+            .disabled(!canReorderSelection)
             Button {
                 tapHaptic(); onLayers()
             } label: {
@@ -93,6 +96,7 @@ struct CollapsedSelectionBar: View {
             } label: {
                 Label("Delete", systemImage: "trash")
             }
+            .disabled(!canDeleteSelection)
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 13, weight: .semibold))
@@ -101,6 +105,18 @@ struct CollapsedSelectionBar: View {
                 .contentShape(Rectangle())
         }
         .accessibilityLabel("Selection actions")
+    }
+
+    private var canDeleteSelection: Bool {
+        StructuredProfileLayout.canDelete(selectedID, in: document)
+    }
+
+    private var canDuplicateSelection: Bool {
+        StructuredProfileLayout.canDuplicate(selectedID, in: document)
+    }
+
+    private var canReorderSelection: Bool {
+        StructuredProfileLayout.canReorder(selectedID, in: document)
     }
 
     // MARK: - Display

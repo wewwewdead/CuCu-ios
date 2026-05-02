@@ -43,43 +43,52 @@ struct CanvasMutator {
         let parentID = parentForInsertion()
         let pageIndex = targetPageIndex(parentID: parentID)
         var node: CanvasNode
-        switch type {
-        case .container:
-            node = isCarousel(parentID)
-                ? carouselContainerItem(parentID: parentID)
-                : .defaultContainer()
-        case .text:
-            var draft = isCarousel(parentID)
-                ? carouselTextItem(parentID: parentID)
-                : CanvasNode.defaultText()
-            // Seed the new node's font from the active theme's
-            // default. Existing nodes are intentionally untouched
-            // by `applyTheme`; this is the future-tense half of
-            // that contract — fresh text adopts the theme face.
-            draft.style.fontFamily = Self.themeDefaultFont
-            node = draft
-        case .image:     return
-        case .icon:
-            node = isCarousel(parentID)
-                ? carouselIconItem(parentID: parentID)
-                : .defaultIcon()
-        case .divider:
-            node = isCarousel(parentID)
-                ? CanvasNode.defaultDivider(
-                    at: nextCarouselItemOrigin(parentID: parentID, size: CGSize(width: 120, height: 28)),
-                    size: CGSize(width: 120, height: 28))
-                : .defaultDivider()
-        case .link:
-            node = isCarousel(parentID)
-                ? CanvasNode.defaultLink(at: nextCarouselItemOrigin(parentID: parentID, size: CGSize(width: 150, height: 48)),
-                                         size: CGSize(width: 150, height: 48))
-                : .defaultLink()
-        case .gallery:   return
-        case .carousel:
-            node = .defaultCarousel()
+        if isStructuredRootInsertion(parentID: parentID) {
+            guard type == .container else { return }
+            node = StructuredProfileLayout.makeSectionCard(
+                in: document.wrappedValue,
+                pageIndex: pageIndex
+            )
+        } else {
+            switch type {
+            case .container:
+                node = isCarousel(parentID)
+                    ? carouselContainerItem(parentID: parentID)
+                    : .defaultContainer()
+            case .text:
+                var draft = isCarousel(parentID)
+                    ? carouselTextItem(parentID: parentID)
+                    : CanvasNode.defaultText()
+                // Seed the new node's font from the active theme's
+                // default. Existing nodes are intentionally untouched
+                // by `applyTheme`; this is the future-tense half of
+                // that contract — fresh text adopts the theme face.
+                draft.style.fontFamily = Self.themeDefaultFont
+                node = draft
+            case .image:     return
+            case .icon:
+                node = isCarousel(parentID)
+                    ? carouselIconItem(parentID: parentID)
+                    : .defaultIcon()
+            case .divider:
+                node = isCarousel(parentID)
+                    ? CanvasNode.defaultDivider(
+                        at: nextCarouselItemOrigin(parentID: parentID, size: CGSize(width: 120, height: 28)),
+                        size: CGSize(width: 120, height: 28))
+                    : .defaultDivider()
+            case .link:
+                node = isCarousel(parentID)
+                    ? CanvasNode.defaultLink(at: nextCarouselItemOrigin(parentID: parentID, size: CGSize(width: 150, height: 48)),
+                                             size: CGSize(width: 150, height: 48))
+                    : .defaultLink()
+            case .gallery:   return
+            case .carousel:
+                node = .defaultCarousel()
+            }
         }
         applyAdaptivePlacement(to: &node, parentID: parentID, pageIndex: pageIndex)
         document.wrappedValue.insert(node, under: parentID, onPage: pageIndex)
+        StructuredProfileLayout.normalize(&document.wrappedValue)
         selectedID.wrappedValue = node.id
         store.updateDocument(draft, document: document.wrappedValue)
         CucuHaptics.soft()
@@ -91,6 +100,7 @@ struct CanvasMutator {
     @discardableResult
     func addImageNode(from data: Data) -> Bool {
         let parentID = parentForInsertion()
+        guard !isStructuredRootInsertion(parentID: parentID) else { return false }
         let pageIndex = targetPageIndex(parentID: parentID)
         let nodeID = UUID()
         do {
@@ -109,6 +119,7 @@ struct CanvasMutator {
             node.id = nodeID
             applyAdaptivePlacement(to: &node, parentID: parentID, pageIndex: pageIndex)
             document.wrappedValue.insert(node, under: parentID, onPage: pageIndex)
+            StructuredProfileLayout.normalize(&document.wrappedValue)
             selectedID.wrappedValue = nodeID
             store.updateDocument(draft, document: document.wrappedValue)
             CucuHaptics.soft()
@@ -127,6 +138,7 @@ struct CanvasMutator {
     @discardableResult
     func addAvatarNode(from data: Data) -> Bool {
         let parentID = parentForInsertion()
+        guard !isStructuredRootInsertion(parentID: parentID) else { return false }
         let pageIndex = targetPageIndex(parentID: parentID)
         let nodeID = UUID()
         do {
@@ -157,6 +169,7 @@ struct CanvasMutator {
             node.style.borderWidth = 2
             applyAdaptivePlacement(to: &node, parentID: parentID, pageIndex: pageIndex)
             document.wrappedValue.insert(node, under: parentID, onPage: pageIndex)
+            StructuredProfileLayout.normalize(&document.wrappedValue)
             selectedID.wrappedValue = nodeID
             store.updateDocument(draft, document: document.wrappedValue)
             CucuHaptics.soft()
@@ -175,6 +188,7 @@ struct CanvasMutator {
     @discardableResult
     func addGalleryNode(from imageBytesList: [Data]) -> Bool {
         let parentID = parentForInsertion()
+        guard !isStructuredRootInsertion(parentID: parentID) else { return false }
         let pageIndex = targetPageIndex(parentID: parentID)
 
         var savedPaths: [String] = []
@@ -202,6 +216,7 @@ struct CanvasMutator {
             : CanvasNode.defaultGallery(imagePaths: savedPaths)
         applyAdaptivePlacement(to: &node, parentID: parentID, pageIndex: pageIndex)
         document.wrappedValue.insert(node, under: parentID, onPage: pageIndex)
+        StructuredProfileLayout.normalize(&document.wrappedValue)
         selectedID.wrappedValue = node.id
         store.updateDocument(draft, document: document.wrappedValue)
         return true
@@ -428,6 +443,7 @@ struct CanvasMutator {
     private func applyAdaptivePlacement(to node: inout CanvasNode,
                                         parentID: UUID?,
                                         pageIndex: Int) {
+        if parentID == nil && node.role == .sectionCard { return }
         if isCarousel(parentID) { return }
         if let parentID,
            let origin = originForChildNextToText(
@@ -633,9 +649,11 @@ struct CanvasMutator {
 
     func deleteSelected() {
         guard let id = selectedID.wrappedValue else { return }
+        guard StructuredProfileLayout.canDelete(id, in: document.wrappedValue) else { return }
         let removedAssetPaths = Self.assetPaths(inSubtreeRootedAt: id, document: document.wrappedValue)
         document.wrappedValue.remove(id)
         deleteUnreferencedAssetPaths(removedAssetPaths)
+        StructuredProfileLayout.normalize(&document.wrappedValue)
         selectedID.wrappedValue = nil
         store.updateDocument(draft, document: document.wrappedValue)
         CucuHaptics.delete()
@@ -643,8 +661,10 @@ struct CanvasMutator {
 
     func duplicateSelected() {
         guard let id = selectedID.wrappedValue else { return }
+        guard StructuredProfileLayout.canDuplicate(id, in: document.wrappedValue) else { return }
         if let newID = document.wrappedValue.duplicate(id) {
             copyImageAssetsForDuplicatedSubtree(rootedAt: newID)
+            StructuredProfileLayout.normalize(&document.wrappedValue)
             selectedID.wrappedValue = newID
             store.updateDocument(draft, document: document.wrappedValue)
             CucuHaptics.duplicate()
@@ -653,13 +673,17 @@ struct CanvasMutator {
 
     func bringSelectedToFront() {
         guard let id = selectedID.wrappedValue else { return }
+        guard StructuredProfileLayout.canReorder(id, in: document.wrappedValue) else { return }
         document.wrappedValue.bringToFront(id)
+        StructuredProfileLayout.normalize(&document.wrappedValue)
         store.updateDocument(draft, document: document.wrappedValue)
     }
 
     func sendSelectedBackward() {
         guard let id = selectedID.wrappedValue else { return }
+        guard StructuredProfileLayout.canReorder(id, in: document.wrappedValue) else { return }
         document.wrappedValue.sendBackward(id)
+        StructuredProfileLayout.normalize(&document.wrappedValue)
         store.updateDocument(draft, document: document.wrappedValue)
     }
 
@@ -685,7 +709,9 @@ struct CanvasMutator {
         do {
             let appliedDocument = try TemplateStore(context: context).apply(template, to: draft)
             document.wrappedValue = appliedDocument
+            StructuredProfileLayout.normalize(&document.wrappedValue)
             selectedID.wrappedValue = nil
+            store.updateDocument(draft, document: document.wrappedValue)
             CucuHaptics.success()
             onAppliedSuccess()
             return true
@@ -807,6 +833,26 @@ struct CanvasMutator {
               let node = document.wrappedValue.nodes[sid] else {
             return nil
         }
+        if StructuredProfileLayout.isStructured(document.wrappedValue) {
+            if StructuredProfileLayout.isInSystemProfileSubtree(sid, in: document.wrappedValue) {
+                return nil
+            }
+            if node.type == .carousel {
+                return sid
+            }
+            if let carouselID = carouselAncestor(containing: sid) {
+                return carouselID
+            }
+            if node.role == .sectionCard {
+                return sid
+            }
+            if node.type == .container,
+               StructuredProfileLayout.sectionCardAncestor(containing: sid, in: document.wrappedValue) != nil {
+                return sid
+            }
+            return StructuredProfileLayout.sectionCardAncestor(containing: sid, in: document.wrappedValue)
+        }
+
         switch node.type {
         case .container, .carousel, .text:
             return sid
@@ -825,6 +871,10 @@ struct CanvasMutator {
     private func targetPageIndex(parentID: UUID?) -> Int {
         if let parentID, let pageIndex = document.wrappedValue.pageContaining(parentID) {
             return pageIndex
+        }
+        if StructuredProfileLayout.isStructured(document.wrappedValue),
+           let primaryPageIndex = StructuredProfileLayout.primaryPageIndex(in: document.wrappedValue) {
+            return primaryPageIndex
         }
         if let selectedID = selectedID.wrappedValue,
            let pageIndex = document.wrappedValue.pageContaining(selectedID) {
@@ -848,5 +898,9 @@ struct CanvasMutator {
             current = parentID
         }
         return nil
+    }
+
+    private func isStructuredRootInsertion(parentID: UUID?) -> Bool {
+        parentID == nil && StructuredProfileLayout.isStructured(document.wrappedValue)
     }
 }

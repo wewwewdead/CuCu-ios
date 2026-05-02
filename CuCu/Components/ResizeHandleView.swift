@@ -4,7 +4,7 @@ import UIKit
 /// and reports gesture translation up via a closure. The selection overlay
 /// owns the four handles and converts pan deltas into node-frame mutations.
 final class ResizeHandleView: UIView {
-    enum Corner { case topLeft, topRight, bottomLeft, bottomRight }
+    enum Corner { case topLeft, topRight, bottomLeft, bottomRight, bottomCenter }
 
     let corner: Corner
 

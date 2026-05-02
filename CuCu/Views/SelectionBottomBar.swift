@@ -78,6 +78,7 @@ struct SelectionBottomBar: View {
             .frame(maxWidth: .infinity)
 
             iconButton("trash") { onDelete() }
+                .disabled(!canDeleteSelection)
                 .accessibilityLabel("Delete selection")
         }
     }
@@ -158,15 +159,19 @@ struct SelectionBottomBar: View {
                 label: { Label("Edit Properties", systemImage: "slider.horizontal.3") }
             Button { tapHaptic(); onDuplicate() }
                 label: { Label("Duplicate", systemImage: "plus.square.on.square") }
+                .disabled(!canDuplicateSelection)
             Button { tapHaptic(); onBringToFront() }
                 label: { Label("Bring to Front", systemImage: "square.stack.3d.up") }
+                .disabled(!canReorderSelection)
             Button { tapHaptic(); onSendBackward() }
                 label: { Label("Send Backward", systemImage: "square.stack.3d.down.right") }
+                .disabled(!canReorderSelection)
             Button { tapHaptic(); onLayers() }
                 label: { Label("Layers", systemImage: "square.3.layers.3d") }
             Divider()
             Button(role: .destructive) { tapHaptic(); onDelete() }
                 label: { Label("Delete", systemImage: "trash") }
+                .disabled(!canDeleteSelection)
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 14, weight: .semibold))
@@ -176,6 +181,18 @@ struct SelectionBottomBar: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("More actions")
+    }
+
+    private var canDeleteSelection: Bool {
+        StructuredProfileLayout.canDelete(selectedID, in: document)
+    }
+
+    private var canDuplicateSelection: Bool {
+        StructuredProfileLayout.canDuplicate(selectedID, in: document)
+    }
+
+    private var canReorderSelection: Bool {
+        StructuredProfileLayout.canReorder(selectedID, in: document)
     }
 
     // MARK: - Inside / At this level

@@ -15,6 +15,7 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
     @Bindable var sheets: CanvasSheetCoordinator
     let mutator: CanvasMutator
     let addDestination: AddNodeSheet.Destination
+    let isStructured: Bool
     let editingPageIndex: Int
     let onSaveTemplate: (String) -> Bool
     let onApplyTemplate: (ProfileTemplate) -> Bool
@@ -24,6 +25,7 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
             .sheet(isPresented: $sheets.showAddSheet) {
                 AddNodeSheet(
                     destination: addDestination,
+                    isStructured: isStructured,
                     onPickType: { type in mutator.addNode(of: type) },
                     onPickImage: { data in mutator.addImageNode(from: data) },
                     onPickAvatar: { data in mutator.addAvatarNode(from: data) },
@@ -49,7 +51,12 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
                     PropertyInspectorView(
                         document: $document,
                         selectedID: id,
-                        onCommit: { doc in mutator.store.updateDocument(draft, document: doc) },
+                        onCommit: { doc in
+                            var normalized = doc
+                            StructuredProfileLayout.normalize(&normalized)
+                            document = normalized
+                            mutator.store.updateDocument(draft, document: normalized)
+                        },
                         onReplaceImage: { nodeID, data in mutator.replaceImage(for: nodeID, with: data) },
                         onSetContainerBackground: { nodeID, data in
                             mutator.setContainerBackgroundImage(for: nodeID, with: data)
@@ -59,6 +66,12 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
                         },
                         onEditContainerBackground: { nodeID in
                             sheets.requestEditContainerEffects(for: nodeID)
+                        },
+                        onSetPageBackground: { pageIndex, data in
+                            mutator.setPageBackgroundImage(data, pageIndex: pageIndex)
+                        },
+                        onClearPageBackground: { pageIndex in
+                            mutator.clearPageBackgroundImage(pageIndex: pageIndex)
                         },
                         onAppendGalleryImages: { nodeID, dataList in
                             mutator.appendGalleryImages(for: nodeID, with: dataList)

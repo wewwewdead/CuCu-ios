@@ -34,21 +34,21 @@ struct LayersPanelView: View {
                     } label: {
                         Label("Bring to Front", systemImage: "square.stack.3d.up")
                     }
-                    .disabled(selectedID == nil)
+                    .disabled(!canReorderSelection)
 
                     Button {
                         onSendBackward()
                     } label: {
                         Label("Send Backward", systemImage: "square.stack.3d.down.right")
                     }
-                    .disabled(selectedID == nil)
+                    .disabled(!canReorderSelection)
 
                     Button(role: .destructive) {
                         onDeleteSelected()
                     } label: {
                         Label("Delete Selected", systemImage: "trash")
                     }
-                    .disabled(selectedID == nil)
+                    .disabled(!canDeleteSelection)
                 } header: {
                     Text("Actions")
                 }
@@ -61,6 +61,16 @@ struct LayersPanelView: View {
                 }
             }
         }
+    }
+
+    private var canDeleteSelection: Bool {
+        guard let selectedID else { return false }
+        return StructuredProfileLayout.canDelete(selectedID, in: document)
+    }
+
+    private var canReorderSelection: Bool {
+        guard let selectedID else { return false }
+        return StructuredProfileLayout.canReorder(selectedID, in: document)
     }
 
     private func pageRow(_ pageIndex: Int) -> some View {

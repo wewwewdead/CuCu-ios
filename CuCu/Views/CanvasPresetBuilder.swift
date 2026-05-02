@@ -30,12 +30,18 @@ enum CanvasPresetBuilder {
                                  draft: ProfileDraft,
                                  store: DraftStore,
                                  rootPageIndex: Int) {
+        let isStructured = StructuredProfileLayout.isStructured(document.wrappedValue)
         let parentID: UUID? = {
-            if let sid = selectedID.wrappedValue,
-               document.wrappedValue.nodes[sid]?.type == .container {
-                return sid
+            guard let sid = selectedID.wrappedValue,
+                  let node = document.wrappedValue.nodes[sid],
+                  node.type == .container else { return nil }
+            if isStructured {
+                guard !StructuredProfileLayout.isInSystemProfileSubtree(sid, in: document.wrappedValue),
+                      StructuredProfileLayout.sectionCardAncestor(containing: sid, in: document.wrappedValue) != nil else {
+                    return nil
+                }
             }
-            return nil
+            return sid
         }()
         let tree = makeSectionPreset(
             preset,
@@ -43,8 +49,29 @@ enum CanvasPresetBuilder {
             document: document.wrappedValue,
             rootPageIndex: rootPageIndex
         )
-        insertPresetTree(tree, under: parentID, onPage: rootPageIndex, into: &document.wrappedValue)
-        selectedID.wrappedValue = tree.node.id
+        let pageIndex = structuredPageIndexIfNeeded(isStructured, document: document.wrappedValue, fallback: rootPageIndex)
+        let insertedRootID: UUID
+        if isStructured && parentID == nil {
+            var rootCardTree = tree
+            let height = max(StructuredProfileLayout.cardDefaultHeight, rootCardTree.node.frame.height)
+            var card = StructuredProfileLayout.makeSectionCard(
+                in: document.wrappedValue,
+                pageIndex: pageIndex,
+                height: height,
+                name: rootCardTree.node.name ?? preset.title
+            )
+            card.style = rootCardTree.node.style
+            card.role = .sectionCard
+            card.resizeBehavior = .verticalOnly
+            rootCardTree.node = card
+            insertPresetTree(rootCardTree, under: nil, onPage: pageIndex, into: &document.wrappedValue)
+            insertedRootID = rootCardTree.node.id
+        } else {
+            insertPresetTree(tree, under: parentID, onPage: pageIndex, into: &document.wrappedValue)
+            insertedRootID = tree.node.id
+        }
+        StructuredProfileLayout.normalize(&document.wrappedValue)
+        selectedID.wrappedValue = insertedRootID
         store.updateDocument(draft, document: document.wrappedValue)
         CucuHaptics.soft()
     }
@@ -95,6 +122,15 @@ enum CanvasPresetBuilder {
             .map { $0.frame.y + $0.frame.height }
             .max() ?? 56
         return CGPoint(x: 32, y: max(80, bottom + 24))
+    }
+
+    private static func structuredPageIndexIfNeeded(_ structured: Bool,
+                                                    document: ProfileDocument,
+                                                    fallback: Int) -> Int {
+        if structured, let pageIndex = StructuredProfileLayout.primaryPageIndex(in: document) {
+            return pageIndex
+        }
+        return document.pages.indices.contains(fallback) ? fallback : max(0, document.pages.count - 1)
     }
 
     // MARK: - Section presets

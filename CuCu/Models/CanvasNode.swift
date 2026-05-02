@@ -22,6 +22,31 @@ enum NodeType: String, Codable, Hashable {
     case carousel
 }
 
+enum CanvasNodeRole: String, Codable, Hashable {
+    case profileHero
+    case profileAvatar
+    case profileName
+    case profileBio
+    case profileMeta
+    case fixedDivider
+    case sectionCard
+
+    var isSystemOwned: Bool {
+        switch self {
+        case .profileHero, .profileAvatar, .profileName, .profileBio, .profileMeta, .fixedDivider:
+            return true
+        case .sectionCard:
+            return false
+        }
+    }
+}
+
+enum CanvasResizeBehavior: String, Codable, Hashable {
+    case freeform
+    case locked
+    case verticalOnly
+}
+
 /// One element in the scene graph.
 ///
 /// `parentId` is intentionally absent — parentage is owned by `ProfileDocument`
@@ -39,6 +64,12 @@ struct CanvasNode: Codable, Hashable, Identifiable {
     var frame: NodeFrame
     var zIndex: Int
     var opacity: Double
+    /// Optional semantic ownership used by the structured profile builder.
+    /// Nil means legacy/freeform behavior and decodes cleanly for older drafts.
+    var role: CanvasNodeRole?
+    /// Optional edit constraint used by the editor. Nil is treated as freeform
+    /// so existing documents keep their original drag/resize behavior.
+    var resizeBehavior: CanvasResizeBehavior?
     var style: NodeStyle
     var content: NodeContent
 
@@ -49,6 +80,8 @@ struct CanvasNode: Codable, Hashable, Identifiable {
          frame: NodeFrame,
          zIndex: Int = 0,
          opacity: Double = 1.0,
+         role: CanvasNodeRole? = nil,
+         resizeBehavior: CanvasResizeBehavior? = nil,
          style: NodeStyle = NodeStyle(),
          content: NodeContent = NodeContent()) {
         self.id = id
@@ -58,8 +91,16 @@ struct CanvasNode: Codable, Hashable, Identifiable {
         self.frame = frame
         self.zIndex = zIndex
         self.opacity = opacity
+        self.role = role
+        self.resizeBehavior = resizeBehavior
         self.style = style
         self.content = content
+    }
+}
+
+extension CanvasNode {
+    var isSystemOwnedProfileNode: Bool {
+        role?.isSystemOwned == true
     }
 }
 

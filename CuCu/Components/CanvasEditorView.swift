@@ -584,6 +584,13 @@ final class CanvasEditorView: UIView {
         /// Always-on noise overlay. Reads as newsprint texture on
         /// top of whatever the bg color / pattern produced.
         let paperGrainView: UIImageView
+        /// Automatic, subtle top shading for user-customized page
+        /// backgrounds. Render-only: derived from page bg state so it
+        /// needs no document migration and publishes through the same
+        /// renderer path as the editor.
+        let topGradientView: UIView
+        let topGradientLayer: CAGradientLayer
+        let topGradientHeightConstraint: NSLayoutConstraint
         let widthConstraint: NSLayoutConstraint
         let heightConstraint: NSLayoutConstraint
     }
@@ -852,7 +859,7 @@ final class CanvasEditorView: UIView {
         spotlightOverlay.alpha = 0
         spotlightOverlay.isHidden = true
 
-        for handle in [overlay.topLeft, overlay.topRight, overlay.bottomLeft, overlay.bottomRight] {
+        for handle in overlay.handles {
             handle.referenceView = contentView
             let corner = handle.corner
             handle.onPan = { [weak self] state, translation in
@@ -972,6 +979,7 @@ final class CanvasEditorView: UIView {
         CATransaction.commit()
         if let selectedID, let node = renderViews[selectedID] {
             overlay.isHidden = false
+            overlay.resizeMode = selectionOverlayResizeMode(for: selectedID)
             overlay.frame = contentView.convert(node.bounds, from: node)
         } else {
             overlay.isHidden = true
@@ -1158,16 +1166,45 @@ final class CanvasEditorView: UIView {
         paperGrainView.backgroundColor = UIColor(patternImage: CucuPaperGrain.uiTile)
         paperGrainView.alpha = 0.22
 
+        // User-added page backgrounds get a quiet dark falloff at the
+        // top. It sits above color/image/pattern and below content so
+        // profile text stays readable without making the page feel
+        // like it has a heavy overlay.
+        let topGradientView = BackgroundPatternHostView()
+        topGradientView.translatesAutoresizingMaskIntoConstraints = false
+        topGradientView.isUserInteractionEnabled = false
+        topGradientView.backgroundColor = .clear
+        topGradientView.clipsToBounds = true
+        topGradientView.isHidden = true
+
+        let topGradientLayer = CAGradientLayer()
+        topGradientLayer.startPoint = CGPoint(x: 0.5, y: 0)
+        topGradientLayer.endPoint = CGPoint(x: 0.5, y: 1)
+        topGradientLayer.colors = [
+            UIColor.black.withAlphaComponent(0.24).cgColor,
+            UIColor.black.withAlphaComponent(0.10).cgColor,
+            UIColor.black.withAlphaComponent(0.0).cgColor,
+        ]
+        topGradientLayer.locations = [0, 0.48, 1]
+        topGradientLayer.isHidden = true
+        topGradientLayer.actions = [
+            "bounds": NSNull(),
+            "position": NSNull(),
+            "opacity": NSNull()
+        ]
+
         shadowView.addSubview(pageView)
         pageView.addSubview(backgroundImageView)
         pageView.addSubview(backgroundPatternView)
         pageView.addSubview(paperGrainView)
+        pageView.addSubview(topGradientView)
         shadowView.addSubview(chromeView)
         chromeView.addSubview(pageTagView)
         chromeView.addSubview(deleteButton)
 
         let width = shadowView.widthAnchor.constraint(equalToConstant: ProfileDocument.defaultPageWidth)
         let height = shadowView.heightAnchor.constraint(equalToConstant: ProfileDocument.defaultPageHeight)
+        let topGradientHeight = topGradientView.heightAnchor.constraint(equalToConstant: 280)
         NSLayoutConstraint.activate([
             width,
             height,
@@ -1208,10 +1245,15 @@ final class CanvasEditorView: UIView {
             paperGrainView.leadingAnchor.constraint(equalTo: pageView.leadingAnchor),
             paperGrainView.trailingAnchor.constraint(equalTo: pageView.trailingAnchor),
             paperGrainView.topAnchor.constraint(equalTo: pageView.topAnchor),
-            paperGrainView.bottomAnchor.constraint(equalTo: pageView.bottomAnchor)
+            paperGrainView.bottomAnchor.constraint(equalTo: pageView.bottomAnchor),
+            topGradientView.leadingAnchor.constraint(equalTo: pageView.leadingAnchor),
+            topGradientView.trailingAnchor.constraint(equalTo: pageView.trailingAnchor),
+            topGradientView.topAnchor.constraint(equalTo: pageView.topAnchor),
+            topGradientHeight
         ])
 
         backgroundPatternView.layer.addSublayer(backgroundPatternGradientLayer)
+        topGradientView.layer.addSublayer(topGradientLayer)
 
         return PageSurface(
             pageID: page.id,
@@ -1224,6 +1266,9 @@ final class CanvasEditorView: UIView {
             backgroundPatternView: backgroundPatternView,
             backgroundPatternGradientLayer: backgroundPatternGradientLayer,
             paperGrainView: paperGrainView,
+            topGradientView: topGradientView,
+            topGradientLayer: topGradientLayer,
+            topGradientHeightConstraint: topGradientHeight,
             widthConstraint: width,
             heightConstraint: height
         )
@@ -1297,14 +1342,35 @@ final class CanvasEditorView: UIView {
         // Pattern overlay. Tile patterns set a `UIColor(patternImage:)`
         // background; gradient washes use the cached `CAGradientLayer`.
         applyBackgroundPattern(page, surface: surface)
+        applyAutomaticTopGradient(page, surface: surface)
 
-        // Z-order: image (back) → pattern → grain (front, but below nodes).
-        // Nodes are added to `pageView` later in the apply pass; sending
-        // these to the back keeps them under whatever node stack lands
-        // here next.
+        // Z-order: image (back) → pattern → top gradient → grain
+        // (front, but below nodes). Nodes are added to `pageView`
+        // later in the apply pass; sending these to the back keeps
+        // them under whatever node stack lands here next.
         surface.pageView.sendSubviewToBack(surface.paperGrainView)
+        surface.pageView.sendSubviewToBack(surface.topGradientView)
         surface.pageView.sendSubviewToBack(surface.backgroundPatternView)
         surface.pageView.sendSubviewToBack(surface.backgroundImageView)
+    }
+
+    private func applyAutomaticTopGradient(_ page: PageStyle, surface: PageSurface) {
+        let showGradient = hasUserCustomizedBackground(page)
+        surface.topGradientView.isHidden = !showGradient
+        surface.topGradientLayer.isHidden = !showGradient
+
+        let targetHeight = min(320, max(180, CGFloat(page.height) * 0.28))
+        if abs(surface.topGradientHeightConstraint.constant - targetHeight) > 0.5 {
+            surface.topGradientHeightConstraint.constant = targetHeight
+            surface.topGradientView.setNeedsLayout()
+        }
+    }
+
+    private func hasUserCustomizedBackground(_ page: PageStyle) -> Bool {
+        let customColor = page.backgroundHex.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare(ProfileDocument.defaultPageBackgroundHex) != .orderedSame
+        let hasImage = !(page.backgroundImagePath?.isEmpty ?? true)
+        return customColor || hasImage
     }
 
     private func applyBackgroundPattern(_ page: PageStyle, surface: PageSurface) {
@@ -1754,10 +1820,22 @@ final class CanvasEditorView: UIView {
     private func applyOverlayForCurrentSelection() {
         if let selectedID, let node = renderViews[selectedID] {
             overlay.isHidden = false
+            overlay.resizeMode = selectionOverlayResizeMode(for: selectedID)
             overlay.frame = contentView.convert(node.bounds, from: node)
             contentView.bringSubviewToFront(overlay)
         } else {
             overlay.isHidden = true
+        }
+    }
+
+    private func selectionOverlayResizeMode(for id: UUID) -> SelectionOverlayView.ResizeMode {
+        switch StructuredProfileLayout.resizeBehavior(for: id, in: document) {
+        case .locked:
+            return .locked
+        case .verticalOnly:
+            return .verticalOnly
+        case .freeform:
+            return .freeform
         }
     }
 
@@ -2133,6 +2211,7 @@ final class CanvasEditorView: UIView {
     @objc private func handleNodePan(_ gesture: UIPanGestureRecognizer) {
         guard let view = gesture.view as? NodeRenderView else { return }
         let id = view.nodeID
+        guard StructuredProfileLayout.canMove(id, in: document) else { return }
 
         switch gesture.state {
         case .began:
@@ -2222,6 +2301,8 @@ final class CanvasEditorView: UIView {
                               translation: CGPoint) {
         guard let id = selectedID,
               let view = renderViews[id] else { return }
+        let resizeMode = StructuredProfileLayout.resizeBehavior(for: id, in: document)
+        guard resizeMode != .locked else { return }
 
         switch state {
         case .began:
@@ -2236,9 +2317,11 @@ final class CanvasEditorView: UIView {
             // so a single multiplier preserves relative positions
             // throughout.
             dragStartDescendantFrames.removeAll()
-            for descendantID in document.subtree(rootedAt: id) where descendantID != id {
-                if let descendantView = renderViews[descendantID] {
-                    dragStartDescendantFrames[descendantID] = descendantView.frame
+            if resizeMode == .freeform {
+                for descendantID in document.subtree(rootedAt: id) where descendantID != id {
+                    if let descendantView = renderViews[descendantID] {
+                        dragStartDescendantFrames[descendantID] = descendantView.frame
+                    }
                 }
             }
 
@@ -2247,23 +2330,32 @@ final class CanvasEditorView: UIView {
             // in ancestors (Phase 1 invariant), this vector equals the
             // translation in the node's parent space.
             var newFrame = dragStartFrame
-            switch corner {
-            case .topLeft:
-                newFrame.origin.x += translation.x
-                newFrame.origin.y += translation.y
-                newFrame.size.width -= translation.x
-                newFrame.size.height -= translation.y
-            case .topRight:
-                newFrame.origin.y += translation.y
-                newFrame.size.width += translation.x
-                newFrame.size.height -= translation.y
-            case .bottomLeft:
-                newFrame.origin.x += translation.x
-                newFrame.size.width -= translation.x
-                newFrame.size.height += translation.y
-            case .bottomRight:
-                newFrame.size.width += translation.x
-                newFrame.size.height += translation.y
+            if resizeMode == .verticalOnly {
+                newFrame.size.height = max(
+                    CGFloat(StructuredProfileLayout.cardMinimumHeight),
+                    dragStartFrame.height + translation.y
+                )
+            } else {
+                switch corner {
+                case .topLeft:
+                    newFrame.origin.x += translation.x
+                    newFrame.origin.y += translation.y
+                    newFrame.size.width -= translation.x
+                    newFrame.size.height -= translation.y
+                case .topRight:
+                    newFrame.origin.y += translation.y
+                    newFrame.size.width += translation.x
+                    newFrame.size.height -= translation.y
+                case .bottomLeft:
+                    newFrame.origin.x += translation.x
+                    newFrame.size.width -= translation.x
+                    newFrame.size.height += translation.y
+                case .bottomRight:
+                    newFrame.size.width += translation.x
+                    newFrame.size.height += translation.y
+                case .bottomCenter:
+                    newFrame.size.height += translation.y
+                }
             }
 
             // Aspect-lock when the node is in Circle mode so dragging a corner
@@ -2272,7 +2364,7 @@ final class CanvasEditorView: UIView {
             // resize anchor as fixed. Use the larger of the two requested
             // sizes — that matches Shift-resize behavior in Figma/Sketch and
             // avoids surprise shrink-to-zero when the user pulls outward.
-            if document.nodes[id]?.style.clipShape == .circle {
+            if resizeMode == .freeform && document.nodes[id]?.style.clipShape == .circle {
                 let side = max(newFrame.size.width, newFrame.size.height)
                 switch corner {
                 case .topLeft:
@@ -2287,23 +2379,29 @@ final class CanvasEditorView: UIView {
                 case .bottomRight:
                     newFrame.origin.x = dragStartFrame.minX
                     newFrame.origin.y = dragStartFrame.minY
+                case .bottomCenter:
+                    newFrame.origin.x = dragStartFrame.minX
+                    newFrame.origin.y = dragStartFrame.minY
                 }
                 newFrame.size.width = side
                 newFrame.size.height = side
             }
 
             // Min size clamp: don't allow the frame to collapse past 24x24.
-            if newFrame.size.width < 24 {
+            let minimumHeight = resizeMode == .verticalOnly
+                ? CGFloat(StructuredProfileLayout.cardMinimumHeight)
+                : 24
+            if resizeMode == .freeform && newFrame.size.width < 24 {
                 if corner == .topLeft || corner == .bottomLeft {
                     newFrame.origin.x = dragStartFrame.maxX - 24
                 }
                 newFrame.size.width = 24
             }
-            if newFrame.size.height < 24 {
+            if newFrame.size.height < minimumHeight {
                 if corner == .topLeft || corner == .topRight {
-                    newFrame.origin.y = dragStartFrame.maxY - 24
+                    newFrame.origin.y = dragStartFrame.maxY - minimumHeight
                 }
-                newFrame.size.height = 24
+                newFrame.size.height = minimumHeight
             }
             view.frame = newFrame
 
@@ -2312,11 +2410,13 @@ final class CanvasEditorView: UIView {
             // gesture — the document is not mutated until `.ended`
             // so SwiftUI doesn't re-render mid-drag and stomp on
             // the in-flight frames.
-            applyDescendantScale(
-                in: dragStartDescendantFrames,
-                scaleX: dragStartFrame.width > 0 ? newFrame.width / dragStartFrame.width : 1,
-                scaleY: dragStartFrame.height > 0 ? newFrame.height / dragStartFrame.height : 1
-            )
+            if resizeMode == .freeform {
+                applyDescendantScale(
+                    in: dragStartDescendantFrames,
+                    scaleX: dragStartFrame.width > 0 ? newFrame.width / dragStartFrame.width : 1,
+                    scaleY: dragStartFrame.height > 0 ? newFrame.height / dragStartFrame.height : 1
+                )
+            }
 
             nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
             applyOverlayForCurrentSelection()
@@ -2344,19 +2444,22 @@ final class CanvasEditorView: UIView {
                 node.frame = NodeFrame(view.frame)
                 document.nodes[id] = node
             }
-            for (descendantID, originalFrame) in dragStartDescendantFrames {
-                guard var descendant = document.nodes[descendantID] else { continue }
-                descendant.frame = NodeFrame(CGRect(
-                    x: originalFrame.origin.x * finalScaleX,
-                    y: originalFrame.origin.y * finalScaleY,
-                    width: originalFrame.width * finalScaleX,
-                    height: originalFrame.height * finalScaleY
-                ))
-                document.nodes[descendantID] = descendant
+            if resizeMode == .freeform {
+                for (descendantID, originalFrame) in dragStartDescendantFrames {
+                    guard var descendant = document.nodes[descendantID] else { continue }
+                    descendant.frame = NodeFrame(CGRect(
+                        x: originalFrame.origin.x * finalScaleX,
+                        y: originalFrame.origin.y * finalScaleY,
+                        width: originalFrame.width * finalScaleX,
+                        height: originalFrame.height * finalScaleY
+                    ))
+                    document.nodes[descendantID] = descendant
+                }
             }
             dragStartDescendantFrames.removeAll()
 
             if document.nodes[id] != nil {
+                StructuredProfileLayout.normalize(&document)
                 nearestCarouselAncestor(of: view)?.updateContentSizeToFitItems()
                 onCommit?(document)
             }
@@ -2770,6 +2873,9 @@ extension CanvasEditorView: UIGestureRecognizerDelegate, UIScrollViewDelegate {
         // for whatever node the user is holding. Long-press
         // arbitration uses the existing depth + selection rules.
         if gestureRecognizer is UIPanGestureRecognizer {
+            guard StructuredProfileLayout.canMove(viewID, in: document) else {
+                return false
+            }
             guard let selID = selectedID, selID == viewID else {
                 return false
             }

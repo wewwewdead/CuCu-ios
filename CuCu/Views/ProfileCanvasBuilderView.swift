@@ -80,6 +80,28 @@ struct ProfileCanvasBuilderView: View {
     /// the rule used inside `CanvasMutator.parentForInsertion`, so the
     /// AddNodeSheet's banner stays accurate.
     private var addDestination: AddNodeSheet.Destination {
+        if StructuredProfileLayout.isStructured(document) {
+            guard let sid = selectedID,
+                  let node = document.nodes[sid],
+                  !StructuredProfileLayout.isInSystemProfileSubtree(sid, in: document) else {
+                return .structuredPage
+            }
+            if node.type == .carousel || carouselAncestor(containing: sid) != nil {
+                return .carousel
+            }
+            if node.role == .sectionCard {
+                return .sectionCard
+            }
+            if node.type == .container,
+               StructuredProfileLayout.sectionCardAncestor(containing: sid, in: document) != nil {
+                return .container
+            }
+            if StructuredProfileLayout.sectionCardAncestor(containing: sid, in: document) != nil {
+                return .sectionCard
+            }
+            return .structuredPage
+        }
+
         guard let sid = selectedID, let node = document.nodes[sid] else {
             return .page
         }
@@ -117,6 +139,21 @@ struct ProfileCanvasBuilderView: View {
         document.pages.allSatisfy { $0.rootChildrenIDs.isEmpty } && document.nodes.isEmpty
     }
 
+    private var selectedCanDelete: Bool {
+        guard let selectedID else { return false }
+        return StructuredProfileLayout.canDelete(selectedID, in: document)
+    }
+
+    private var selectedCanDuplicate: Bool {
+        guard let selectedID else { return false }
+        return StructuredProfileLayout.canDuplicate(selectedID, in: document)
+    }
+
+    private var selectedCanReorder: Bool {
+        guard let selectedID else { return false }
+        return StructuredProfileLayout.canReorder(selectedID, in: document)
+    }
+
     var body: some View {
         @Bindable var sheets = sheets
 
@@ -128,8 +165,10 @@ struct ProfileCanvasBuilderView: View {
                     document: $document,
                     selectedID: $selectedID,
                     onCommit: { doc in
-                        document = doc
-                        resolvedStore.updateDocument(draft, document: doc)
+                        var normalized = doc
+                        StructuredProfileLayout.normalize(&normalized)
+                        document = normalized
+                        resolvedStore.updateDocument(draft, document: normalized)
                     },
                     onAddPage: { appendPage() },
                     onDeletePageRequested: { index in
@@ -243,6 +282,7 @@ struct ProfileCanvasBuilderView: View {
             sheets: sheets,
             mutator: mutator,
             addDestination: addDestination,
+            isStructured: StructuredProfileLayout.isStructured(document),
             editingPageIndex: editingPageIndex,
             onSaveTemplate: { name in mutator.saveTemplate(named: name) },
             onApplyTemplate: { template in
@@ -402,11 +442,11 @@ struct ProfileCanvasBuilderView: View {
                 Button("Layers", systemImage: "square.3.layers.3d") { sheets.showLayersSheet = true }
                 Divider()
                 Button("Duplicate", systemImage: "plus.square.on.square") { mutator.duplicateSelected() }
-                    .disabled(selectedID == nil)
+                    .disabled(!selectedCanDuplicate)
                 Button("Bring to Front", systemImage: "square.stack.3d.up") { mutator.bringSelectedToFront() }
-                    .disabled(selectedID == nil)
+                    .disabled(!selectedCanReorder)
                 Button("Send Backward", systemImage: "square.stack.3d.down.right") { mutator.sendSelectedBackward() }
-                    .disabled(selectedID == nil)
+                    .disabled(!selectedCanReorder)
                 Button("Edit Properties…", systemImage: "slider.horizontal.3") { sheets.showInspector = true }
                     .disabled(selectedID == nil)
                 Divider()
@@ -442,7 +482,7 @@ struct ProfileCanvasBuilderView: View {
                 }
                 Divider()
                 Button("Delete", systemImage: "trash", role: .destructive) { mutator.deleteSelected() }
-                    .disabled(selectedID == nil)
+                    .disabled(!selectedCanDelete)
                 Divider()
                 // Full reset — local canvas + (when signed in and
                 // published) the cloud copy. Always available so an
@@ -470,13 +510,13 @@ struct ProfileCanvasBuilderView: View {
                 .foregroundStyle(.orange)
             Text("This draft uses an older format.")
                 .font(.headline)
-            Text("Starting fresh will replace its contents with a blank canvas. The current data will be overwritten only after you confirm.")
+            Text("Starting fresh will replace its contents with a structured profile page. The current data will be overwritten only after you confirm.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
             Button("Start fresh canvas") {
-                document = .blank
+                document = .structuredProfileBlank
                 editingPageIndex = 0
                 legacyDraft = false
                 resolvedStore.updateDocument(draft, document: document)
@@ -492,16 +532,27 @@ struct ProfileCanvasBuilderView: View {
         titleDraft = draft.title
         switch CanvasDocumentCodec.decode(draft.designJSON) {
         case .document(let doc):
-            document = doc
+            var loaded = doc
+            if StructuredProfileLayout.isEmptyCanvas(loaded) {
+                loaded = .structuredProfileBlank
+                resolvedStore.updateDocument(draft, document: loaded)
+            } else {
+                let original = loaded
+                StructuredProfileLayout.normalize(&loaded)
+                if loaded != original {
+                    resolvedStore.updateDocument(draft, document: loaded)
+                }
+            }
+            document = loaded
             editingPageIndex = 0
             legacyDraft = false
         case .legacy:
             // Don't overwrite. Show banner; user opts in to blank canvas.
             legacyDraft = true
         case .empty:
-            // Brand-new or wiped — seed a blank doc and persist so subsequent
-            // launches go straight to .document.
-            document = .blank
+            // Brand-new or wiped — seed a structured profile doc and persist
+            // so subsequent launches go straight to .document.
+            document = .structuredProfileBlank
             editingPageIndex = 0
             legacyDraft = false
             resolvedStore.updateDocument(draft, document: document)
@@ -684,7 +735,7 @@ struct ProfileCanvasBuilderView: View {
         //    reflects the user's choice. Asset folder + in-memory
         //    document + every transient view-state flag.
         LocalCanvasAssetStore.deleteDraftAssets(draftID: draft.id)
-        document = .blank
+        document = .structuredProfileBlank
         selectedID = nil
         editingPageIndex = 0
         legacyDraft = false

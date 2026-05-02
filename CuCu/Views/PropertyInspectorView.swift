@@ -28,6 +28,8 @@ struct PropertyInspectorView: View {
     var onSetContainerBackground: (UUID, Data) -> Bool
     var onClearContainerBackground: (UUID) -> Void
     var onEditContainerBackground: (UUID) -> Void
+    var onSetPageBackground: (Int, Data) -> Bool
+    var onClearPageBackground: (Int) -> Void
     /// Append picked image bytes to a `.gallery` node. Host writes each
     /// image to `LocalCanvasAssetStore` under a fresh per-image UUID
     /// and returns `true` when *all* bytes saved cleanly. Provided as
@@ -44,6 +46,8 @@ struct PropertyInspectorView: View {
 
     @State private var replaceSelection: PhotosPickerItem?
     @State private var containerBgSelection: PhotosPickerItem?
+    @State private var profileAvatarSelection: PhotosPickerItem?
+    @State private var profilePageBackgroundSelection: PhotosPickerItem?
     /// Multi-selection picker driving gallery image additions.
     @State private var gallerySelection: [PhotosPickerItem] = []
     @State private var pickerLoading = false
@@ -123,6 +127,19 @@ struct PropertyInspectorView: View {
                         aspect: aspect
                     )
                     return true
+                }
+            }
+            .onChange(of: profileAvatarSelection) { _, newItem in
+                loadPickerData(newItem, resetState: { profileAvatarSelection = nil }) { data in
+                    guard let avatarID = profileNodeID(.profileAvatar) else { return false }
+                    return onReplaceImage(avatarID, data)
+                }
+            }
+            .onChange(of: profilePageBackgroundSelection) { _, newItem in
+                loadPickerData(newItem, resetState: { profilePageBackgroundSelection = nil }) { data in
+                    let pageIndex = profilePageIndex()
+                    clearProfileHeroBackgroundFill()
+                    return onSetPageBackground(pageIndex, data)
                 }
             }
             .sheet(item: $pendingContainerCropSource) { source in
@@ -217,11 +234,31 @@ struct PropertyInspectorView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .center, spacing: 10) {
                 switch node.type {
-                case .container: containerCards(node: node)
-                case .text:      textCards(node: node)
-                case .image:     imageCards(node: node)
+                case .container:
+                    if node.role == .profileHero {
+                        profileDetailsCards()
+                    } else {
+                        containerCards(node: node)
+                    }
+                case .text:
+                    if isProfileDetailsRole(node.role) {
+                        profileDetailsCards()
+                    } else {
+                        textCards(node: node)
+                    }
+                case .image:
+                    if isProfileDetailsRole(node.role) {
+                        profileDetailsCards()
+                    } else {
+                        imageCards(node: node)
+                    }
                 case .icon:      iconCards(node: node)
-                case .divider:   dividerCards(node: node)
+                case .divider:
+                    if node.role == .fixedDivider {
+                        fixedDividerCards(node: node)
+                    } else {
+                        dividerCards(node: node)
+                    }
                 case .link:      linkCards(node: node)
                 case .gallery:   galleryCards(node: node)
                 case .carousel:  carouselCards(node: node)
@@ -509,6 +546,136 @@ struct PropertyInspectorView: View {
     }
 
     // MARK: - Per-type card sets
+
+    @ViewBuilder
+    private func profileDetailsCards() -> some View {
+        if let avatarID = profileNodeID(.profileAvatar) {
+            profileAvatarCard(nodeID: avatarID)
+        }
+        if let nameID = profileNodeID(.profileName) {
+            textFieldCard(
+                title: "Display Name",
+                text: bindingText(nameID),
+                placeholder: "Display name"
+            )
+        }
+        if let metaID = profileNodeID(.profileMeta) {
+            textFieldCard(
+                title: "Handle",
+                text: bindingText(metaID),
+                placeholder: "@username"
+            )
+        }
+        if let bioID = profileNodeID(.profileBio) {
+            textFieldCard(
+                title: "Bio",
+                text: bindingText(bioID),
+                placeholder: "Short bio"
+            )
+        }
+        let pageIndex = profilePageIndex()
+        colorCard(
+            title: "Canvas Color",
+            hex: bindingPageBackgroundHex(pageIndex),
+            supportsAlpha: false
+        )
+        profileCanvasBackgroundCard(pageIndex: pageIndex)
+    }
+
+    private func profileAvatarCard(nodeID: UUID) -> some View {
+        cardShell(title: "Avatar", width: 170) {
+            PhotosPicker(
+                selection: $profileAvatarSelection,
+                matching: .images,
+                photoLibrary: .shared()
+            ) {
+                HStack(spacing: 8) {
+                    Image(systemName: "person.crop.circle")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.cucuInkSoft)
+                    Text(pickerLoading ? "Loading…" : "Replace")
+                        .font(.cucuSerif(14, weight: .semibold))
+                        .foregroundStyle(Color.cucuInk)
+                    Spacer(minLength: 0)
+                }
+            }
+            .disabled(pickerLoading || document.nodes[nodeID] == nil)
+        }
+    }
+
+    private func profileCanvasBackgroundCard(pageIndex: Int) -> some View {
+        let index = safePageIndex(pageIndex)
+        let path = document.pages.indices.contains(index) ? document.pages[index].backgroundImagePath : nil
+        return cardShell(title: "Canvas Image", width: 180) {
+            if let path,
+               !path.isEmpty,
+               let preview = LocalCanvasAssetStore.loadUIImage(path) {
+                Menu {
+                    PhotosPicker(
+                        selection: $profilePageBackgroundSelection,
+                        matching: .images,
+                        photoLibrary: .shared()
+                    ) {
+                        Label("Replace", systemImage: "photo.on.rectangle.angled")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        clearProfileHeroBackgroundFill()
+                        onClearPageBackground(index)
+                    } label: {
+                        Label("Remove", systemImage: "trash")
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(uiImage: preview)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 36, height: 36)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
+                            )
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Set")
+                                .font(.cucuSerif(14, weight: .semibold))
+                                .foregroundStyle(Color.cucuInk)
+                            Text("Tap to manage")
+                                .font(.cucuSans(10, weight: .regular))
+                                .foregroundStyle(Color.cucuInkFaded)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+            } else {
+                PhotosPicker(
+                    selection: $profilePageBackgroundSelection,
+                    matching: .images,
+                    photoLibrary: .shared()
+                ) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "photo.on.rectangle")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.cucuInkSoft)
+                        Text(pickerLoading ? "Loading…" : "Set Image")
+                            .font(.cucuSerif(14, weight: .semibold))
+                            .foregroundStyle(Color.cucuInk)
+                        Spacer(minLength: 0)
+                    }
+                }
+                .disabled(pickerLoading)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fixedDividerCards(node: CanvasNode) -> some View {
+        dividerStyleFamilyCard(node: node)
+        colorCard(
+            title: "Color",
+            hex: bindingHex(node.id, key: \.style.borderColorHex, defaultHex: "#B22A4A")
+        )
+    }
 
     @ViewBuilder
     private func containerCards(node: CanvasNode) -> some View {
@@ -1233,7 +1400,9 @@ struct PropertyInspectorView: View {
 
     // MARK: - Picker handling
 
-    private func loadPickerData(_ item: PhotosPickerItem?, callback: @escaping (Data) -> Bool) {
+    private func loadPickerData(_ item: PhotosPickerItem?,
+                                resetState: @escaping () -> Void = {},
+                                callback: @escaping (Data) -> Bool) {
         guard let item else { return }
         pickerLoading = true
         pickerError = nil
@@ -1248,6 +1417,7 @@ struct PropertyInspectorView: View {
                         pickerLoading = false
                         replaceSelection = nil
                         containerBgSelection = nil
+                        resetState()
                     }
                 } else {
                     await MainActor.run {
@@ -1255,6 +1425,7 @@ struct PropertyInspectorView: View {
                         pickerLoading = false
                         replaceSelection = nil
                         containerBgSelection = nil
+                        resetState()
                     }
                 }
             } catch {
@@ -1263,6 +1434,7 @@ struct PropertyInspectorView: View {
                     pickerLoading = false
                     replaceSelection = nil
                     containerBgSelection = nil
+                    resetState()
                 }
             }
         }
@@ -1589,5 +1761,57 @@ struct PropertyInspectorView: View {
                 document.nodes[id] = node
             }
         )
+    }
+
+    private func bindingPageBackgroundHex(_ pageIndex: Int) -> Binding<String> {
+        Binding(
+            get: {
+                let index = safePageIndex(pageIndex)
+                guard document.pages.indices.contains(index) else {
+                    return ProfileDocument.defaultPageBackgroundHex
+                }
+                return document.pages[index].backgroundHex
+            },
+            set: { newValue in
+                let index = safePageIndex(pageIndex)
+                guard document.pages.indices.contains(index) else { return }
+                document.pages[index].backgroundHex = newValue
+                clearProfileHeroBackgroundFill()
+                document.syncLegacyFieldsFromFirstPage()
+            }
+        )
+    }
+
+    private func profilePageIndex() -> Int {
+        let index = StructuredProfileLayout.primaryPageIndex(in: document) ?? 0
+        return safePageIndex(index)
+    }
+
+    private func safePageIndex(_ requested: Int) -> Int {
+        guard document.pages.indices.contains(requested) else { return 0 }
+        return requested
+    }
+
+    private func clearProfileHeroBackgroundFill() {
+        guard let heroID = profileNodeID(.profileHero),
+              var hero = document.nodes[heroID] else { return }
+        hero.style.backgroundColorHex = nil
+        hero.style.backgroundImagePath = nil
+        hero.style.backgroundBlur = nil
+        hero.style.backgroundVignette = nil
+        document.nodes[heroID] = hero
+    }
+
+    private func isProfileDetailsRole(_ role: CanvasNodeRole?) -> Bool {
+        switch role {
+        case .profileHero, .profileAvatar, .profileName, .profileBio, .profileMeta:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func profileNodeID(_ role: CanvasNodeRole) -> UUID? {
+        StructuredProfileLayout.roleID(role, in: document)
     }
 }
