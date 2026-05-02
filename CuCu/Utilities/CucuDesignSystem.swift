@@ -87,6 +87,7 @@ extension UIColor {
     static let cucuMoss       = UIColor(cucuRGB: 0x4A7D4D)
     static let cucuRose       = UIColor(cucuRGB: 0xEFD9DA)
     static let cucuAccentSoft = UIColor(cucuRGB: 0xF1D4D9)
+    static let cucuShell      = UIColor(cucuRGB: 0xE9A4B3)
 }
 
 // MARK: - Fonts

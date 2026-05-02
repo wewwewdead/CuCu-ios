@@ -83,6 +83,14 @@ struct AddNodeSheet: View {
                 destinationHeader
 
                 if destination == .structuredPage {
+                    // Cards section sits at the top because Section Card
+                    // is the structured profile's primary editing unit.
+                    // Below it, the user gets the same primitives the
+                    // non-structured page offers — Basic, Social /
+                    // Profile, Decor — so anything (avatar, link,
+                    // gallery, carousel, icon, divider, plain text /
+                    // image) can be dropped directly onto the page
+                    // without first nesting into a Section Card.
                     Section {
                         Button {
                             onPickType(.container)
@@ -94,98 +102,14 @@ struct AddNodeSheet: View {
                     } header: {
                         CucuSectionLabel(text: "Cards")
                     }
+
+                    basicSection
+                    socialSection
+                    decorSection
                 } else {
-                    // — Basic primitives the user reaches for first —
-                    Section {
-                        Button {
-                            onPickType(.text)
-                            dismiss()
-                        } label: {
-                            rowLabel(symbol: "textformat", title: "Text",
-                                     subtitle: "A line or paragraph of text.")
-                        }
-                        Button {
-                            onPickType(.container)
-                            dismiss()
-                        } label: {
-                            rowLabel(symbol: "rectangle", title: "Container",
-                                     subtitle: "A rectangular area you can nest other elements inside.")
-                        }
-                        PhotosPicker(selection: $pickerSelection, matching: .images, photoLibrary: .shared()) {
-                            rowLabel(symbol: "photo", title: "Image",
-                                     subtitle: pickerLoading
-                                        ? "Loading…"
-                                        : "Pick a photo from your library.")
-                        }
-                        .disabled(pickerLoading)
-                    } header: {
-                        CucuSectionLabel(text: "Basic")
-                    }
-
-                    // — Identity / social: the things a profile page is
-                    //   actually for. Avatar uses a separate picker
-                    //   selection so it doesn't clash with the plain
-                    //   Image picker above.
-                    Section {
-                        PhotosPicker(selection: $avatarSelection, matching: .images, photoLibrary: .shared()) {
-                            rowLabel(symbol: "person.crop.circle.fill", title: "Avatar",
-                                     subtitle: pickerLoading
-                                        ? "Loading…"
-                                        : "A circular profile photo — square frame, circle clip.")
-                        }
-                        .disabled(pickerLoading)
-
-                        Button {
-                            onPickType(.link)
-                            dismiss()
-                        } label: {
-                            rowLabel(symbol: "link", title: "Link",
-                                     subtitle: "Profile link card — pill, button, badge, more.")
-                        }
-
-                        PhotosPicker(
-                            selection: $gallerySelection,
-                            maxSelectionCount: 12,
-                            matching: .images,
-                            photoLibrary: .shared()
-                        ) {
-                            rowLabel(symbol: "rectangle.grid.2x2", title: "Gallery",
-                                     subtitle: pickerLoading
-                                        ? "Loading…"
-                                        : "Multiple photos in a grid, row, or collage.")
-                        }
-                        .disabled(pickerLoading)
-
-                        Button {
-                            onPickType(.carousel)
-                            dismiss()
-                        } label: {
-                            rowLabel(symbol: "rectangle.stack", title: "Carousel",
-                                    subtitle: "A horizontal strip for text, images, and other items.")
-                        }
-                    } header: {
-                        CucuSectionLabel(text: "Social / Profile")
-                    }
-
-                    // — Decorative props — small visual flourishes —
-                    Section {
-                        Button {
-                            onPickType(.icon)
-                            dismiss()
-                        } label: {
-                            rowLabel(symbol: "star.fill", title: "Icon",
-                                     subtitle: "A cute symbol — pick a style family + glyph.")
-                        }
-                        Button {
-                            onPickType(.divider)
-                            dismiss()
-                        } label: {
-                            rowLabel(symbol: "scribble", title: "Divider",
-                                     subtitle: "Decorative break — sparkle, lace, ribbon, more.")
-                        }
-                    } header: {
-                        CucuSectionLabel(text: "Decor")
-                    }
+                    basicSection
+                    socialSection
+                    decorSection
                 }
 
                 if let pickerError {
@@ -300,6 +224,122 @@ struct AddNodeSheet: View {
                     resetState()
                 }
             }
+        }
+    }
+
+    /// Basic primitives — text, container, plain image. Same set of
+    /// rows the legacy non-structured page exposed; broken out into a
+    /// computed view so the structured page can reuse it without
+    /// duplicating the picker / button / state plumbing.
+    ///
+    /// `Container` is hidden on the structured page destination
+    /// because the Cards section already exposes Section Card, which
+    /// is what `CanvasMutator.addNode` produces for a `.container`
+    /// pick at the structured root anyway. Showing both rows just
+    /// duplicates the same outcome with two labels. Container stays
+    /// available everywhere else (nested into a Section Card or
+    /// inside another Container) where it builds a real nested
+    /// container instead.
+    @ViewBuilder
+    private var basicSection: some View {
+        Section {
+            Button {
+                onPickType(.text)
+                dismiss()
+            } label: {
+                rowLabel(symbol: "textformat", title: "Text",
+                         subtitle: "A line or paragraph of text.")
+            }
+            if destination != .structuredPage {
+                Button {
+                    onPickType(.container)
+                    dismiss()
+                } label: {
+                    rowLabel(symbol: "rectangle", title: "Container",
+                             subtitle: "A rectangular area you can nest other elements inside.")
+                }
+            }
+            PhotosPicker(selection: $pickerSelection, matching: .images, photoLibrary: .shared()) {
+                rowLabel(symbol: "photo", title: "Image",
+                         subtitle: pickerLoading
+                            ? "Loading…"
+                            : "Pick a photo from your library.")
+            }
+            .disabled(pickerLoading)
+        } header: {
+            CucuSectionLabel(text: "Basic")
+        }
+    }
+
+    /// Identity / social rows — avatar, link, gallery, carousel. The
+    /// "things a profile page is actually for". Avatar uses a separate
+    /// picker selection from the Basic image picker so the two never
+    /// clash on a shared state slot.
+    @ViewBuilder
+    private var socialSection: some View {
+        Section {
+            PhotosPicker(selection: $avatarSelection, matching: .images, photoLibrary: .shared()) {
+                rowLabel(symbol: "person.crop.circle.fill", title: "Avatar",
+                         subtitle: pickerLoading
+                            ? "Loading…"
+                            : "A circular profile photo — square frame, circle clip.")
+            }
+            .disabled(pickerLoading)
+
+            Button {
+                onPickType(.link)
+                dismiss()
+            } label: {
+                rowLabel(symbol: "link", title: "Link",
+                         subtitle: "Profile link card — pill, button, badge, more.")
+            }
+
+            PhotosPicker(
+                selection: $gallerySelection,
+                maxSelectionCount: 12,
+                matching: .images,
+                photoLibrary: .shared()
+            ) {
+                rowLabel(symbol: "rectangle.grid.2x2", title: "Gallery",
+                         subtitle: pickerLoading
+                            ? "Loading…"
+                            : "Multiple photos in a grid, row, or collage.")
+            }
+            .disabled(pickerLoading)
+
+            Button {
+                onPickType(.carousel)
+                dismiss()
+            } label: {
+                rowLabel(symbol: "rectangle.stack", title: "Carousel",
+                        subtitle: "A horizontal strip for text, images, and other items.")
+            }
+        } header: {
+            CucuSectionLabel(text: "Social / Profile")
+        }
+    }
+
+    /// Decorative props — icon, divider. Visual flourishes that don't
+    /// hold content of their own.
+    @ViewBuilder
+    private var decorSection: some View {
+        Section {
+            Button {
+                onPickType(.icon)
+                dismiss()
+            } label: {
+                rowLabel(symbol: "star.fill", title: "Icon",
+                         subtitle: "A cute symbol — pick a style family + glyph.")
+            }
+            Button {
+                onPickType(.divider)
+                dismiss()
+            } label: {
+                rowLabel(symbol: "scribble", title: "Divider",
+                         subtitle: "Decorative break — sparkle, lace, ribbon, more.")
+            }
+        } header: {
+            CucuSectionLabel(text: "Decor")
         }
     }
 

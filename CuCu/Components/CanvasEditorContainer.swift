@@ -30,6 +30,12 @@ struct CanvasEditorContainer: UIViewRepresentable {
     /// `PublishedProfileView`). Defaults to the editor.
     var isInteractive: Bool = true
 
+    /// When `true` the canvas paints the per-node edit chrome —
+    /// dashed accent outlines, labelled chips above each top-level
+    /// node, and an inset stroke around every page so the surface
+    /// reads as "armed". Off by default; bound from the SwiftUI host.
+    var editMode: Bool = false
+
     /// Called when a `.link` node is tapped while `isInteractive` is
     /// `false`. Receives the resolved URL — strings that don't parse
     /// or are obviously not URLs are filtered upstream so the host
@@ -89,6 +95,7 @@ struct CanvasEditorContainer: UIViewRepresentable {
         view.onOpenFullGallery = { urls in
             onOpenFullGallery?(urls)
         }
+        view.setEditMode(editMode)
         view.apply(document: document, selectedID: selectedID)
         return view
     }
@@ -122,6 +129,7 @@ struct CanvasEditorContainer: UIViewRepresentable {
         view.onOpenFullGallery = { urls in
             onOpenFullGallery?(urls)
         }
+        view.setEditMode(editMode)
         view.apply(document: document, selectedID: selectedID)
     }
 }

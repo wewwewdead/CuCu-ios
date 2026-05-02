@@ -102,7 +102,17 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
                     pageIndex: editingPageIndex,
                     onPickImage: { data in mutator.setPageBackgroundImage(data, pageIndex: editingPageIndex) },
                     onClearImage: { mutator.clearPageBackgroundImage(pageIndex: editingPageIndex) },
-                    onCommit: { mutator.store.updateDocument(draft, document: document) },
+                    onCommit: {
+                        // Normalize so adaptive hero text colors
+                        // recompute when the user picks a new page
+                        // background. The hero's name / @username /
+                        // bio with `textColorAuto = true` get their
+                        // hex rewritten by `applyAdaptiveHeroTextColors`
+                        // inside `normalize`, which only runs here on
+                        // a manual commit cycle.
+                        StructuredProfileLayout.normalize(&document)
+                        mutator.store.updateDocument(draft, document: document)
+                    },
                     onEditEffects: { sheets.requestEditPageEffects() }
                 )
                 .presentationDetents([.fraction(0.3), .medium, .large])

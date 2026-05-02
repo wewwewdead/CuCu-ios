@@ -34,6 +34,11 @@ struct ProfileCanvasBuilderView: View {
 
     @State private var document: ProfileDocument = .blank
     @State private var selectedID: UUID?
+    /// Toggle that arms the canvas's "tap a chip to edit" mode. Driven
+    /// by the floating Edit/Done capsule in the top-left of the canvas;
+    /// turning it off automatically clears `selectedID` so the inspector
+    /// drops back out of view when the user is done.
+    @State private var editMode: Bool = false
     @State private var editingPageIndex: Int = 0
     @State private var pendingDeletePageIndex: Int?
     @State private var legacyDraft: Bool = false
@@ -180,8 +185,25 @@ struct ProfileCanvasBuilderView: View {
                     },
                     onEditingPageChanged: { index in
                         editingPageIndex = index
-                    }
+                    },
+                    editMode: editMode
                 )
+                .overlay(alignment: .topLeading) {
+                    EditCanvasToggleButton(editMode: editMode) {
+                        toggleEditMode()
+                    }
+                    .padding(.leading, 14)
+                    .padding(.top, 12)
+                    .allowsHitTesting(!canvasIsEmpty)
+                    .opacity(canvasIsEmpty ? 0 : 1)
+                }
+                .overlay(alignment: .topTrailing) {
+                    CanvasModeStatusLabel(editMode: editMode)
+                        .padding(.trailing, 14)
+                        .padding(.top, 14)
+                        .opacity(canvasIsEmpty ? 0 : 1)
+                        .allowsHitTesting(false)
+                }
 
                 // Empty-state overlay — fades on top of the (empty)
                 // canvas, fades out the moment the user adds the
@@ -205,27 +227,9 @@ struct ProfileCanvasBuilderView: View {
         .overlay(alignment: .bottom) {
             if !legacyDraft, let id = selectedID, document.nodes[id] != nil {
                 if StructuredProfileLayout.isStructured(document) {
-                    NodeEditingPanelView(
-                        document: $document,
-                        selectedID: id,
-                        onCommit: commitPanelDocument,
-                        onAddElement: { sheets.showAddSheet = true },
-                        onOpenInspector: { sheets.showInspector = true },
-                        onDuplicate: { mutator.duplicateSelected() },
-                        onLayers: { sheets.showLayersSheet = true },
-                        onDelete: { mutator.deleteSelected() },
-                        onSetContainerBackground: { nodeID, data in
-                            mutator.setContainerBackgroundImage(for: nodeID, with: data)
-                        },
-                        onClearContainerBackground: { nodeID in
-                            mutator.clearContainerBackgroundImage(for: nodeID)
-                        },
-                        onEditContainerBackground: { nodeID in
-                            sheets.requestEditContainerEffects(for: nodeID)
-                        }
-                    )
-                    .id(id)
-                    .padding(.bottom, keyboardAwarePanelBottomPadding)
+                    structuredNodePanel(for: id, sheets: sheets)
+                        .id(id)
+                        .padding(.bottom, keyboardAwarePanelBottomPadding)
                 } else {
                     // Legacy/freeform documents keep the previous
                     // selection surface exactly so old drafts retain
@@ -270,6 +274,7 @@ struct ProfileCanvasBuilderView: View {
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .animation(.spring(response: 0.32, dampingFraction: 0.85), value: selectedID)
         .animation(.spring(response: 0.32, dampingFraction: 0.85), value: sheets.isSelectionBarExpanded)
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: editMode)
         .onChange(of: selectedID) { _, newID in
             sheets.handleSelectionChanged(newID: newID)
         }
@@ -400,6 +405,61 @@ struct ProfileCanvasBuilderView: View {
         withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
             keyboardHeight = visibleHeight
         }
+    }
+
+    /// Flips the canvas's edit mode and keeps the inspector state
+    /// consistent: leaving edit mode always closes the per-node panel
+    /// (matches the JSX prototype's "Done → clear selectedID" rule),
+    /// while entering edit mode preserves any active selection so the
+    /// inspector survives the morph.
+    private func toggleEditMode() {
+        let next = !editMode
+        CucuHaptics.selection()
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            editMode = next
+            if !next {
+                selectedID = nil
+            }
+        }
+    }
+
+    /// Extracts the structured profile's bottom inspector panel
+    /// builder so the parent `body` doesn't have to type-check a
+    /// dozen inline closures simultaneously — without this split,
+    /// SwiftUI's compiler hits its "unable to type-check in
+    /// reasonable time" cap on the body expression.
+    @ViewBuilder
+    private func structuredNodePanel(for id: UUID,
+                                     sheets: CanvasSheetCoordinator) -> some View {
+        NodeEditingPanelView(
+            document: $document,
+            selectedID: id,
+            onCommit: commitPanelDocument,
+            onAddElement: { sheets.showAddSheet = true },
+            onOpenInspector: { sheets.showInspector = true },
+            onDuplicate: { mutator.duplicateSelected() },
+            onLayers: { sheets.showLayersSheet = true },
+            onDelete: { mutator.deleteSelected() },
+            onSetContainerBackground: { nodeID, data in
+                mutator.setContainerBackgroundImage(for: nodeID, with: data)
+            },
+            onClearContainerBackground: { nodeID in
+                mutator.clearContainerBackgroundImage(for: nodeID)
+            },
+            onEditContainerBackground: { nodeID in
+                sheets.requestEditContainerEffects(for: nodeID)
+            },
+            onReplaceImage: { nodeID, data in
+                mutator.replaceImage(for: nodeID, with: data)
+            },
+            onMoveUp: { mutator.moveSelectedUp() },
+            onMoveDown: { mutator.moveSelectedDown() },
+            canMoveUp: { mutator.canMoveSelectedUp() },
+            canMoveDown: { mutator.canMoveSelectedDown() },
+            onAppendGalleryPhotos: { nodeID, dataList in
+                mutator.appendGalleryImages(for: nodeID, with: dataList)
+            }
+        )
     }
 
     private func commitPanelDocument(_ doc: ProfileDocument) {

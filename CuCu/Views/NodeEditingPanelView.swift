@@ -25,9 +25,34 @@ struct NodeEditingPanelView: View {
     var onSetContainerBackground: (UUID, Data) -> Bool
     var onClearContainerBackground: (UUID) -> Void
     var onEditContainerBackground: (UUID) -> Void
+    /// Replaces the bytes behind an image node. Wired through the host
+    /// to `CanvasMutator.replaceImage`. The first tab on an image node
+    /// uses this to swap the picture without making the user open the
+    /// full inspector or remove the node and re-add it.
+    var onReplaceImage: (UUID, Data) -> Bool
+    /// Reorders the selected top-level element one slot up / down in
+    /// `rootChildrenIDs`. The host passes a "can move" predicate so
+    /// the menu items disable when the element is already at the
+    /// top of the movable range or the bottom of the page.
+    var onMoveUp: () -> Void
+    var onMoveDown: () -> Void
+    var canMoveUp: () -> Bool
+    var canMoveDown: () -> Bool
+    /// Appends one or more new photos to a gallery node — first tab on
+    /// a gallery uses this to grow the grid in place via PhotosPicker.
+    /// Wired to `CanvasMutator.appendGalleryImages`.
+    var onAppendGalleryPhotos: (UUID, [Data]) -> Bool
 
     @State private var selectedTab: Tab = .text
     @State private var containerBackgroundSelection: PhotosPickerItem?
+    /// Photos picker selection for the image-replace flow exposed on
+    /// the first tab of an image node. Kept separate from the
+    /// container-background selection so the two pickers don't fight
+    /// over a shared state slot.
+    @State private var imageReplaceSelection: PhotosPickerItem?
+    /// Multi-select picker selection for the gallery-add flow on the
+    /// first tab of a gallery node.
+    @State private var galleryAppendSelection: [PhotosPickerItem] = []
     @State private var pickerLoading = false
     @State private var pickerError: String?
     @State private var commitTask: Task<Void, Never>?
@@ -38,7 +63,7 @@ struct NodeEditingPanelView: View {
                 header(for: node)
                 Picker("", selection: $selectedTab) {
                     ForEach(Tab.allCases) { tab in
-                        Text(tab.rawValue).tag(tab)
+                        Text(label(for: tab, on: node)).tag(tab)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -63,6 +88,12 @@ struct NodeEditingPanelView: View {
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .onChange(of: containerBackgroundSelection) { _, item in
                 loadContainerBackground(item)
+            }
+            .onChange(of: imageReplaceSelection) { _, item in
+                loadImageReplacement(item)
+            }
+            .onChange(of: galleryAppendSelection) { _, items in
+                loadGalleryAppend(items)
             }
             .onDisappear {
                 commitTask?.cancel()
@@ -100,6 +131,10 @@ struct NodeEditingPanelView: View {
             Menu {
                 Button("More Properties", systemImage: "slider.horizontal.3", action: onOpenInspector)
                 Button("Layers", systemImage: "square.3.layers.3d", action: onLayers)
+                Button("Move Up", systemImage: "arrow.up", action: onMoveUp)
+                    .disabled(!canMoveUp())
+                Button("Move Down", systemImage: "arrow.down", action: onMoveDown)
+                    .disabled(!canMoveDown())
                 Button("Duplicate", systemImage: "plus.square.on.square", action: onDuplicate)
                     .disabled(!StructuredProfileLayout.canDuplicate(selectedID, in: document))
                 Divider()
@@ -120,11 +155,42 @@ struct NodeEditingPanelView: View {
     private func tabContent(for node: CanvasNode) -> some View {
         switch selectedTab {
         case .text:
-            textTab(for: node)
+            // Content-bearing primitives hijack the first tab so it
+            // surfaces controls that actually do something:
+            //   • image    → Replace photo
+            //   • gallery  → Add photos
+            //   • carousel → Add item (routes through `onAddElement`)
+            // Everything else keeps the regular text controls.
+            switch node.type {
+            case .image:    imageTab(for: node)
+            case .gallery:  galleryTab(for: node)
+            case .carousel: carouselTab(for: node)
+            default:        textTab(for: node)
+            }
         case .style:
             styleTab(for: node)
         case .layout:
             layoutTab(for: node)
+        }
+    }
+
+    /// Per-tab segment label, used by the segmented `Picker`. The
+    /// first segment renames itself to match what the tab exposes —
+    /// `Image` for image nodes, `Photos` for galleries, `Items` for
+    /// carousels. Other types keep the default `Text` label.
+    private func label(for tab: Tab, on node: CanvasNode) -> String {
+        switch tab {
+        case .text:
+            switch node.type {
+            case .image:    return "Image"
+            case .gallery:  return "Photos"
+            case .carousel: return "Items"
+            default:        return "Text"
+            }
+        case .style:
+            return "Style"
+        case .layout:
+            return "Layout"
         }
     }
 
@@ -146,7 +212,7 @@ struct NodeEditingPanelView: View {
                     )
                     colorCard(
                         title: "Text",
-                        hex: bindingStyleHex(textID, key: \.textColorHex, defaultHex: "#1A140E")
+                        hex: bindingTextColor(textID, defaultHex: "#1A140E")
                     )
                     underlineCard(textID)
                     alignmentCard(textID)
@@ -170,6 +236,186 @@ struct NodeEditingPanelView: View {
                     : "This element does not expose text controls.",
                 systemImage: "textformat"
             )
+        }
+    }
+
+    /// First-tab content for image nodes. Replaces the irrelevant text
+    /// controls with a Replace-photo card (and a small thumbnail when
+    /// an image is already set) so the user can swap the picture
+    /// directly from the bottom panel — same friction-free flow the
+    /// container background card offers, scaled down to a single
+    /// horizontal control.
+    @ViewBuilder
+    private func imageTab(for node: CanvasNode) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                imageReplaceCard(node)
+            }
+            .padding(.horizontal, 1)
+        }
+        .frame(height: 96)
+    }
+
+    /// First-tab content for gallery nodes. Surfaces an Add-photos
+    /// PhotosPicker plus a thumbnail strip of the gallery's current
+    /// images, mirroring the visual rhythm of `imageTab`. Removal /
+    /// reorder still live in the full property inspector — this tab
+    /// stays focused on the most-common gallery edit (growing it).
+    @ViewBuilder
+    private func galleryTab(for node: CanvasNode) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                galleryAppendCard(node)
+                galleryThumbsCard(node)
+            }
+            .padding(.horizontal, 1)
+        }
+        .frame(height: 96)
+    }
+
+    private func galleryAppendCard(_ node: CanvasNode) -> some View {
+        let count = node.content.imagePaths?.count ?? 0
+        let title = count == 0 ? "Add photos" : "Add more"
+        return cardShell(title: title, width: 200) {
+            PhotosPicker(
+                selection: $galleryAppendSelection,
+                maxSelectionCount: 12,
+                matching: .images,
+                photoLibrary: .shared()
+            ) {
+                HStack(spacing: 9) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.cucuCardSoft)
+                        Image(systemName: "plus")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(Color.cucuInk)
+                    }
+                    .frame(width: 34, height: 34)
+                    Text(pickerLoading
+                         ? "Loading…"
+                         : (count == 0 ? "Pick photos" : "\(count) photo\(count == 1 ? "" : "s")"))
+                        .font(.cucuSerif(14, weight: .semibold))
+                        .foregroundStyle(Color.cucuInk)
+                    Spacer(minLength: 0)
+                }
+            }
+            .disabled(pickerLoading)
+        }
+    }
+
+    @ViewBuilder
+    private func galleryThumbsCard(_ node: CanvasNode) -> some View {
+        // Only show the thumbnail strip when the gallery has at least
+        // one image — an empty card is just visual noise on a fresh
+        // gallery the user just created.
+        let paths = node.content.imagePaths ?? []
+        if !paths.isEmpty {
+            cardShell(title: "Preview", width: 220) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(Array(paths.prefix(8).enumerated()), id: \.offset) { _, path in
+                            if let img = LocalCanvasAssetStore.loadUIImage(path) {
+                                Image(uiImage: img)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 32, height: 32)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// First-tab content for carousel nodes. Routes to the existing
+    /// AddNodeSheet via `onAddElement`, which auto-pivots to the
+    /// `.carousel` destination since the carousel is selected. Shows
+    /// the current item count so the user knows what's there.
+    @ViewBuilder
+    private func carouselTab(for node: CanvasNode) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                carouselAddItemCard(node)
+                carouselItemCountCard(node)
+            }
+            .padding(.horizontal, 1)
+        }
+        .frame(height: 96)
+    }
+
+    private func carouselAddItemCard(_ node: CanvasNode) -> some View {
+        cardShell(title: "Add item", width: 200) {
+            Button(action: onAddElement) {
+                HStack(spacing: 9) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.cucuCardSoft)
+                        Image(systemName: "plus")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(Color.cucuInk)
+                    }
+                    .frame(width: 34, height: 34)
+                    Text("Pick element")
+                        .font(.cucuSerif(14, weight: .semibold))
+                        .foregroundStyle(Color.cucuInk)
+                    Spacer(minLength: 0)
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func carouselItemCountCard(_ node: CanvasNode) -> some View {
+        let count = node.childrenIDs.count
+        return cardShell(title: "Items", width: 130) {
+            HStack(spacing: 6) {
+                Image(systemName: "rectangle.stack")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.cucuInkSoft)
+                Text("\(count)")
+                    .font(.cucuSerif(18, weight: .bold))
+                    .foregroundStyle(Color.cucuInk)
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private func imageReplaceCard(_ node: CanvasNode) -> some View {
+        cardShell(title: node.content.localImagePath?.isEmpty == false ? "Replace" : "Insert",
+                  width: 200) {
+            PhotosPicker(
+                selection: $imageReplaceSelection,
+                matching: .images,
+                photoLibrary: .shared()
+            ) {
+                HStack(spacing: 9) {
+                    if let path = node.content.localImagePath,
+                       !path.isEmpty,
+                       let preview = LocalCanvasAssetStore.loadUIImage(path) {
+                        Image(uiImage: preview)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 34, height: 34)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    } else {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.cucuCardSoft)
+                            Image(systemName: "photo")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color.cucuInkSoft)
+                        }
+                        .frame(width: 34, height: 34)
+                    }
+                    Text(pickerLoading ? "Loading…" : (node.content.localImagePath?.isEmpty == false ? "Pick photo" : "Choose photo"))
+                        .font(.cucuSerif(14, weight: .semibold))
+                        .foregroundStyle(Color.cucuInk)
+                    Spacer(minLength: 0)
+                }
+            }
+            .disabled(pickerLoading)
         }
     }
 
@@ -231,7 +477,7 @@ struct NodeEditingPanelView: View {
                 case .text:
                     colorCard(
                         title: "Text",
-                        hex: bindingStyleHex(node.id, key: \.textColorHex, defaultHex: "#1A140E")
+                        hex: bindingTextColor(node.id, defaultHex: "#1A140E")
                     )
                     colorCard(
                         title: "Fill",
@@ -305,7 +551,7 @@ struct NodeEditingPanelView: View {
                 case .link:
                     colorCard(
                         title: "Text",
-                        hex: bindingStyleHex(node.id, key: \.textColorHex, defaultHex: "#1A140E")
+                        hex: bindingTextColor(node.id, defaultHex: "#1A140E")
                     )
                     colorCard(
                         title: "Fill",
@@ -317,6 +563,25 @@ struct NodeEditingPanelView: View {
                     )
                 case .gallery:
                     galleryLayoutCard(node.id)
+                    // Gallery card background — flows through the same
+                    // `backgroundColorHex` field every other node uses,
+                    // so the gallery's render path picks it up via
+                    // `NodeRenderView.apply(node:)`. Alpha is enabled
+                    // so users can knock the card surface back to a
+                    // tinted wash or all the way to transparent if
+                    // they want the photos to float on the page bg.
+                    colorCard(
+                        title: "Fill",
+                        hex: bindingStyleHex(node.id, key: \.backgroundColorHex, defaultHex: "#FBF9F2"),
+                        supportsAlpha: true
+                    )
+                    sliderCard(
+                        title: "Opacity",
+                        value: bindingNodeDouble(node.id, key: \.opacity, defaultValue: 1),
+                        range: 0...1,
+                        step: 0.01,
+                        valueText: "\(Int((document.nodes[node.id]?.opacity ?? 1) * 100))%"
+                    )
                     colorCard(
                         title: "Border",
                         hex: bindingStyleHex(node.id, key: \.borderColorHex, defaultHex: "#E5E5EA")
@@ -744,6 +1009,28 @@ struct NodeEditingPanelView: View {
         )
     }
 
+    /// Specialised binding for `style.textColorHex` that also flips
+    /// `textColorAuto` off on user pick. The structured-profile
+    /// normalizer rewrites `textColorHex` for the hero's name /
+    /// @username / bio whenever `textColorAuto == true`, so an
+    /// explicit pick has to clear that flag in the same write —
+    /// otherwise the next normalize pass would reset the hex back to
+    /// the contrast default and the user's color would never stick.
+    /// Non-hero text nodes have `textColorAuto` nil/false to begin
+    /// with so this is a no-op for them, and the binding is safe to
+    /// use everywhere `textColorHex` is edited.
+    private func bindingTextColor(_ id: UUID, defaultHex: String) -> Binding<String> {
+        Binding(
+            get: { document.nodes[id]?.style.textColorHex ?? defaultHex },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.style.textColorHex = newValue
+                node.style.textColorAuto = false
+                document.nodes[id] = node
+            }
+        )
+    }
+
     private func bindingStyleDouble(_ id: UUID,
                                     key: WritableKeyPath<NodeStyle, Double?>,
                                     defaultValue: Double) -> Binding<Double> {
@@ -1057,6 +1344,85 @@ struct NodeEditingPanelView: View {
                     pickerError = "Couldn't read that image."
                     pickerLoading = false
                     containerBackgroundSelection = nil
+                }
+            }
+        }
+    }
+
+    /// Multi-photo loader for the gallery's "Add photos" picker on its
+    /// first tab. Reads each transferable in parallel, then hands the
+    /// non-empty bytes list to `onAppendGalleryPhotos`. Clears the
+    /// selection slot so the picker is ready to fire again.
+    private func loadGalleryAppend(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        guard document.nodes[selectedID]?.type == .gallery else {
+            galleryAppendSelection = []
+            return
+        }
+        pickerLoading = true
+        pickerError = nil
+        Task {
+            var bytes: [Data] = []
+            for item in items {
+                do {
+                    if let data = try await item.loadTransferable(type: Data.self) {
+                        bytes.append(data)
+                    }
+                } catch {
+                    // Best effort — skip the unreadable item.
+                }
+            }
+            await MainActor.run {
+                if bytes.isEmpty {
+                    pickerError = "Couldn't read those photos."
+                } else if onAppendGalleryPhotos(selectedID, bytes) {
+                    pickerError = nil
+                } else {
+                    pickerError = "Couldn't save the gallery photos."
+                }
+                pickerLoading = false
+                galleryAppendSelection = []
+            }
+        }
+    }
+
+    /// Loader for the image-replace control on an image node's first
+    /// tab. Mirrors `loadContainerBackground`'s shape so the two flows
+    /// stay in lockstep: read transferable bytes, hand them to the
+    /// host's replacement closure, and clear the selection slot
+    /// regardless of outcome so the picker is ready to fire again.
+    private func loadImageReplacement(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        guard document.nodes[selectedID]?.type == .image else {
+            imageReplaceSelection = nil
+            return
+        }
+        pickerLoading = true
+        pickerError = nil
+        Task {
+            do {
+                if let data = try await item.loadTransferable(type: Data.self) {
+                    await MainActor.run {
+                        if onReplaceImage(selectedID, data) {
+                            pickerError = nil
+                        } else {
+                            pickerError = "Couldn't save that photo."
+                        }
+                        pickerLoading = false
+                        imageReplaceSelection = nil
+                    }
+                } else {
+                    await MainActor.run {
+                        pickerError = "Couldn't read that photo."
+                        pickerLoading = false
+                        imageReplaceSelection = nil
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    pickerError = "Couldn't read that photo."
+                    pickerLoading = false
+                    imageReplaceSelection = nil
                 }
             }
         }

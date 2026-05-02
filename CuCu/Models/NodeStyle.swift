@@ -17,6 +17,15 @@ struct NodeStyle: Codable, Hashable {
     /// Optional underline for text-rendering nodes. Nil/false both
     /// render as no underline so old drafts decode unchanged.
     var textUnderlined: Bool?
+    /// When `true`, the structured-profile normalizer recomputes
+    /// `textColorHex` from the page's background luminance on every
+    /// commit so the hero's name / @username / bio always read with
+    /// strong contrast no matter what theme or page color the user
+    /// picks. The user's explicit color picks via the inspector flip
+    /// this to `false`, after which the stored hex is honored as-is
+    /// and never overwritten. Nil decodes the same as `false` so old
+    /// drafts (no auto-contrast) keep their stored colors.
+    var textColorAuto: Bool?
 
     var imageFit: NodeImageFit?
     var clipShape: NodeClipShape?
@@ -122,6 +131,7 @@ struct NodeStyle: Codable, Hashable {
          textColorHex: String? = nil,
          textAlignment: NodeTextAlignment? = nil,
          textUnderlined: Bool? = nil,
+         textColorAuto: Bool? = nil,
          imageFit: NodeImageFit? = nil,
          clipShape: NodeClipShape? = nil,
          rotation: Double = 0,
@@ -150,6 +160,7 @@ struct NodeStyle: Codable, Hashable {
         self.textColorHex = textColorHex
         self.textAlignment = textAlignment
         self.textUnderlined = textUnderlined
+        self.textColorAuto = textColorAuto
         self.imageFit = imageFit
         self.clipShape = clipShape
         self.rotation = rotation
@@ -183,6 +194,7 @@ extension NodeStyle {
         case textColorHex
         case textAlignment
         case textUnderlined
+        case textColorAuto
         case imageFit
         case clipShape
         case rotation
@@ -218,6 +230,7 @@ extension NodeStyle {
         self.textColorHex = try c.decodeIfPresent(String.self, forKey: .textColorHex)
         self.textAlignment = try c.decodeIfPresent(NodeTextAlignment.self, forKey: .textAlignment)
         self.textUnderlined = try c.decodeIfPresent(Bool.self, forKey: .textUnderlined)
+        self.textColorAuto = try c.decodeIfPresent(Bool.self, forKey: .textColorAuto)
         self.imageFit = try c.decodeIfPresent(NodeImageFit.self, forKey: .imageFit)
         self.clipShape = try c.decodeIfPresent(NodeClipShape.self, forKey: .clipShape)
         self.rotation = try c.decodeIfPresent(Double.self, forKey: .rotation) ?? 0

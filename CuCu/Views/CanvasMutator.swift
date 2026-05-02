@@ -44,11 +44,44 @@ struct CanvasMutator {
         let pageIndex = targetPageIndex(parentID: parentID)
         var node: CanvasNode
         if isStructuredRootInsertion(parentID: parentID) {
-            guard type == .container else { return }
-            node = StructuredProfileLayout.makeSectionCard(
-                in: document.wrappedValue,
-                pageIndex: pageIndex
-            )
+            // Section Card stays the primary unit of structured content
+            // — `.container` at the structured root maps to it. Every
+            // other type uses its regular default constructor and lands
+            // as a sibling top-level node, positioned by
+            // `applyAdaptivePlacement` below the hero / existing cards.
+            // Image and Gallery are handled by the dedicated
+            // `addImageNode` / `addGalleryNode` paths instead, so they
+            // no-op here.
+            switch type {
+            case .container:
+                node = StructuredProfileLayout.makeSectionCard(
+                    in: document.wrappedValue,
+                    pageIndex: pageIndex
+                )
+            case .text:
+                var draft = CanvasNode.defaultText()
+                draft.style.fontFamily = Self.themeDefaultFont
+                node = draft
+            case .icon:
+                node = .defaultIcon()
+            case .divider:
+                node = .defaultDivider(
+                    at: CGPoint(
+                        x: StructuredProfileLayout.horizontalMargin,
+                        y: 0  // applyAdaptivePlacement will lay it out below the hero/cards
+                    ),
+                    size: CGSize(
+                        width: document.wrappedValue.pageWidth - StructuredProfileLayout.horizontalMargin * 2,
+                        height: 28
+                    )
+                )
+            case .link:
+                node = .defaultLink()
+            case .carousel:
+                node = .defaultCarousel()
+            case .image, .gallery:
+                return
+            }
         } else {
             switch type {
             case .container:
@@ -100,7 +133,6 @@ struct CanvasMutator {
     @discardableResult
     func addImageNode(from data: Data) -> Bool {
         let parentID = parentForInsertion()
-        guard !isStructuredRootInsertion(parentID: parentID) else { return false }
         let pageIndex = targetPageIndex(parentID: parentID)
         let nodeID = UUID()
         do {
@@ -138,7 +170,6 @@ struct CanvasMutator {
     @discardableResult
     func addAvatarNode(from data: Data) -> Bool {
         let parentID = parentForInsertion()
-        guard !isStructuredRootInsertion(parentID: parentID) else { return false }
         let pageIndex = targetPageIndex(parentID: parentID)
         let nodeID = UUID()
         do {
@@ -188,7 +219,6 @@ struct CanvasMutator {
     @discardableResult
     func addGalleryNode(from imageBytesList: [Data]) -> Bool {
         let parentID = parentForInsertion()
-        guard !isStructuredRootInsertion(parentID: parentID) else { return false }
         let pageIndex = targetPageIndex(parentID: parentID)
 
         var savedPaths: [String] = []
@@ -604,6 +634,15 @@ struct CanvasMutator {
                 document.wrappedValue.renderRevision &+= 1
             }
             document.wrappedValue.syncLegacyFieldsFromFirstPage()
+            // Normalize so the structured profile's adaptive hero
+            // text colors recompute against the new image. The
+            // luminance sampler in `BackgroundLuminanceCache` reads
+            // the freshly-written file and flips name/@username/bio
+            // to a contrast-appropriate tone (light text on a dark
+            // photo, ink text on a bright one). Without this call,
+            // the user uploads a dark photo and the text stays at
+            // the prior light-bg ink color, reading as invisible.
+            StructuredProfileLayout.normalize(&document.wrappedValue)
             store.updateDocument(draft, document: document.wrappedValue)
             return true
         } catch {
@@ -629,6 +668,14 @@ struct CanvasMutator {
     /// font; only future-tense nodes pick up the theme).
     func applyTheme(_ theme: CucuTheme) {
         theme.apply(to: &document.wrappedValue)
+        // Normalize so adaptive hero text colors recompute against
+        // the freshly-applied page background — the structured
+        // profile's name / @username / bio nodes carry
+        // `textColorAuto = true` and the normalizer is what reads
+        // the page bg and rewrites their hex for legibility. Without
+        // this, swapping into a dark theme would leave the hero text
+        // at the prior light-bg ink color and read as invisible.
+        StructuredProfileLayout.normalize(&document.wrappedValue)
         store.updateDocument(draft, document: document.wrappedValue)
         CucuHaptics.success()
     }
@@ -669,6 +716,80 @@ struct CanvasMutator {
             store.updateDocument(draft, document: document.wrappedValue)
             CucuHaptics.duplicate()
         }
+    }
+
+    /// Swap the selected top-level node with the one immediately
+    /// above it in `rootChildrenIDs`, then re-normalize so every
+    /// sibling re-stacks at its new auto-laid-out y. Hero and any
+    /// other system-owned root pinned to the front of the order
+    /// can't move (they're system-owned), and neither can a node
+    /// already in the first movable slot — `findReorderableNeighbour`
+    /// returns `nil` in either case and the call no-ops.
+    func moveSelectedUp() {
+        guard let id = selectedID.wrappedValue,
+              let pageIndex = document.wrappedValue.pageContaining(id) else { return }
+        var rootIDs = document.wrappedValue.pages[pageIndex].rootChildrenIDs
+        guard let oldIndex = rootIDs.firstIndex(of: id) else { return }
+        let firstMovable = leadingPinnedCount(in: rootIDs)
+        guard oldIndex > firstMovable else { return }
+        let newIndex = oldIndex - 1
+        rootIDs.swapAt(oldIndex, newIndex)
+        document.wrappedValue.pages[pageIndex].rootChildrenIDs = rootIDs
+        StructuredProfileLayout.normalize(&document.wrappedValue)
+        store.updateDocument(draft, document: document.wrappedValue)
+        CucuHaptics.soft()
+    }
+
+    /// Mirror of `moveSelectedUp` — swap with the next movable
+    /// sibling below the selection. Pinned-front siblings (hero,
+    /// legacy fixed divider) stay at the front of the order.
+    func moveSelectedDown() {
+        guard let id = selectedID.wrappedValue,
+              let pageIndex = document.wrappedValue.pageContaining(id) else { return }
+        var rootIDs = document.wrappedValue.pages[pageIndex].rootChildrenIDs
+        guard let oldIndex = rootIDs.firstIndex(of: id) else { return }
+        guard oldIndex < rootIDs.count - 1 else { return }
+        let newIndex = oldIndex + 1
+        rootIDs.swapAt(oldIndex, newIndex)
+        document.wrappedValue.pages[pageIndex].rootChildrenIDs = rootIDs
+        StructuredProfileLayout.normalize(&document.wrappedValue)
+        store.updateDocument(draft, document: document.wrappedValue)
+        CucuHaptics.soft()
+    }
+
+    /// True when the selected top-level node has a movable sibling
+    /// above it (used by the inspector's Move Up menu state).
+    func canMoveSelectedUp() -> Bool {
+        guard let id = selectedID.wrappedValue,
+              let pageIndex = document.wrappedValue.pageContaining(id) else { return false }
+        let rootIDs = document.wrappedValue.pages[pageIndex].rootChildrenIDs
+        guard let oldIndex = rootIDs.firstIndex(of: id) else { return false }
+        return oldIndex > leadingPinnedCount(in: rootIDs)
+    }
+
+    /// True when the selected top-level node has a sibling below it.
+    func canMoveSelectedDown() -> Bool {
+        guard let id = selectedID.wrappedValue,
+              let pageIndex = document.wrappedValue.pageContaining(id) else { return false }
+        let rootIDs = document.wrappedValue.pages[pageIndex].rootChildrenIDs
+        guard let oldIndex = rootIDs.firstIndex(of: id) else { return false }
+        return oldIndex < rootIDs.count - 1
+    }
+
+    /// Count of leading rootChildrenIDs that are system-owned and
+    /// therefore pinned to the front of the order — same predicate
+    /// `commitTopLevelReorder` in `CanvasEditorView` uses, so the
+    /// drag and the menu agree on which slots are movable.
+    private func leadingPinnedCount(in rootIDs: [UUID]) -> Int {
+        var count = 0
+        for id in rootIDs {
+            if document.wrappedValue.nodes[id]?.role?.isSystemOwned == true {
+                count += 1
+            } else {
+                break
+            }
+        }
+        return count
     }
 
     func bringSelectedToFront() {

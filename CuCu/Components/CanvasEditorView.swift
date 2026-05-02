@@ -316,6 +316,36 @@ final class CanvasEditorView: UIView {
     private var nodePanGestures: [UUID: UIPanGestureRecognizer] = [:]
 
     private let overlay = SelectionOverlayView()
+    private let editModeOverlay = CanvasEditModeOverlay()
+
+    /// Toggle that flips the canvas into "edit mode" — every top-level
+    /// node grows a dashed accent outline and a labelled chip floats
+    /// above it so a user can hop straight into the inspector for any
+    /// element. Off by default; the SwiftUI host owns the bound state
+    /// and routes Esc-key + Done-button changes through `setEditMode`.
+    private(set) var editMode: Bool = false
+
+    /// Public mutator that drives `editMode` and re-runs the overlay
+    /// reconciliation. Pulled out as its own method so the SwiftUI
+    /// representable can flip it without re-applying the whole document
+    /// — `apply(document:selectedID:)` would do too much work for a
+    /// pure mode flip on dense canvases.
+    func setEditMode(_ flag: Bool) {
+        guard editMode != flag else { return }
+        editMode = flag
+        // While editing, the canvas-wide selection overlay is purely a
+        // distraction — the dashed per-node outlines are doing that
+        // job. Hide it while edit mode is on; the regular `apply` path
+        // brings it back when edit mode ends.
+        if flag {
+            overlay.isHidden = true
+        }
+        applyEditModeOverlays()
+        // Drag gestures on top-level nodes don't make sense while the
+        // user is in "tap a chip to edit" mode — flatten interaction
+        // so the empty-canvas tap fires and chips get clean hit slots.
+        applyNodeInteractionForEditMode()
+    }
 
     /// Vertical scrolling host. Pinned to the canvas root's bounds and
     /// kept transparent so the page background image (which sits
@@ -637,7 +667,22 @@ final class CanvasEditorView: UIView {
             }
         }
 
-
+        // Edit-mode chip taps land here — we route them through the
+        // same selection callback the in-place tap recognizer uses so
+        // the SwiftUI host's inspector path is identical.
+        editModeOverlay.onSelectChip = { [weak self] id in
+            guard let self else { return }
+            // Defensive: fallthrough only when the id still belongs to a
+            // live node. The reconciler in `apply` already prunes dead
+            // chips, but the chip's tap handler is async w.r.t. document
+            // mutation so it could fire on a node deleted milliseconds
+            // earlier (rare, but free to guard).
+            guard self.document.nodes[id] != nil else { return }
+            self.endActiveTextEditingIfNeeded(except: id)
+            self.selectedID = id
+            self.onSelectionChanged?(id)
+            self.updateEditingPageForCurrentState()
+        }
 
         // Lift only the *editing text node* (not the whole canvas)
         // above the keyboard so the user always sees what they're
@@ -765,13 +810,23 @@ final class CanvasEditorView: UIView {
         // Selection overlay tracks the selected node, regardless of nesting.
         contentView.bringSubviewToFront(overlay)
         CATransaction.commit()
-        if let selectedID, let node = renderViews[selectedID] {
+        if let selectedID, let node = renderViews[selectedID], editMode {
+            // Resize handles are an editing affordance — only relevant
+            // while edit mode is on. In live mode the bottom panel is
+            // the sole selection indicator; the canvas itself stays
+            // chrome-free so the user can't accidentally resize or
+            // drag a node without explicitly entering edit mode.
             overlay.isHidden = false
             overlay.resizeMode = selectionOverlayResizeMode(for: selectedID)
             overlay.frame = contentView.convert(node.bounds, from: node)
         } else {
             overlay.isHidden = true
         }
+
+        // Edit-mode chrome reconciles after node layout so chip + dashed
+        // outline frames sit in front of the just-positioned node UIViews.
+        applyEditModeOverlays()
+        applyNodeInteractionForEditMode()
 
         // Suppress horizontal scrolling only while the active selection
         // is inside that carousel. That lets a selected child node own
@@ -1423,42 +1478,52 @@ final class CanvasEditorView: UIView {
         // through to SwiftUI.
         guard isInteractive else { return }
 
-        // Tap recognizer is on `contentView`, so the location is
-        // already in content coordinates — same space the node frames
-        // and `applyZOrder` use, so the hit-test recursion just works.
-        let point = gesture.location(in: contentView)
-        let hit = hitTestNode(at: point)
-
-        if hit == nil, let pageIndex = pageIndex(at: point) {
-            focusPage(at: pageIndex)
+        // Editing is gated on the user-facing Edit toggle. In live
+        // mode the canvas reads as a published preview — tapping an
+        // element never *opens* a new selection. But adding an
+        // element auto-selects it (so the bottom inspector panel
+        // appears for the freshly-added node), and the user expects
+        // a tap-outside-the-panel to dismiss that selection. So in
+        // live mode the rule is: any tap on the canvas clears the
+        // current selection — closes the panel — and never opens a
+        // new one.
+        guard editMode else {
+            if selectedID != nil {
+                endActiveTextEditingIfNeeded(except: nil)
+                selectedID = nil
+                onSelectionChanged?(nil)
+            }
             return
         }
 
-        // Tapping the already-selected text node a second time enters
-        // direct in-place editing — keyboard up, cursor in the box.
+        let point = gesture.location(in: contentView)
+        let hit = hitTestNode(at: point)
+
+        // Already-selected text node: a second tap drops directly into
+        // in-place text editing (keyboard up, cursor in the box). This
+        // is the only case where a node-body tap *acts* in edit mode
+        // — the user has already chosen the text node via its chip,
+        // so a follow-up tap on the body is a deliberate "edit text"
+        // gesture, not a selection event.
         if let hit, hit == selectedID,
            document.nodes[hit]?.type == .text,
            let textView = renderViews[hit] as? TextNodeView,
            !textView.isEditing {
             editingTextNodeID = hit
-            // Bring the editing node to the front of its parent so the
-            // upcoming lift transform can extend visually above sibling
-            // nodes without being clipped by them. Also bring the whole
-            // chain of ancestors to the front so the lifted text isn't
-            // covered by anything.
             bringEditingNodeChainToFront(view: textView)
             textView.beginEditing()
             return
         }
 
-        if hit != selectedID {
-            // Selection moved — dismiss any active text editor first so
-            // the keyboard goes down cleanly.
-            endActiveTextEditingIfNeeded(except: hit)
-            selectedID = hit
-            applyOverlayForCurrentSelection()
-            onSelectionChanged?(hit)
-            updateEditingPageForCurrentState()
+        // Anywhere else — empty canvas, a node body that isn't the
+        // currently-selected text node, or a nested element — closes
+        // the inspector but keeps edit mode armed. Selection in edit
+        // mode comes from chips, never from body taps, so there is no
+        // "select on tap" branch here.
+        if selectedID != nil {
+            endActiveTextEditingIfNeeded(except: nil)
+            selectedID = nil
+            onSelectionChanged?(nil)
         }
     }
 
@@ -1578,7 +1643,11 @@ final class CanvasEditorView: UIView {
     }
 
     private func applyOverlayForCurrentSelection() {
-        if let selectedID, let node = renderViews[selectedID] {
+        if let selectedID, let node = renderViews[selectedID], editMode {
+            // Mirrors the rule in `apply(...)`: the resize-handle
+            // overlay only surfaces while edit mode is on. Live mode
+            // never shows it, even after a fresh add — selection
+            // visibility comes from the bottom inspector panel.
             overlay.isHidden = false
             overlay.resizeMode = selectionOverlayResizeMode(for: selectedID)
             overlay.frame = contentView.convert(node.bounds, from: node)
@@ -1705,6 +1774,28 @@ final class CanvasEditorView: UIView {
     @objc private func handleNodePan(_ gesture: UIPanGestureRecognizer) {
         guard let view = gesture.view as? NodeRenderView else { return }
         let id = view.nodeID
+
+        // Top-level non-system nodes are vertically reorderable. The
+        // page root reads as a stacked list — drag a card up/down to
+        // swap it with siblings, and `StructuredProfileLayout.normalize`
+        // re-snaps everyone to their final y on commit.
+        let isTopLevel = document.parent(of: id) == nil
+        let isSystemOwned = document.nodes[id]?.role?.isSystemOwned == true
+        if isTopLevel && !isSystemOwned {
+            handleTopLevelReorderPan(gesture: gesture, view: view, id: id)
+            return
+        }
+
+        // In structured-profile mode every nested node — image, text,
+        // icon, link, anything inside a Section Card, and the hero's
+        // own children — is position-locked. Position edits go
+        // through the Layout tab of the inspector, not the canvas.
+        // Legacy / freeform documents (no structured hero) keep the
+        // original freeform drag so older drafts don't regress.
+        if StructuredProfileLayout.isStructured(document) {
+            return
+        }
+
         guard StructuredProfileLayout.canMove(id, in: document) else { return }
 
         switch gesture.state {
@@ -1785,6 +1876,132 @@ final class CanvasEditorView: UIView {
         default:
             break
         }
+    }
+
+    // MARK: - Gestures: top-level reorder
+
+    /// Vertical drag-to-reorder for top-level non-system nodes. The
+    /// node only translates on the Y axis during the drag (X stays
+    /// pinned to its committed center), and on release we mutate the
+    /// page's `rootChildrenIDs` to put the dragged node into the slot
+    /// its final y position lands in. `onCommit` then runs the host's
+    /// `StructuredProfileLayout.normalize` pass which re-snaps every
+    /// sibling to its new auto-stacked y. Lift visuals (scale + alpha
+    /// + shadow proxy via z-position) signal that the node is "in
+    /// flight" and distinguish reorder from freeform drag.
+    private func handleTopLevelReorderPan(gesture: UIPanGestureRecognizer,
+                                          view: NodeRenderView,
+                                          id: UUID) {
+        switch gesture.state {
+        case .began:
+            if selectedID != id {
+                endActiveTextEditingIfNeeded(except: id)
+                selectedID = id
+                onSelectionChanged?(id)
+            }
+            dragStartCenter = view.center
+            dragStartSize = view.bounds.size
+            // Lift purely via opacity + raised z-position — no scale
+            // transform. A `transform != .identity` would force every
+            // call site that touches `frame` to reach for the
+            // bounds+center workaround, and it visually muddies the
+            // Y-only intent (the view stretches at the same instant
+            // it starts following the finger, which reads as
+            // freeform). Plain alpha drop is enough to signal "in
+            // flight" without that confusion.
+            view.layer.zPosition = 100
+            UIView.animate(withDuration: 0.18,
+                           delay: 0,
+                           options: [.curveEaseOut, .allowUserInteraction]) {
+                view.alpha = 0.92
+            }
+
+        case .changed:
+            // Y-only translation. `view.center.x` stays pinned to
+            // the committed start so the user can't drag off-axis.
+            let translation = gesture.translation(in: view.superview)
+            view.center = CGPoint(
+                x: dragStartCenter.x,
+                y: dragStartCenter.y + translation.y
+            )
+            applyOverlayForCurrentSelection()
+
+        case .ended, .cancelled:
+            commitTopLevelReorder(id: id, finalCenterY: view.center.y)
+            view.layer.zPosition = 0
+            // Snap the dragged view back to its document frame
+            // explicitly. When the drag triggered an actual reorder,
+            // the render signature changed and the upstream `apply`
+            // pass already restored the frame — but when the user
+            // drags and releases without crossing a sibling's
+            // midpoint (or there's only one movable sibling), the
+            // signature is unchanged, `applyNode` skips `view.apply`,
+            // and the view ends up frozen at its dragged position
+            // while the dashed outlines and selection overlay snap
+            // back to the document frame. Forcing the assignment
+            // here keeps the canvas visually consistent regardless
+            // of whether the order actually changed.
+            if let node = document.nodes[id] {
+                view.frame = node.frame.cgRect
+                applyOverlayForCurrentSelection()
+            }
+            UIView.animate(withDuration: 0.22,
+                           delay: 0,
+                           options: [.curveEaseOut, .allowUserInteraction]) {
+                view.alpha = 1.0
+            }
+
+        default:
+            break
+        }
+    }
+
+    /// Resolves the dragged node's final y to a new index in its
+    /// page's `rootChildrenIDs`, mutates the document, and fires
+    /// `onCommit`. System-owned siblings (hero, optional fixed
+    /// divider) stay pinned to the front of the order — the dragged
+    /// node can only move within the user-content range.
+    private func commitTopLevelReorder(id: UUID, finalCenterY: CGFloat) {
+        guard let pageIndex = document.pageContaining(id) else {
+            onCommit?(document)
+            return
+        }
+        var rootIDs = document.pages[pageIndex].rootChildrenIDs
+        guard let oldIndex = rootIDs.firstIndex(of: id) else {
+            onCommit?(document)
+            return
+        }
+        rootIDs.remove(at: oldIndex)
+
+        // System-owned nodes (the hero, plus any legacy fixed divider)
+        // always lead the list. The dragged node lands somewhere among
+        // the remaining movable siblings.
+        var leadingPinned = 0
+        for sibling in rootIDs {
+            if document.nodes[sibling]?.role?.isSystemOwned == true {
+                leadingPinned += 1
+            } else {
+                break
+            }
+        }
+
+        var newIndex = leadingPinned
+        for sibling in rootIDs.dropFirst(leadingPinned) {
+            guard let frame = document.nodes[sibling]?.frame else {
+                newIndex += 1
+                continue
+            }
+            let siblingMid = frame.y + frame.height / 2
+            if Double(finalCenterY) > siblingMid {
+                newIndex += 1
+            } else {
+                break
+            }
+        }
+
+        rootIDs.insert(id, at: newIndex)
+        document.pages[pageIndex].rootChildrenIDs = rootIDs
+        onCommit?(document)
     }
 
     // MARK: - Gestures: resize
@@ -2311,6 +2528,152 @@ final class CanvasEditorView: UIView {
             self.applyOverlayForCurrentSelection()
         }
     }
+
+    // MARK: - Edit mode chrome
+
+    /// Walks every visible page surface and reconciles the edit-mode
+    /// chrome (dashed outlines, labelled chips, inset accent stroke).
+    /// Called from `setEditMode` and from the tail of `apply(...)` so
+    /// document mutations during edit mode reposition chips immediately.
+    ///
+    /// The hero container itself is intentionally not chipped — it's
+    /// system-owned, locked-resize, and serves as a transparent group
+    /// for the avatar / name / meta / bio children. Those children
+    /// each get their own chip so the user can edit them individually
+    /// in edit mode. Other system-owned roots (the legacy
+    /// `fixedDivider`) are skipped entirely. Everything else passes
+    /// through unchanged.
+    fileprivate func applyEditModeOverlays() {
+        // Viewer mode never enters edit mode — there's no toggle.
+        // Building chip / outline overlays here would still install
+        // hidden UIControls into the page view tree, and even with
+        // `alpha = 0` those chips can intercept hit-test inside
+        // their bounds.insetBy(-6, -6) tap targets. That silently
+        // ate taps meant for the gallery's "View Gallery" chip on
+        // the published profile. Wipe any leftover overlay state
+        // from an earlier editor session, then bail.
+        guard isInteractive else {
+            editModeOverlay.purgeAll()
+            return
+        }
+
+        let pageIDs = visiblePageIndices(for: document).compactMap { document.pages[$0].id }
+        let liveSet = Set(pageIDs)
+        // Drop overlays for pages that no longer exist.
+        for pageID in pageSurfaces.keys where !liveSet.contains(pageID) {
+            editModeOverlay.purge(pageID: pageID)
+        }
+        for index in visiblePageIndices(for: document) {
+            let page = document.pages[index]
+            guard let surface = pageSurfaces[page.id] else { continue }
+            // The page's actual bounds aren't laid out until the next
+            // run-loop tick on first appear, so trigger one layout pass
+            // up-front; the inset stroke needs accurate bounds to draw
+            // along the page's rounded corners on a cold launch.
+            surface.pageView.layoutIfNeeded()
+
+            var editableNodeIDs: [UUID] = []
+            for rootID in page.rootChildrenIDs {
+                guard let node = document.nodes[rootID] else { continue }
+                if node.role == .profileHero {
+                    // Expand the hero into its editable children so
+                    // each one (avatar, name, meta, bio) is reachable
+                    // individually via its own chip. The hero itself
+                    // gets no chip — it's a layout wrapper, not user
+                    // content.
+                    editableNodeIDs.append(contentsOf: node.childrenIDs.filter {
+                        document.nodes[$0] != nil
+                    })
+                } else if node.role?.isSystemOwned != true {
+                    editableNodeIDs.append(rootID)
+                }
+            }
+
+            // Cherry on light page surfaces, soft shell on dark ones —
+            // the dashed outline and the page's inset "armed" stroke
+            // both pick up this accent so the chrome stays legible
+            // against whatever theme or bg image is in play. Routes
+            // through the same `isPageBackgroundDark` predicate the
+            // hero text adaptive contrast uses, so a single luminance
+            // decision drives every adaptive surface on the page.
+            let darkBg = StructuredProfileLayout.isPageBackgroundDark(page: page)
+            let accent: UIColor = darkBg ? .cucuShell : .cucuCherry
+
+            editModeOverlay.apply(
+                editMode: editMode,
+                pageID: page.id,
+                pageView: surface.pageView,
+                accent: accent,
+                nodeIDs: editableNodeIDs,
+                lookup: { [weak self] id -> (node: CanvasNode, frame: CGRect)? in
+                    guard let self,
+                          let node = self.document.nodes[id] else { return nil }
+                    return (node, self.absolutePageFrame(of: id))
+                }
+            )
+        }
+    }
+
+    /// Walk the document parent chain and accumulate frame offsets so
+    /// the chip overlay can place outlines/chips for nested nodes
+    /// (e.g. the hero's children) directly inside the page UIView. The
+    /// document's parent topology is the source of truth — using it
+    /// means a `pageView.convert(_:from:)` round trip isn't required,
+    /// which avoids a stale-layout class of bugs where the UIView
+    /// hierarchy hasn't yet caught up to a freshly-applied document.
+    private func absolutePageFrame(of nodeID: UUID) -> CGRect {
+        guard let node = document.nodes[nodeID] else { return .zero }
+        var origin = CGPoint(x: node.frame.x, y: node.frame.y)
+        var current = document.parent(of: nodeID)
+        while let parentID = current {
+            guard let parent = document.nodes[parentID] else { break }
+            origin.x += CGFloat(parent.frame.x)
+            origin.y += CGFloat(parent.frame.y)
+            current = document.parent(of: parentID)
+        }
+        return CGRect(origin: origin,
+                      size: CGSize(width: node.frame.width, height: node.frame.height))
+    }
+
+    /// Sets per-node interaction state to match the user-facing
+    /// "editing requires the toggle" rule.
+    ///
+    /// - Live mode: top-level node bodies are non-interactive and
+    ///   their pan recognizers are off. Tap and drag both fall
+    ///   through to the canvas-level recognizer (which no-ops in
+    ///   live mode), so the canvas reads as a pure preview.
+    /// - Edit mode: bodies stay non-interactive (selection happens
+    ///   via the floating chip), with one exception — the
+    ///   currently-selected text node keeps interaction so a second
+    ///   tap can drop into in-place text editing. Pan gestures
+    ///   re-enable in edit mode so drag-to-reposition still works as
+    ///   a productive editing affordance.
+    /// - Viewer mode (`!isInteractive`): no-op. The viewer attaches
+    ///   its own per-type tap recognizers in `attachPanGesture` (the
+    ///   link / journal card paths) and content-bearing nodes like
+    ///   the gallery rely on internal UIControls (the "View
+    ///   Gallery" chip). Disabling the parent here would propagate
+    ///   down via UIKit's hit-test rules and silently break those
+    ///   internal taps — matching the published profile bug where
+    ///   the View Gallery chip became unclickable.
+    fileprivate func applyNodeInteractionForEditMode() {
+        guard isInteractive else { return }
+        let topLevelIDs: Set<UUID> = Set(
+            visiblePageIndices(for: document)
+                .flatMap { document.pages[$0].rootChildrenIDs }
+        )
+        for id in topLevelIDs {
+            guard let view = renderViews[id] else { continue }
+            // System-owned roles (hero, fixed divider, and the hero's
+            // children) are part of the structured profile chrome —
+            // they have no edit chip and are intentionally untappable
+            // in both modes. Treat them as locked even when edit mode
+            // re-enables interaction on user-added top-level nodes.
+            let systemOwned = document.nodes[id]?.role?.isSystemOwned == true
+            view.isUserInteractionEnabled = editMode && !systemOwned
+            nodePanGestures[id]?.isEnabled = editMode && !systemOwned
+        }
+    }
 }
 
 // MARK: - Gesture delegate (selection-aware arbitration)
@@ -2361,10 +2724,28 @@ extension CanvasEditorView: UIGestureRecognizerDelegate, UIScrollViewDelegate {
         //
         // The user's mental model is now the standard iOS one:
         //   1. Tap a node → it becomes selected (no drag).
-        //   2. Press + drag the same node → it moves.
+        //   2. Press + drag the same node → it moves (or reorders
+        //      at the page root).
         //   3. Press + drag elsewhere on the canvas → page scrolls.
-        guard StructuredProfileLayout.canMove(viewID, in: document) else {
-            return false
+
+        // Top-level non-system nodes use the pan as a vertical
+        // *reorder* gesture, not a freeform-move gesture. The
+        // type-level resize lock (`image`/`gallery`/`carousel`/
+        // `divider`/`link` → `.locked`, `sectionCard` →
+        // `.verticalOnly`) makes `canMove` return false for almost
+        // every reorderable block, which would otherwise reject the
+        // pan here and hand the touch to the scroll view. Bypass
+        // the `canMove` gate when the touch is a legitimate reorder
+        // attempt — top-level, not system-owned, edit mode on, and
+        // the node is the active selection.
+        let isTopLevel = document.parent(of: viewID) == nil
+        let isSystemOwned = document.nodes[viewID]?.role?.isSystemOwned == true
+        let isTopLevelReorder = isTopLevel && !isSystemOwned && editMode
+
+        if !isTopLevelReorder {
+            guard StructuredProfileLayout.canMove(viewID, in: document) else {
+                return false
+            }
         }
         guard let selID = selectedID, selID == viewID else {
             return false
