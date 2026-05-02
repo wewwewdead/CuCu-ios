@@ -14,6 +14,9 @@ struct NodeStyle: Codable, Hashable {
     var fontSize: Double?
     var textColorHex: String?
     var textAlignment: NodeTextAlignment?
+    /// Optional underline for text-rendering nodes. Nil/false both
+    /// render as no underline so old drafts decode unchanged.
+    var textUnderlined: Bool?
 
     var imageFit: NodeImageFit?
     var clipShape: NodeClipShape?
@@ -118,6 +121,7 @@ struct NodeStyle: Codable, Hashable {
          fontSize: Double? = nil,
          textColorHex: String? = nil,
          textAlignment: NodeTextAlignment? = nil,
+         textUnderlined: Bool? = nil,
          imageFit: NodeImageFit? = nil,
          clipShape: NodeClipShape? = nil,
          rotation: Double = 0,
@@ -145,6 +149,7 @@ struct NodeStyle: Codable, Hashable {
         self.fontSize = fontSize
         self.textColorHex = textColorHex
         self.textAlignment = textAlignment
+        self.textUnderlined = textUnderlined
         self.imageFit = imageFit
         self.clipShape = clipShape
         self.rotation = rotation
@@ -177,6 +182,7 @@ extension NodeStyle {
         case fontSize
         case textColorHex
         case textAlignment
+        case textUnderlined
         case imageFit
         case clipShape
         case rotation
@@ -211,6 +217,7 @@ extension NodeStyle {
         self.fontSize = try c.decodeIfPresent(Double.self, forKey: .fontSize)
         self.textColorHex = try c.decodeIfPresent(String.self, forKey: .textColorHex)
         self.textAlignment = try c.decodeIfPresent(NodeTextAlignment.self, forKey: .textAlignment)
+        self.textUnderlined = try c.decodeIfPresent(Bool.self, forKey: .textUnderlined)
         self.imageFit = try c.decodeIfPresent(NodeImageFit.self, forKey: .imageFit)
         self.clipShape = try c.decodeIfPresent(NodeClipShape.self, forKey: .clipShape)
         self.rotation = try c.decodeIfPresent(Double.self, forKey: .rotation) ?? 0

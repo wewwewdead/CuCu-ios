@@ -58,21 +58,6 @@ final class CanvasSheetCoordinator {
     // Navigation hand-off after publish
     var publishedViewerUsername: String?
 
-    /// True when any sheet/cover/navigation that should block
-    /// long-press auto-open is currently up.
-    var anyModalActive: Bool {
-        showInspector
-            || showPageBackgroundSheet
-            || showBackgroundEffectsSheet
-            || showLayersSheet
-            || showSaveTemplateSheet
-            || showApplyTemplateSheet
-            || showContainerBackgroundEffectsSheet
-            || showPublishSheet
-            || showOpenProfileSheet
-            || publishedViewerUsername != nil
-    }
-
     // MARK: - Page background → effects chain
 
     /// User tapped "Edit Image" inside `PageBackgroundSheet`. Arm the

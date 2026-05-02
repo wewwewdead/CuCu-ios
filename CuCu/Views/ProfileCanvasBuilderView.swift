@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import UIKit
 
 /// Top-level canvas editor for one `ProfileDraft`. Owns the in-memory
 /// `ProfileDocument`, hosts the UIKit canvas, exposes toolbar actions
@@ -39,6 +40,7 @@ struct ProfileCanvasBuilderView: View {
     @State private var titleDraft: String = ""
     @State private var titleSaveTask: Task<Void, Never>?
     @State private var sheets = CanvasSheetCoordinator()
+    @State private var keyboardHeight: CGFloat = 0
     // MARK: Reset Profile (full local + cloud wipe)
     @State private var showResetConfirmation = false
     @State private var isResetting = false
@@ -178,20 +180,6 @@ struct ProfileCanvasBuilderView: View {
                     },
                     onEditingPageChanged: { index in
                         editingPageIndex = index
-                    },
-                    onRequestEditNode: { id in
-                        // Long-press shortcut: open the existing
-                        // property inspector for the pressed node. We
-                        // reuse the same `showInspector` flag the
-                        // toolbar / selection-bar Edit actions use, so
-                        // there is exactly one inspector
-                        // implementation. Guard against re-presenting
-                        // when another modal is already up — the user
-                        // explicitly asked for one editor at a time.
-                        guard document.nodes[id] != nil else { return }
-                        if sheets.anyModalActive { return }
-                        selectedID = id
-                        sheets.showInspector = true
                     }
                 )
 
@@ -215,38 +203,61 @@ struct ProfileCanvasBuilderView: View {
         }
         .animation(.easeOut(duration: 0.32), value: canvasIsEmpty)
         .overlay(alignment: .bottom) {
-            // Bottom selection surface — collapsed (small chevron pill)
-            // by default, full bar when the user expands it. Floats
-            // above the canvas (no safeAreaInset) so the canvas bounds
-            // stay constant regardless of which form is showing.
             if !legacyDraft, let id = selectedID, document.nodes[id] != nil {
-                if sheets.isSelectionBarExpanded {
-                    SelectionBottomBar(
-                        document: document,
+                if StructuredProfileLayout.isStructured(document) {
+                    NodeEditingPanelView(
+                        document: $document,
                         selectedID: id,
-                        onSelect: { newID in selectedID = newID },
-                        onEdit: { sheets.showInspector = true },
+                        onCommit: commitPanelDocument,
+                        onAddElement: { sheets.showAddSheet = true },
+                        onOpenInspector: { sheets.showInspector = true },
                         onDuplicate: { mutator.duplicateSelected() },
-                        onBringToFront: { mutator.bringSelectedToFront() },
-                        onSendBackward: { mutator.sendSelectedBackward() },
                         onLayers: { sheets.showLayersSheet = true },
                         onDelete: { mutator.deleteSelected() },
-                        onCollapse: { sheets.isSelectionBarExpanded = false }
+                        onSetContainerBackground: { nodeID, data in
+                            mutator.setContainerBackgroundImage(for: nodeID, with: data)
+                        },
+                        onClearContainerBackground: { nodeID in
+                            mutator.clearContainerBackgroundImage(for: nodeID)
+                        },
+                        onEditContainerBackground: { nodeID in
+                            sheets.requestEditContainerEffects(for: nodeID)
+                        }
                     )
-                    .equatable()
+                    .id(id)
+                    .padding(.bottom, keyboardAwarePanelBottomPadding)
                 } else {
-                    CollapsedSelectionBar(
-                        document: document,
-                        selectedID: id,
-                        onExpand: { sheets.isSelectionBarExpanded = true },
-                        onEdit: { sheets.showInspector = true },
-                        onDuplicate: { mutator.duplicateSelected() },
-                        onBringToFront: { mutator.bringSelectedToFront() },
-                        onSendBackward: { mutator.sendSelectedBackward() },
-                        onLayers: { sheets.showLayersSheet = true },
-                        onDelete: { mutator.deleteSelected() }
-                    )
-                    .equatable()
+                    // Legacy/freeform documents keep the previous
+                    // selection surface exactly so old drafts retain
+                    // their freeform editing behavior.
+                    if sheets.isSelectionBarExpanded {
+                        SelectionBottomBar(
+                            document: document,
+                            selectedID: id,
+                            onSelect: { newID in selectedID = newID },
+                            onEdit: { sheets.showInspector = true },
+                            onDuplicate: { mutator.duplicateSelected() },
+                            onBringToFront: { mutator.bringSelectedToFront() },
+                            onSendBackward: { mutator.sendSelectedBackward() },
+                            onLayers: { sheets.showLayersSheet = true },
+                            onDelete: { mutator.deleteSelected() },
+                            onCollapse: { sheets.isSelectionBarExpanded = false }
+                        )
+                        .equatable()
+                    } else {
+                        CollapsedSelectionBar(
+                            document: document,
+                            selectedID: id,
+                            onExpand: { sheets.isSelectionBarExpanded = true },
+                            onEdit: { sheets.showInspector = true },
+                            onDuplicate: { mutator.duplicateSelected() },
+                            onBringToFront: { mutator.bringSelectedToFront() },
+                            onSendBackward: { mutator.sendSelectedBackward() },
+                            onLayers: { sheets.showLayersSheet = true },
+                            onDelete: { mutator.deleteSelected() }
+                        )
+                        .equatable()
+                    }
                 }
             }
         }
@@ -261,6 +272,14 @@ struct ProfileCanvasBuilderView: View {
         .animation(.spring(response: 0.32, dampingFraction: 0.85), value: sheets.isSelectionBarExpanded)
         .onChange(of: selectedID) { _, newID in
             sheets.handleSelectionChanged(newID: newID)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            updateKeyboardHeight(from: note)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                keyboardHeight = 0
+            }
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
@@ -367,6 +386,27 @@ struct ProfileCanvasBuilderView: View {
         .onDisappear {
             flushTitleSave()
         }
+    }
+
+    private var keyboardAwarePanelBottomPadding: CGFloat {
+        keyboardHeight > 0 ? keyboardHeight + 8 : 8
+    }
+
+    private func updateKeyboardHeight(from notification: Notification) {
+        guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else {
+            return
+        }
+        let visibleHeight = max(0, UIScreen.main.bounds.height - frame.minY)
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            keyboardHeight = visibleHeight
+        }
+    }
+
+    private func commitPanelDocument(_ doc: ProfileDocument) {
+        var normalized = doc
+        StructuredProfileLayout.normalize(&normalized)
+        document = normalized
+        resolvedStore.updateDocument(draft, document: normalized)
     }
 
     @ToolbarContentBuilder

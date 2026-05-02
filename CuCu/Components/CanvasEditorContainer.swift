@@ -26,11 +26,6 @@ struct CanvasEditorContainer: UIViewRepresentable {
     /// Reports which page the host's page settings UI should target.
     var onEditingPageChanged: ((Int) -> Void)? = nil
 
-    /// Called when the user long-presses a node — the canvas already
-    /// updated its own selection and fired a haptic; the host's job
-    /// is to present the property inspector for that node.
-    var onRequestEditNode: ((UUID) -> Void)? = nil
-
     /// `false` puts the canvas into read-only viewer mode (used by
     /// `PublishedProfileView`). Defaults to the editor.
     var isInteractive: Bool = true
@@ -73,9 +68,6 @@ struct CanvasEditorContainer: UIViewRepresentable {
             document = doc
             onCommit(doc)
         }
-        view.onRequestEditNode = { id in
-            onRequestEditNode?(id)
-        }
         view.onAddPage = {
             onAddPage?()
         }
@@ -108,9 +100,6 @@ struct CanvasEditorContainer: UIViewRepresentable {
         // is set once at make-time; flipping editor↔viewer at runtime
         // would require re-attaching gestures, which neither the
         // editor nor the viewer currently does.
-        view.onRequestEditNode = { id in
-            onRequestEditNode?(id)
-        }
         view.viewerPageIndex = viewerPageIndex
         view.onAddPage = {
             onAddPage?()

@@ -2,9 +2,9 @@ import SwiftUI
 
 /// Local preview of the user's draft — the same `CanvasEditorContainer`
 /// the editor uses, but mounted in viewer mode (`isInteractive: false`)
-/// so taps / drags / long-presses on nodes do nothing. The user can
-/// flip into preview, see what the page reads as for a visitor, then
-/// dismiss back to editing without round-tripping through publish.
+/// so editor gestures on nodes do nothing. The user can flip into
+/// preview, see what the page reads as for a visitor, then dismiss
+/// back to editing without round-tripping through publish.
 ///
 /// Visual contract:
 ///   - Same scale-to-fit transform as `PublishedProfileView` so the

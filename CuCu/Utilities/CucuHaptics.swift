@@ -9,8 +9,7 @@ import UIKit
 /// `UIImpactFeedbackGenerator`. Centralising them means the team can
 /// later audit / disable / re-tune all feedback in one place, and we
 /// avoid the common bug where two consecutive calls to the same
-/// action generate two pulses (the SwiftUI selection bar and the
-/// canvas long-press already used to do this on rapid taps).
+/// action generate two pulses on rapid taps.
 enum CucuHaptics {
     /// Light tap — used for "thing was selected" / inert acknowledgements.
     static func selection() {

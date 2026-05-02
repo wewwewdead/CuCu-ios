@@ -112,21 +112,37 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
         paragraph.alignment = alignment
         paragraph.lineSpacing = max(CGFloat(node.style.lineSpacing ?? 0), 0)
 
-        let attrs: [NSAttributedString.Key: Any] = [
+        var attrs: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: textColor,
             .paragraphStyle: paragraph,
         ]
+        if node.style.textUnderlined == true {
+            attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        }
 
-        // 2. Apply the attributed text. Skipped while the user is
-        //    actively editing the in-place text view so we don't
-        //    clobber an in-flight string. New keystrokes pick up the
-        //    current attributes via `typingAttributes` below — that's
-        //    the standard UITextView pattern for "the inspector
-        //    changed font / line spacing while the keyboard is up".
-        let incoming = node.content.text ?? ""
-        if !textView.isFirstResponder {
-            textView.attributedText = NSAttributedString(string: incoming, attributes: attrs)
+        // 2. Apply the attributed text. Source-of-truth for the string
+        //    differs by edit state:
+        //    - Not editing: pull `node.content.text` (last committed).
+        //    - Editing: pull `textView.text` (in-flight keystrokes), so
+        //      we re-style the user's typed glyphs without overwriting
+        //      them with a stale committed value. The cursor/selection
+        //      is preserved so the keyboard interaction stays smooth.
+        //    Either way the attributes are re-applied, which is what
+        //    makes inspector toggles (underline, font, color, alignment,
+        //    line spacing) update live while the keyboard is up.
+        let incoming: String
+        let savedSelection: NSRange?
+        if textView.isFirstResponder {
+            incoming = textView.text ?? ""
+            savedSelection = textView.selectedRange
+        } else {
+            incoming = node.content.text ?? ""
+            savedSelection = nil
+        }
+        textView.attributedText = NSAttributedString(string: incoming, attributes: attrs)
+        if let savedSelection {
+            textView.selectedRange = savedSelection
         }
         textView.typingAttributes = attrs
 
@@ -203,6 +219,14 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
     }
 
     var isEditing: Bool { textView.isFirstResponder }
+
+    /// In-flight text from the live `UITextView` while the keyboard is
+    /// up. UIKit holds the source-of-truth string during edit; the
+    /// in-memory document only receives keystrokes via `onTextChanged`.
+    /// Exposed so the canvas host can re-merge unsaved keystrokes when
+    /// a SwiftUI binding (e.g. the inspector panel) pushes a stale-text
+    /// document back through `apply(document:)` mid-edit.
+    var liveText: String { textView.text ?? "" }
 
     // MARK: - UITextViewDelegate
 
