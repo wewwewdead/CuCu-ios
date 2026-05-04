@@ -72,6 +72,13 @@ nonisolated struct PostThread: Equatable, Sendable {
         /// child of an expanded parent when more siblings
         /// exist on the server.
         case showMoreSiblings(parentId: String, depth: Int)
+        /// "Hide replies" — emitted at the bottom of each
+        /// expanded non-root subtree as a closing bracket. Tap
+        /// → view-model removes the parent from `expandedIds`,
+        /// which re-routes `flattenForRender` back through the
+        /// `viewReplies` branch on next render. Loaded children
+        /// are kept in place so re-expanding is instant.
+        case hideReplies(parentId: String, depth: Int)
 
         var id: String {
             switch self {
@@ -79,6 +86,7 @@ nonisolated struct PostThread: Equatable, Sendable {
             case .viewReplies(let pid, _, _): return "view-\(pid)"
             case .loadingChildren(let pid, _): return "loading-\(pid)"
             case .showMoreSiblings(let pid, _): return "more-\(pid)"
+            case .hideReplies(let pid, _): return "hide-\(pid)"
             }
         }
     }
@@ -116,6 +124,14 @@ nonisolated struct PostThread: Equatable, Sendable {
 
             if childIsExpanded {
                 appendChildren(of: child.id, into: &items)
+                // Closing bracket for *this* expanded subtree —
+                // drops in below the deepest descendant before
+                // the next sibling iterates. Re-tap collapses
+                // the subtree without dropping its loaded rows.
+                items.append(.hideReplies(
+                    parentId: child.id,
+                    depth: Self.affordanceDepth(below: child.depth)
+                ))
             } else if loadingByParent.contains(child.id) {
                 // Mid-expand for *this* child: swap "View N
                 // replies" for a spinner.

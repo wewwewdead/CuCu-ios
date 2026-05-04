@@ -24,21 +24,26 @@ struct BlockedUsersListView: View {
     }
 
     var body: some View {
-        Group {
-            switch status {
-            case .loading:
-                loadingState
-            case .empty:
-                emptyState
-            case .loaded:
-                userList
-            case .error(let message):
-                errorState(message)
+        ZStack {
+            Color.cucuPaper.ignoresSafeArea()
+            Group {
+                switch status {
+                case .loading:
+                    loadingState
+                case .empty:
+                    emptyState
+                case .loaded:
+                    userList
+                case .error(let message):
+                    errorState(message)
+                }
             }
         }
-        .navigationTitle("Blocked users")
+        .cucuSheetTitle("Blocked")
         #if os(iOS) || os(visionOS)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(Color.cucuPaper, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         #endif
         .task { await load() }
         .refreshable { await load() }
@@ -59,24 +64,48 @@ struct BlockedUsersListView: View {
         List {
             ForEach(users) { user in
                 row(user)
+                    .listRowBackground(Color.clear)
             }
         }
+        .cucuFormBackdrop()
     }
 
     private func row(_ user: BlockedUser) -> some View {
         HStack {
             Text(displayHandle(for: user))
-                .font(.body.monospaced())
+                .font(.cucuMono(14, weight: .regular))
+                .foregroundStyle(Color.cucuInk)
             Spacer()
             if unblockingIds.contains(user.userId) {
-                ProgressView().controlSize(.small)
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(Color.cucuInkSoft)
             } else {
-                Button("Unblock") {
-                    Task { await unblock(user) }
-                }
-                .buttonStyle(.bordered)
+                unblockChip(for: user)
             }
         }
+    }
+
+    /// Moss-variant unblock chip — same shape as `CucuChip` but
+    /// painted with the affirmative palette so the action reads
+    /// distinct from the rose moderation chips elsewhere.
+    private func unblockChip(for user: BlockedUser) -> some View {
+        Button {
+            Task { await unblock(user) }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.uturn.left")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Unblock")
+                    .font(.cucuSerif(13, weight: .semibold))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .foregroundStyle(Color.cucuMoss)
+            .background(Capsule().fill(Color.cucuMossSoft))
+            .overlay(Capsule().strokeBorder(Color.cucuMoss, lineWidth: 1))
+        }
+        .buttonStyle(CucuPressableButtonStyle())
     }
 
     private func displayHandle(for user: BlockedUser) -> String {
@@ -96,21 +125,26 @@ struct BlockedUsersListView: View {
         VStack {
             Spacer()
             ProgressView()
+                .tint(Color.cucuInkSoft)
             Spacer()
         }
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             Spacer()
-            Image(systemName: "hand.raised.slash")
-                .font(.system(size: 36, weight: .light))
-                .foregroundStyle(.secondary)
-            Text("No blocked users.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            CucuFleuronDivider()
+                .frame(maxWidth: 140)
+            Text("Nobody blocked")
+                .font(.cucuSerif(22, weight: .bold))
+                .foregroundStyle(Color.cucuInk)
+            Text("People you block will appear here.")
+                .font(.cucuEditorial(14, italic: true))
+                .foregroundStyle(Color.cucuInkSoft)
+                .multilineTextAlignment(.center)
             Spacer()
         }
+        .padding(.horizontal, 32)
     }
 
     private func errorState(_ message: String) -> some View {
@@ -118,18 +152,18 @@ struct BlockedUsersListView: View {
             Spacer()
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 36))
-                .foregroundStyle(.orange)
+                .foregroundStyle(Color.cucuBurgundy)
             Text("Couldn't load your blocked list")
-                .font(.headline)
+                .font(.cucuSerif(18, weight: .bold))
+                .foregroundStyle(Color.cucuInk)
             Text(message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(.cucuEditorial(13, italic: true))
+                .foregroundStyle(Color.cucuInkSoft)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-            Button("Try again") {
+            CucuChip("Try again", systemImage: "arrow.clockwise") {
                 Task { await load() }
             }
-            .buttonStyle(.borderedProminent)
             .padding(.top, 4)
             Spacer()
         }

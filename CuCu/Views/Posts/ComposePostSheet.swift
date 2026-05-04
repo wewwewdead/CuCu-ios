@@ -46,13 +46,16 @@ struct ComposePostSheet: View {
                     composeContent
                 }
             }
-            .navigationTitle(navigationTitle)
+            .cucuSheetTitle(navigationTitle)
             #if os(iOS) || os(visionOS)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Color.cucuPaper, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { requestDismiss() }
+                        .foregroundStyle(Color.cucuInk)
                 }
             }
         }
@@ -76,6 +79,7 @@ struct ComposePostSheet: View {
         // alive for the entire lifetime of the sheet.
         .onChange(of: vm.status) { _, newStatus in
             if case .success(let post) = newStatus {
+                CucuHaptics.success()
                 onPosted(post)
                 dismiss()
             }
@@ -115,7 +119,9 @@ struct ComposePostSheet: View {
 
     private var composeForm: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 14) {
+                masthead
+
                 if let preview = parentPreview {
                     parentPreviewRow(preview)
                 }
@@ -124,49 +130,119 @@ struct ComposePostSheet: View {
 
                 if case .failure(let message) = vm.status {
                     Label(message, systemImage: "exclamationmark.triangle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
+                        .font(.cucuEditorial(13, italic: true))
+                        .foregroundStyle(Color.cucuBurgundy)
                         .padding(.horizontal, 4)
                 }
+
+                Rectangle()
+                    .fill(Color.cucuInkRule)
+                    .frame(height: 1)
+                    .padding(.top, 2)
 
                 HStack {
                     counter
                     Spacer()
                     submitButton
                 }
-                .padding(.top, 4)
             }
             .padding(16)
         }
-        #if os(iOS) || os(visionOS)
-        .background(Color(.systemBackground).ignoresSafeArea())
-        #endif
-        .onAppear { bodyFocused = true }
+        .background(Color.cucuPaper.ignoresSafeArea())
+        .onAppear {
+            CucuHaptics.soft()
+            bodyFocused = true
+        }
     }
 
-    private func parentPreviewRow(_ preview: ParentPreview) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "arrowshape.turn.up.left.fill")
-                .foregroundStyle(.secondary)
-                .font(.caption)
+    // MARK: - Masthead
+    //
+    // Borrows the feed's masthead idiom so the compose sheet
+    // reads as a printed page being filled in: serif display
+    // title, tracked-mono spec line (`TO @USERNAME` for replies,
+    // current month/year for new posts), Fraunces-italic
+    // subtitle, closed off by a 1pt ink hairline. Sized one
+    // notch smaller than the feed's masthead since the sheet's
+    // nav bar already carries the inline title.
+
+    private var masthead: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(mastheadTitle)
+                .font(.cucuSerif(30, weight: .bold))
+                .foregroundStyle(Color.cucuInk)
+                .accessibilityAddTraits(.isHeader)
+            Text(mastheadSpecLine)
+                .font(.cucuMono(10, weight: .medium))
+                .tracking(2.4)
+                .foregroundStyle(Color.cucuInkFaded)
                 .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("@\(preview.authorUsername)")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(preview.bodyPreview)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
+            Text(mastheadSubtitle)
+                .font(.cucuEditorial(14, italic: true))
+                .foregroundStyle(Color.cucuInkSoft)
+                .padding(.bottom, 12)
+            Rectangle()
+                .fill(Color.cucuInkRule)
+                .frame(height: 1)
         }
-        .padding(10)
+        .padding(.top, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var mastheadTitle: String {
+        parentId == nil ? "New post" : "Reply"
+    }
+
+    private var mastheadSpecLine: String {
+        if let preview = parentPreview {
+            return "TO @\(preview.authorUsername)".uppercased()
+        }
+        let f = DateFormatter()
+        f.dateFormat = "MMMM · yyyy"
+        return f.string(from: Date()).uppercased()
+    }
+
+    private var mastheadSubtitle: String {
+        parentId == nil
+            ? "Leave a mark on the page."
+            : "Add a thoughtful answer."
+    }
+
+    /// Parent preview as a printed pull-quote — a 2pt ink rule
+    /// runs the full leading edge of the card (read as a
+    /// quotation bracket), with a tracked "REPLYING TO" micro
+    /// label, the parent author's handle in serif, and the body
+    /// excerpt wrapped in curly quotes set in italic Fraunces.
+    /// Soft card fill keeps it secondary to the editor below.
+    private func parentPreviewRow(_ preview: ParentPreview) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("REPLYING TO")
+                .font(.cucuMono(9, weight: .medium))
+                .tracking(2.0)
+                .foregroundStyle(Color.cucuInkFaded)
+            Text("@\(preview.authorUsername)")
+                .font(.cucuSerif(14, weight: .semibold))
+                .foregroundStyle(Color.cucuInk)
+            Text("\u{201C}\(preview.bodyPreview)\u{201D}")
+                .font(.cucuEditorial(13, italic: true))
+                .foregroundStyle(Color.cucuInkSoft)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 12)
+        .padding(.leading, 14)
+        .padding(.trailing, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.secondary.opacity(0.08))
+                .fill(Color.cucuCardSoft)
         )
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Color.cucuInk)
+                .frame(width: 2)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private var editor: some View {
@@ -175,11 +251,17 @@ struct ComposePostSheet: View {
         // the opposite of the username field that disables both.
         TextEditor(text: $vm.body)
             .focused($bodyFocused)
-            .frame(minHeight: 160)
-            .padding(8)
+            .scrollContentBackground(.hidden)
+            .background(Color.cucuBone)
+            .frame(minHeight: 200)
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.cucuBone)
+            )
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.cucuInk, lineWidth: 1)
             )
             .overlay(alignment: .topLeading) {
                 // Native placeholder — TextEditor doesn't supply
@@ -188,30 +270,55 @@ struct ComposePostSheet: View {
                     Text(parentId == nil
                          ? "What's happening?"
                          : "Write your reply…")
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 16)
+                        .font(.cucuEditorial(17, italic: true))
+                        .foregroundStyle(Color.cucuInkFaded)
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 22)
                         .allowsHitTesting(false)
                 }
             }
     }
 
+    /// Counter pill — paper capsule that tilts toward warning
+    /// tones as the user nears the limit. Three tiers:
+    ///   - `> 50` remaining → ink-on-card, the resting state
+    ///   - `≤ 50` remaining → burgundy-on-rose, "running short"
+    ///   - `≤ 0`  remaining → cherry-on-rose, "you're over"
     private var counter: some View {
-        Text("\(vm.remainingChars)")
-            .font(.footnote.monospacedDigit())
-            .foregroundStyle(counterColor)
-            .accessibilityLabel("\(vm.remainingChars) characters remaining")
+        let remaining = vm.remainingChars
+        let palette = counterPalette(remaining: remaining)
+        return Text("\(remaining)")
+            .font(.cucuMono(12, weight: .medium))
+            .foregroundStyle(palette.text)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(palette.fill))
+            .overlay(Capsule().strokeBorder(palette.stroke, lineWidth: 1))
+            .accessibilityLabel("\(remaining) characters remaining")
     }
 
-    /// Three-tier counter colour matches the task spec exactly:
-    /// secondary while comfortably under the limit, orange in the
-    /// last 50 chars, red once the user has blown past zero.
-    private var counterColor: Color {
-        if vm.remainingChars <= 0 { return .red }
-        if vm.remainingChars <= 50 { return .orange }
-        return .secondary
+    private func counterPalette(remaining: Int) -> (text: Color, fill: Color, stroke: Color) {
+        if remaining <= 0 {
+            return (.cucuCherry, .cucuRose, .cucuRoseStroke)
+        }
+        if remaining <= 50 {
+            return (.cucuBurgundy, .cucuRose, .cucuRoseStroke)
+        }
+        return (.cucuInk, .cucuCard, .cucuInk)
     }
 
+    /// Letterpress-style submit pill. Moss palette marks it as
+    /// the affirmative action (matching the bottom-bar send
+    /// glyph in the thread view), but the typography and
+    /// detailing borrow the rest of the design system's printed
+    /// idiom: 16pt cucuSerif bold label, a faded `✦` sparkle
+    /// (the same flourish that closes the feed and thread
+    /// columns), and a double-ruled capsule — a 1pt outer ink
+    /// stroke with a hairline 0.5pt inner stroke inset 3pt, so
+    /// the chip reads like a stamped seal instead of a generic
+    /// tinted button. The in-flight state swaps in italic
+    /// Fraunces copy ("Sending…") alongside the spinner so the
+    /// transition stays in voice.
     private var submitButton: some View {
         Button {
             Task {
@@ -219,17 +326,37 @@ struct ComposePostSheet: View {
                 await vm.submit(user: user, parentId: parentId)
             }
         } label: {
-            if vm.isSubmitting {
-                ProgressView()
-                    .frame(minWidth: 60)
-            } else {
-                Text(parentId == nil ? "Post" : "Reply")
-                    .fontWeight(.semibold)
-                    .frame(minWidth: 60)
+            HStack(spacing: 8) {
+                if vm.isSubmitting {
+                    ProgressView()
+                        .tint(Color.cucuMoss)
+                        .controlSize(.small)
+                    Text("Sending…")
+                        .font(.cucuEditorial(14, italic: true))
+                } else {
+                    Text(parentId == nil ? "Post" : "Reply")
+                        .font(.cucuSerif(16, weight: .bold))
+                    Text("✦")
+                        .font(.cucuSerif(13, weight: .regular))
+                        .foregroundStyle(Color.cucuMoss.opacity(0.55))
+                }
             }
+            .foregroundStyle(Color.cucuMoss)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 9)
+            .frame(minWidth: 112)
+            .background(Capsule().fill(Color.cucuMossSoft))
+            .overlay(Capsule().strokeBorder(Color.cucuMoss, lineWidth: 1))
+            .overlay(
+                Capsule()
+                    .inset(by: 3)
+                    .strokeBorder(Color.cucuMoss.opacity(0.22), lineWidth: 0.5)
+            )
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(CucuPressableButtonStyle())
         .disabled(!vm.canSubmit)
+        .opacity(vm.canSubmit ? 1.0 : 0.55)
+        .accessibilityLabel(parentId == nil ? "Post" : "Reply")
     }
 
     // MARK: - Cancel handling

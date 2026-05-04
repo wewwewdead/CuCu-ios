@@ -42,28 +42,34 @@ struct ModerationQueueView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            segmentPicker
-            Group {
-                switch status {
-                case .loading:
-                    loadingState
-                case .empty:
-                    emptyState
-                case .loaded:
-                    reportsList
-                case .error(let message):
-                    errorState(message)
+        ZStack {
+            Color.cucuPaper.ignoresSafeArea()
+            VStack(spacing: 0) {
+                segmentPicker
+                Group {
+                    switch status {
+                    case .loading:
+                        loadingState
+                    case .empty:
+                        emptyState
+                    case .loaded:
+                        reportsList
+                    case .error(let message):
+                        errorState(message)
+                    }
                 }
             }
         }
-        .navigationTitle("Moderation")
+        .cucuSheetTitle("Moderation")
         #if os(iOS) || os(visionOS)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(Color.cucuPaper, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         #endif
         .task { await load() }
         .refreshable { await load() }
         .onChange(of: segment) { _, _ in
+            CucuHaptics.selection()
             // Reset reports + state machine when the user flips
             // between Open and History so a stale page from the
             // other segment doesn't flash before the new fetch
@@ -82,6 +88,7 @@ struct ModerationQueueView: View {
             }
         }
         .pickerStyle(.segmented)
+        .tint(Color.cucuInk)
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 4)
@@ -90,14 +97,15 @@ struct ModerationQueueView: View {
     // MARK: - List
 
     private var reportsList: some View {
-        List {
-            ForEach(reports) { report in
-                Section {
+        ScrollView {
+            LazyVStack(spacing: 12) {
+                ForEach(reports) { report in
                     reportCard(report)
+                        .padding(.horizontal, 12)
                 }
             }
+            .padding(.vertical, 8)
         }
-        .listStyle(.insetGrouped)
     }
 
     private func reportCard(_ report: Report) -> some View {
@@ -108,26 +116,33 @@ struct ModerationQueueView: View {
             // reads as a quote rather than chrome text.
             VStack(alignment: .leading, spacing: 4) {
                 Text("@\(report.postAuthorUsername)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .font(.cucuSerif(13, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
                 Text(report.postBody.isEmpty ? "[post unavailable]" : report.postBody)
-                    .font(.callout)
+                    .font(.cucuSans(14))
+                    .foregroundStyle(Color.cucuInk)
                     .lineLimit(4)
                     .truncationMode(.tail)
                 Text(PostRowView.relativeTimestamp(for: report.createdAt))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.cucuMono(11, weight: .regular))
+                    .tracking(1.2)
+                    .foregroundStyle(Color.cucuInkFaded)
             }
-            .padding(10)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.secondary.opacity(0.08))
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.cucuCardSoft)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.cucuInkRule, lineWidth: 1)
             )
 
             if let note = report.note, !note.isEmpty {
                 Text("\u{201C}\(note)\u{201D}")
-                    .font(.footnote.italic())
-                    .foregroundStyle(.secondary)
+                    .font(.cucuEditorial(13, italic: true))
+                    .foregroundStyle(Color.cucuInkSoft)
             }
 
             // Segment branches the bottom row: open reports get
@@ -139,7 +154,8 @@ struct ModerationQueueView: View {
                 historyFooter(for: report)
             }
         }
-        .padding(.vertical, 4)
+        .padding(14)
+        .cucuCard(corner: 14, innerRule: true, elevation: .raised)
     }
 
     /// Bottom-row treatment for the History segment — surfaces the
@@ -152,100 +168,162 @@ struct ModerationQueueView: View {
             statusBadge(for: report.status)
             if let reviewer = report.reviewerUsername {
                 Text("by @\(reviewer)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.cucuMono(11, weight: .regular))
+                    .tracking(1.2)
+                    .foregroundStyle(Color.cucuInkFaded)
             }
             if let reviewedAt = report.reviewedAt {
                 Text("· \(PostRowView.relativeTimestamp(for: reviewedAt))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.cucuMono(11, weight: .regular))
+                    .tracking(1.2)
+                    .foregroundStyle(Color.cucuInkFaded)
             }
             Spacer()
-            NavigationLink {
-                PostThreadView(rootId: report.postRootId)
-            } label: {
-                Text("View thread")
-                    .font(.footnote.weight(.semibold))
-            }
-            .buttonStyle(.bordered)
+            viewThreadLink(rootId: report.postRootId)
         }
     }
 
     private func statusBadge(for status: ReportStatus) -> some View {
         let label: String
         let icon: String
-        let tone: Color
+        let text: Color
+        let fill: Color
+        let stroke: Color
         switch status {
         case .actioned:
             label = "Taken down"
             icon = "checkmark.shield"
-            tone = .red
+            text = .cucuBurgundy
+            fill = .cucuRose
+            stroke = .cucuRoseStroke
         case .dismissed:
             label = "Dismissed"
             icon = "hand.thumbsdown"
-            tone = .secondary
+            text = .cucuInkSoft
+            fill = .cucuCardSoft
+            stroke = .cucuInk.opacity(0.18)
         case .open:
             // Shouldn't appear in history, but render
             // defensively so a stale row from a race doesn't
             // crash.
             label = "Open"
             icon = "circle"
-            tone = .orange
+            text = .cucuBurgundy
+            fill = .cucuRose
+            stroke = .cucuRoseStroke
         }
-        return Label(label, systemImage: icon)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(tone)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(
-                Capsule().fill(tone.opacity(0.12))
-            )
+        return HStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+            Text(label)
+                .font(.cucuSerif(12, weight: .semibold))
+        }
+        .foregroundStyle(text)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(fill))
+        .overlay(Capsule().strokeBorder(stroke, lineWidth: 1))
     }
 
     private func header(for report: Report) -> some View {
         HStack(alignment: .firstTextBaseline) {
-            Label(report.reason.displayLabel, systemImage: reasonIcon(for: report.reason))
-                .font(.subheadline.weight(.semibold))
+            HStack(spacing: 6) {
+                Image(systemName: reasonIcon(for: report.reason))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.cucuInkSoft)
+                Text(report.reason.displayLabel)
+                    .font(.cucuSerif(14, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
+            }
             Spacer()
             Text("via @\(report.reporterUsername)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.cucuMono(11, weight: .regular))
+                .tracking(1.2)
+                .foregroundStyle(Color.cucuInkFaded)
         }
     }
 
     private func actionRow(for report: Report) -> some View {
         HStack(spacing: 8) {
-            NavigationLink {
-                PostThreadView(rootId: report.postRootId)
-            } label: {
-                Label("View thread", systemImage: "bubble.left.and.bubble.right")
-                    .font(.footnote.weight(.semibold))
-            }
-            .buttonStyle(.bordered)
-
+            viewThreadLink(rootId: report.postRootId)
             Spacer()
+            takeDownChip(report)
+            dismissChip(report)
+        }
+    }
 
-            Button(role: .destructive) {
-                Task { await takeDown(report) }
-            } label: {
+    /// Burgundy take-down chip — destructive action, gets the
+    /// burgundy/rose palette so the moderator's eye lands on it
+    /// before the neutral dismiss chip.
+    private func takeDownChip(_ report: Report) -> some View {
+        Button(role: .destructive) {
+            CucuHaptics.delete()
+            Task { await takeDown(report) }
+        } label: {
+            HStack(spacing: 5) {
                 if actionInFlight.contains(report.id) {
-                    ProgressView().controlSize(.small)
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Color.cucuBurgundy)
                 } else {
-                    Text("Take down").font(.footnote.weight(.semibold))
+                    Image(systemName: "trash")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Take down")
+                        .font(.cucuSerif(13, weight: .semibold))
                 }
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-            .disabled(actionInFlight.contains(report.id))
-
-            Button {
-                Task { await dismiss(report) }
-            } label: {
-                Text("Dismiss").font(.footnote.weight(.semibold))
-            }
-            .buttonStyle(.bordered)
-            .disabled(actionInFlight.contains(report.id))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .foregroundStyle(Color.cucuBurgundy)
+            .background(Capsule().fill(Color.cucuRose))
+            .overlay(Capsule().strokeBorder(Color.cucuRoseStroke, lineWidth: 1))
         }
+        .buttonStyle(CucuPressableButtonStyle())
+        .disabled(actionInFlight.contains(report.id))
+    }
+
+    /// Neutral dismiss chip — cucuCardSoft fill with a faint ink
+    /// stroke so it reads as the secondary action.
+    private func dismissChip(_ report: Report) -> some View {
+        Button {
+            Task { await dismiss(report) }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Dismiss")
+                    .font(.cucuSerif(13, weight: .semibold))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .foregroundStyle(Color.cucuInkSoft)
+            .background(Capsule().fill(Color.cucuCardSoft))
+            .overlay(Capsule().strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 1))
+        }
+        .buttonStyle(CucuPressableButtonStyle())
+        .disabled(actionInFlight.contains(report.id))
+    }
+
+    /// Neutral chip wrapping a NavigationLink to the thread —
+    /// matches the dismiss-chip palette so the row reads as
+    /// "secondary actions" before the burgundy take-down chip.
+    private func viewThreadLink(rootId: String) -> some View {
+        NavigationLink {
+            PostThreadView(rootId: rootId)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.up.right.square")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("View thread")
+                    .font(.cucuSerif(13, weight: .semibold))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .foregroundStyle(Color.cucuInkSoft)
+            .background(Capsule().fill(Color.cucuCardSoft))
+            .overlay(Capsule().strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 1))
+        }
+        .buttonStyle(CucuPressableButtonStyle())
     }
 
     private func reasonIcon(for reason: ReportReason) -> String {
@@ -265,6 +343,7 @@ struct ModerationQueueView: View {
         VStack {
             Spacer()
             ProgressView()
+                .tint(Color.cucuInkSoft)
             Spacer()
         }
     }
@@ -273,29 +352,30 @@ struct ModerationQueueView: View {
     private var emptyState: some View {
         switch segment {
         case .open:
-            VStack(spacing: 12) {
+            VStack(spacing: 14) {
                 Spacer()
-                Image(systemName: "tray")
-                    .font(.system(size: 36, weight: .light))
-                    .foregroundStyle(.secondary)
-                Text("Inbox zero.")
-                    .font(.headline)
+                CucuFleuronDivider()
+                    .frame(maxWidth: 140)
+                Text("All clear.")
+                    .font(.cucuSerif(20, weight: .bold))
+                    .foregroundStyle(Color.cucuInk)
                 Text("No open reports right now.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .font(.cucuEditorial(13, italic: true))
+                    .foregroundStyle(Color.cucuInkSoft)
                 Spacer()
             }
+            .padding(.horizontal, 32)
         case .history:
-            VStack(spacing: 12) {
+            VStack(spacing: 14) {
                 Spacer()
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 36, weight: .light))
-                    .foregroundStyle(.secondary)
+                CucuFleuronDivider()
+                    .frame(maxWidth: 140)
                 Text("Nothing reviewed yet.")
-                    .font(.headline)
+                    .font(.cucuSerif(20, weight: .bold))
+                    .foregroundStyle(Color.cucuInk)
                 Text("Reports you action or dismiss will show up here.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .font(.cucuEditorial(13, italic: true))
+                    .foregroundStyle(Color.cucuInkSoft)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
                 Spacer()
@@ -308,18 +388,18 @@ struct ModerationQueueView: View {
             Spacer()
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 36))
-                .foregroundStyle(.orange)
+                .foregroundStyle(Color.cucuBurgundy)
             Text("Couldn't load the queue")
-                .font(.headline)
+                .font(.cucuSerif(18, weight: .bold))
+                .foregroundStyle(Color.cucuInk)
             Text(message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(.cucuEditorial(13, italic: true))
+                .foregroundStyle(Color.cucuInkSoft)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-            Button("Try again") {
+            CucuChip("Try again", systemImage: "arrow.clockwise") {
                 Task { await load() }
             }
-            .buttonStyle(.borderedProminent)
             .padding(.top, 4)
             Spacer()
         }

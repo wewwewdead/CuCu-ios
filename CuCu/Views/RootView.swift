@@ -47,6 +47,9 @@ struct RootView: View {
                 }
                 .tag(Tab.explore)
         }
+        .tint(Color.cucuInk)
+        .toolbarBackground(Color.cucuPaper, for: .tabBar)
+        .toolbarBackground(.visible, for: .tabBar)
         // The canvas builder lifts itself above the keyboard via a
         // SwiftUI `.offset`. The TabView must opt out of SwiftUI's
         // automatic keyboard safe-area shrink so the offset has
@@ -78,20 +81,68 @@ struct RootView: View {
 /// Bootstrapping here (and not on the TabView shell) keeps the
 /// offline-first invariant intact: signed out + no network + no
 /// draft still launches into a usable empty editor.
+///
+/// **Per-user draft scoping.** SwiftData isn't user-scoped, so on
+/// a device that hosts more than one Supabase account we filter
+/// the visible draft to ones the current account either owns
+/// (`draft.ownerUserId == auth.currentUser?.id`) or hasn't claimed
+/// yet (`ownerUserId == nil`, i.e. an anonymous draft from before
+/// sign-in). Without this, signing out → signing in as a different
+/// account would surface the previous user's design — and tapping
+/// Publish would write that design to the new user's profile.
+/// Anonymous drafts get claimed (`ownerUserId` stamped) the first
+/// time a signed-in user views them, after which they're scoped to
+/// that account.
 private struct BuildTab: View {
     @Environment(\.modelContext) private var context
+    @Environment(AuthViewModel.self) private var auth
     @Query(sort: \ProfileDraft.updatedAt, order: .reverse) private var drafts: [ProfileDraft]
+
+    /// Drafts visible to the currently signed-in account. When
+    /// signed out, every draft is visible — anonymous editing
+    /// stays untouched. When signed in, the filter has two layers:
+    ///
+    ///   1. Explicit `ownerUserId` match — the canonical "this draft
+    ///      is mine" signal, set on bootstrap or first-edit claim.
+    ///   2. For drafts that lack an explicit owner stamp (legacy +
+    ///      anonymous), look at `publishedOwnerUserId` — if a prior
+    ///      publish stamped a *different* account, the draft was
+    ///      authored by that account and a new sign-in shouldn't
+    ///      inherit it. This is the hole that produced the
+    ///      "I published a profile and Explore opens another
+    ///      user's content" symptom: pre-fix, a fresh sign-in could
+    ///      pick up a draft Alice had published, edit it, and
+    ///      republish under the new user's handle — leaving two
+    ///      visually-similar published rows on the cloud.
+    ///
+    /// Truly-anonymous drafts (no owner stamp, no prior publish)
+    /// stay claimable so an offline-then-sign-up flow doesn't
+    /// orphan the user's pre-account work.
+    private var visibleDrafts: [ProfileDraft] {
+        let canonical = auth.currentUser?.id.lowercased()
+        return drafts.filter { draft in
+            guard let canonical else { return true }
+            if let owner = draft.ownerUserId { return owner == canonical }
+            if let pubOwner = draft.publishedOwnerUserId,
+               pubOwner != canonical {
+                return false
+            }
+            return true
+        }
+    }
 
     var body: some View {
         NavigationStack {
-            if let draft = drafts.first {
+            if let draft = visibleDrafts.first {
                 ProfileCanvasBuilderView(draft: draft)
+                    .onAppear { claimIfUnowned(draft) }
             } else {
-                // First-launch bootstrap: insert one canvas draft, then
-                // `@Query` updates and the branch above renders the
-                // builder. `Color.clear` keeps the screen blank for the
-                // few milliseconds it takes SwiftData to fire the
-                // refresh.
+                // First-launch bootstrap (or first-launch-for-this-
+                // account, since per-user filtering can return an
+                // empty list even when other users' drafts exist on
+                // disk). Insert one canvas draft stamped to the
+                // current user (if any), then `@Query` updates and
+                // the branch above renders the builder.
                 Color.clear
                     .task { ensureDraftExists() }
             }
@@ -103,10 +154,32 @@ private struct BuildTab: View {
         .task { DefaultTemplateSeeder.seedIfNeeded(context: context) }
     }
 
+    /// Stamp the current user's id onto a draft that has none yet.
+    /// Lets anonymous drafts (created pre-sign-in or before this
+    /// field existed) flip into the user's scoped set on first
+    /// view, instead of staying available to every future account
+    /// on the device.
+    private func claimIfUnowned(_ draft: ProfileDraft) {
+        guard draft.ownerUserId == nil,
+              let canonical = auth.currentUser?.id.lowercased() else { return }
+        draft.ownerUserId = canonical
+        try? context.save()
+    }
+
     private func ensureDraftExists() {
-        guard drafts.isEmpty else { return }
+        guard visibleDrafts.isEmpty else { return }
         let store = DraftStore(context: context)
-        _ = try? store.createCanvasDraft()
+        let canonical = auth.currentUser?.id.lowercased()
+        if let draft = try? store.createCanvasDraft() {
+            // Stamp ownership immediately when a user is signed
+            // in so the new draft is scoped from creation. When
+            // signed out, leave the field nil — first signed-in
+            // viewer claims it.
+            if let canonical {
+                draft.ownerUserId = canonical
+                try? context.save()
+            }
+        }
     }
 }
 

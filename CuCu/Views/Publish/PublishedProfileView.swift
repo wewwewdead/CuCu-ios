@@ -26,6 +26,12 @@ struct PublishedProfileView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.cucuWidthClass) private var widthClass
     @Environment(AuthViewModel.self) private var auth
+    /// Bound to the same `cucu.selected_tab` key `RootView` writes to,
+    /// so the "Switch to Build" CTA on the self-not-found state can
+    /// flip the user back to the editor without us plumbing a
+    /// closure all the way down. SwiftUI keeps the two `@AppStorage`
+    /// reads in lock-step.
+    @AppStorage("cucu.selected_tab") private var selectedTabRaw: String = "build"
     @State private var state: ViewState = .loading
     /// A binding sink the canvas container needs but the viewer doesn't
     /// use — selection has no meaning in view-only mode.
@@ -342,17 +348,40 @@ struct PublishedProfileView: View {
     }
 
     private var notFoundState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "person.crop.circle.badge.questionmark")
+        // Diverge the copy when the username being looked up belongs
+        // to the signed-in viewer themselves. The generic "Profile
+        // not found" message reads like the navigation broke; the
+        // self-targeted message tells them what to do next (go to
+        // Build → Publish) so the puck-tap-before-publish path
+        // doesn't end at a confusing dead end.
+        let isSelf: Bool = {
+            let me = auth.currentUser?.username?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() ?? ""
+            return !me.isEmpty && username.lowercased() == me
+        }()
+        return VStack(spacing: 12) {
+            Image(systemName: isSelf
+                  ? "paperplane.circle"
+                  : "person.crop.circle.badge.questionmark")
                 .font(.system(size: 44, weight: .light))
-                .foregroundStyle(.secondary)
-            Text("Profile not found")
-                .font(.headline)
-            Text("@\(username) hasn't published a profile yet, or it's no longer available.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.cucuInkSoft)
+            Text(isSelf ? "You haven't published yet" : "Profile not found")
+                .font(.cucuSerif(20, weight: .bold))
+                .foregroundStyle(Color.cucuInk)
+            Text(isSelf
+                 ? "Switch to the Build tab and tap Publish to claim your card on Explore."
+                 : "@\(username) hasn't published a profile yet, or it's no longer available.")
+                .font(.cucuEditorial(13, italic: true))
+                .foregroundStyle(Color.cucuInkSoft)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
+            if isSelf {
+                CucuChip("Switch to Build", systemImage: "paintbrush") {
+                    selectedTabRaw = "build"
+                }
+                .padding(.top, 6)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

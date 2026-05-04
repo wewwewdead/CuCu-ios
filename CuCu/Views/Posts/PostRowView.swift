@@ -28,85 +28,157 @@ struct PostRowView: View {
     /// reference to AuthViewModel.
     let isOwnPost: Bool
 
+    /// Optional override that paints the author's actual hero
+    /// avatar (pulled from their published profile by the parent
+    /// feed's enrichment pass) in place of the bookplate letter
+    /// tile. Nil when the author hasn't published a profile or
+    /// hasn't set a hero avatar — the letter fallback covers that
+    /// case so every row stays renderable offline / pre-fetch.
+    var avatarURL: String? = nil
+
     var onTap: () -> Void = {}
     var onLike: () -> Void = {}
     var onReply: () -> Void = {}
     var onDelete: () -> Void = {}
-    /// Phase 7 — bubbles up to the parent so it can present the
-    /// shared `ReportPostSheet`. The row stays dumb; the sheet
-    /// owns auth-gating + service calls + the "already reported"
-    /// path.
     var onReport: () -> Void = {}
-    /// Phase 7 — bubbles up so the parent can present a
-    /// destructive confirmation dialog and, on confirm, call
-    /// `UserBlockService.block` plus scrub the loaded view via
-    /// `removeAllByAuthor(authorId:)`. The row doesn't talk to
-    /// the service directly because the post-block UI mutation
-    /// lives on the parent VM.
     var onBlock: () -> Void = {}
 
+    /// Drives the heart-pulse pop on tap. Set true at the action
+    /// site, cleared after a short delay so the spring releases.
+    @State private var heartPulse: Bool = false
+
+    /// Thread descendants want their own card-less treatment so the
+    /// indent spine reads as the visual structure. PostThreadView
+    /// flips this on; every other surface (feed, profile list)
+    /// leaves it at the default and gets the standard floating card.
+    @Environment(\.cucuPostRowSuppressCard) private var suppressCard
+
     var body: some View {
-        Button(action: onTap) {
-            HStack(alignment: .top, spacing: 12) {
-                if style == .full {
-                    avatar
+        Group {
+            if style == .full && !suppressCard {
+                Button(action: onTap) {
+                    rowBody
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    header
-                    bodyText
-                    if style == .full {
-                        actionRow
-                    }
+                .buttonStyle(.plain)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.cucuCard)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.cucuInkRule, lineWidth: 1)
+                )
+                .padding(.horizontal, 14)
+                .padding(.vertical, 4)
+            } else {
+                Button(action: onTap) {
+                    rowBody
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(.plain)
             }
-            .padding(paddingForStyle)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+    }
+
+    private var rowBody: some View {
+        HStack(alignment: .top, spacing: 14) {
+            if style == .full {
+                avatar
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                header
+                bodyText
+                if style == .full {
+                    actionRow
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(paddingForStyle)
+        .contentShape(Rectangle())
     }
 
     // MARK: - Pieces
 
+    /// Square bookplate avatar — rounded-rect tile, muted palette
+    /// fill, Fraunces-italic initial in deep ink. The square shape
+    /// reads as a printed monogram rather than a social-media
+    /// circle, which is exactly the editorial register the page is
+    /// going for.
+    ///
+    /// When `avatarURL` resolves, the tile flips to a real image
+    /// (loaded through `CachedRemoteImage` so the bytes come from
+    /// the shared cache `PublishedProfilesListView` already warms),
+    /// keeping the same square geometry + ink-stroke overlay so the
+    /// row's rhythm doesn't change between fallback and real-photo
+    /// states.
     private var avatar: some View {
-        ZStack {
-            Circle()
-                .fill(Self.avatarColor(for: post.authorUsername))
-                .frame(width: 36, height: 36)
-            Text(Self.avatarInitial(for: post.authorUsername))
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.white)
+        Group {
+            if let urlString = avatarURL,
+               !urlString.isEmpty,
+               let url = URL(string: urlString) {
+                CachedRemoteImage(url: url, contentMode: .fill) {
+                    letterAvatar
+                }
+                .frame(width: 40, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color.cucuInk.opacity(0.35), lineWidth: 0.8)
+                )
+            } else {
+                letterAvatar
+            }
         }
         .accessibilityHidden(true)
     }
 
+    private var letterAvatar: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Self.avatarColor(for: post.authorUsername))
+                .frame(width: 40, height: 40)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color.cucuInk.opacity(0.35), lineWidth: 0.8)
+                )
+            Text(Self.avatarInitial(for: post.authorUsername))
+                .font(.cucuEditorial(20, italic: true))
+                .foregroundStyle(Color.cucuInk)
+        }
+    }
+
+    /// Two-line header — username on top in serif semibold,
+    /// timestamp on its own line in tracked uppercased mono. The
+    /// vertical split frees the body from a single long inline run
+    /// of metadata and gives the row a printed-spec rhythm.
     private var header: some View {
-        HStack(spacing: 6) {
-            Text("@\(post.authorUsername)")
-                .font(.subheadline.weight(.semibold))
-            Text("·")
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text("@\(post.authorUsername)")
+                    .font(.cucuSerif(15, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
+                if post.editedAt != nil {
+                    Text("· edited")
+                        .font(.cucuEditorial(11, italic: true))
+                        .foregroundStyle(Color.cucuInkFaded)
+                }
+                Spacer(minLength: 0)
+                if style == .full {
+                    overflowMenu
+                }
+            }
             Text(Self.relativeTimestamp(for: post.createdAt))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            if post.editedAt != nil {
-                Text("· edited")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-            if style == .full {
-                overflowMenu
-            }
+                .font(.cucuMono(10, weight: .medium))
+                .tracking(1.8)
+                .foregroundStyle(Color.cucuInkFaded)
         }
     }
 
     private var bodyText: some View {
-        // `.body` matches platform reading size; selectable so a
-        // long-press can pull text out of a post the same way the
-        // system Mail app does.
         Text(post.body)
-            .font(.body)
+            .font(.cucuSans(15))
+            .foregroundStyle(Color.cucuInk)
+            .lineSpacing(4)
             .textSelection(.enabled)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -114,83 +186,99 @@ struct PostRowView: View {
             .truncationMode(.tail)
     }
 
+    /// Right-aligned action cluster — reply count then heart,
+    /// both in faded ink at rest, both with monospaced counts.
+    /// Right-alignment is the magazine / reading-mode pattern;
+    /// it keeps the body's left margin clean for the eye.
     private var actionRow: some View {
-        HStack(spacing: 24) {
-            // Heart / like — fills + tints red when the viewer has
-            // liked this post. `Button` rather than tap-gesture so
-            // VoiceOver picks up the action.
-            Button {
-                onLike()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: viewerHasLiked ? "heart.fill" : "heart")
-                        .foregroundStyle(viewerHasLiked ? Color.red : Color.secondary)
-                    if post.likeCount > 0 {
-                        Text("\(post.likeCount)")
-                            .font(.footnote.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(viewerHasLiked ? "Unlike" : "Like")
-
+        HStack(spacing: 18) {
+            Spacer(minLength: 0)
             // Reply
             Button {
                 onReply()
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Image(systemName: "bubble.right")
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(Color.cucuInkFaded)
                     if post.replyCount > 0 {
                         Text("\(post.replyCount)")
-                            .font(.footnote.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .font(.cucuMono(11, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.cucuInkSoft)
                     }
                 }
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Reply")
 
-            Spacer()
+            // Heart / like — fills + tints cherry when liked. Pop
+            // animation fires on each tap.
+            Button {
+                if viewerHasLiked {
+                    CucuHaptics.selection()
+                } else {
+                    CucuHaptics.soft()
+                }
+                heartPulse = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 180_000_000)
+                    heartPulse = false
+                }
+                onLike()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: viewerHasLiked ? "heart.fill" : "heart")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(viewerHasLiked ? Color.cucuCherry : Color.cucuInkFaded)
+                        .scaleEffect(heartPulse ? 1.18 : 1.0)
+                        .animation(.spring(response: 0.32, dampingFraction: 0.55), value: heartPulse)
+                    if post.likeCount > 0 {
+                        Text("\(post.likeCount)")
+                            .font(.cucuMono(11, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.cucuInkSoft)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(viewerHasLiked ? "Unlike" : "Like")
         }
+        .padding(.top, 2)
     }
 
     private var overflowMenu: some View {
         Menu {
-            Button {
-                onReport()
-            } label: {
-                Label("Report", systemImage: "flag")
-            }
-            // Block is destructive — blocking a stranger from a
-            // single post is a strong action; the role color
-            // signals that, and the parent's confirmation dialog
-            // adds the second-step guard.
-            Button(role: .destructive) {
-                onBlock()
-            } label: {
-                Label("Block @\(post.authorUsername)", systemImage: "hand.raised")
-            }
             if isOwnPost {
-                Divider()
+                // You can't report or block yourself — the only
+                // meaningful destructive action on your own post
+                // is Delete.
                 Button(role: .destructive) {
                     onDelete()
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
+            } else {
+                Button {
+                    onReport()
+                } label: {
+                    Label("Report", systemImage: "flag")
+                }
+                Button(role: .destructive) {
+                    onBlock()
+                } label: {
+                    Label("Block @\(post.authorUsername)", systemImage: "hand.raised")
+                }
             }
         } label: {
             Image(systemName: "ellipsis")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.cucuInkFaded)
                 .padding(.vertical, 4)
                 .padding(.horizontal, 6)
                 .contentShape(Rectangle())
         }
-        // Stop a Menu tap from also firing the row's outer
-        // Button — without this the user opens the menu *and*
-        // pushes the thread view in one tap.
+        // Stop a Menu tap from also firing the row's outer Button.
         .buttonStyle(.plain)
     }
 
@@ -199,7 +287,7 @@ struct PostRowView: View {
     private var paddingForStyle: EdgeInsets {
         switch style {
         case .full:
-            return EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16)
+            return EdgeInsets(top: 14, leading: 14, bottom: 14, trailing: 14)
         case .compact:
             return EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)
         }
@@ -207,28 +295,24 @@ struct PostRowView: View {
 
     // MARK: - Static formatting helpers
 
-    /// Relative timestamp tuned for social text:
-    ///   - <1m → "just now"
-    ///   - <1h → "Xm"
-    ///   - <24h → "Xh"
-    ///   - <7d → "Xd"
-    ///   - else → absolute date (medium style)
+    /// Relative timestamp tuned for social text. Uppercased units
+    /// pair with the monospaced timestamp font (`cucuMono`) so the
+    /// row's metadata reads as a printer's spec line.
     static func relativeTimestamp(for date: Date) -> String {
         let interval = Date.now.timeIntervalSince(date)
-        if interval < 60 { return "just now" }
+        if interval < 60 { return "JUST NOW" }
         if interval < 3600 {
-            return "\(Int(interval / 60))m"
+            return "\(Int(interval / 60))M AGO"
         }
         if interval < 86_400 {
-            return "\(Int(interval / 3600))h"
+            return "\(Int(interval / 3600))H AGO"
         }
         if interval < 7 * 86_400 {
-            return "\(Int(interval / 86_400))d"
+            return "\(Int(interval / 86_400))D AGO"
         }
         let f = DateFormatter()
-        f.dateStyle = .medium
-        f.timeStyle = .none
-        return f.string(from: date)
+        f.dateFormat = "MMM d, yyyy"
+        return f.string(from: date).uppercased()
     }
 
     /// Deterministic palette pick. Hashing the username (rather
@@ -236,27 +320,40 @@ struct PostRowView: View {
     /// colour across every row — a tiny visual signal of identity
     /// before the eye reaches the `@handle`.
     static func avatarColor(for username: String) -> Color {
-        // Stable across runs: sum the unicode scalars rather than
-        // using `String.hashValue`, which is randomized per
-        // process for hash-flooding defense.
         let lower = username.lowercased()
         let sum = lower.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
         return palette[sum % palette.count]
     }
 
+    /// Muted bookplate palette — drops the most saturated picks
+    /// (cucuShell, cucuMatcha) in favour of paper-toned tiles so
+    /// the avatar reads as a printed monogram rather than a candy
+    /// dot. The repeated paper tones are intentional: variation
+    /// without saturation.
     private static let palette: [Color] = [
-        Color(red: 0.93, green: 0.42, blue: 0.45),
-        Color(red: 0.95, green: 0.66, blue: 0.27),
-        Color(red: 0.42, green: 0.71, blue: 0.46),
-        Color(red: 0.34, green: 0.62, blue: 0.85),
-        Color(red: 0.62, green: 0.45, blue: 0.85),
-        Color(red: 0.85, green: 0.45, blue: 0.72),
-        Color(red: 0.30, green: 0.65, blue: 0.69),
-        Color(red: 0.55, green: 0.55, blue: 0.55)
+        .cucuRose, .cucuMossSoft, .cucuSky, .cucuBone,
+        .cucuPaperDeep, .cucuAccentSoft, .cucuCardSoft, .cucuRose
     ]
 
     static func avatarInitial(for username: String) -> String {
         guard let first = username.first else { return "?" }
         return String(first).uppercased()
+    }
+}
+
+// MARK: - Card-suppression environment
+
+/// Internal opt-out so a host (e.g. `PostThreadView`) can render a
+/// `PostRowView` without its default ink-stroked card wrap. Used to
+/// keep thread descendants visually attached to the indent spine
+/// while the root post keeps its own larger card chrome.
+private struct CucuPostRowSuppressCardKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+
+extension EnvironmentValues {
+    var cucuPostRowSuppressCard: Bool {
+        get { self[CucuPostRowSuppressCardKey.self] }
+        set { self[CucuPostRowSuppressCardKey.self] = newValue }
     }
 }

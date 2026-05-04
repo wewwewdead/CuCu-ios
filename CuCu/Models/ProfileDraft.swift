@@ -43,6 +43,25 @@ final class ProfileDraft {
     /// works for that draft going forward.
     var publishedOwnerUserId: String?
 
+    /// Canonical (lowercased) Supabase user id of the account that
+    /// authored this draft locally. SwiftData isn't user-scoped, so
+    /// without this field a sign-out → sign-in-as-different-account
+    /// on the same device would inherit the previous user's draft —
+    /// and tapping Publish would publish the previous user's design
+    /// under the new user's username. `RootView.BuildTab` filters
+    /// drafts by this field so each account sees only its own work
+    /// (plus any nil-owned "claimable" anonymous draft).
+    ///
+    /// Set when:
+    ///   - a draft is bootstrapped while signed in (stamped at create)
+    ///   - a nil-owned anonymous draft is first opened by a signed-in
+    ///     user (claimed on first paint)
+    ///
+    /// Pre-fix drafts have this nil; they get claimed by the first
+    /// signed-in user who opens them, after which the per-user
+    /// scoping works going forward.
+    var ownerUserId: String?
+
     init(id: UUID = UUID(),
          title: String = "Untitled",
          designJSON: String = DesignJSONCoder.fallbackJSON,
@@ -51,7 +70,8 @@ final class ProfileDraft {
          publishedProfileId: String? = nil,
          publishedUsername: String? = nil,
          lastPublishedAt: Date? = nil,
-         publishedOwnerUserId: String? = nil) {
+         publishedOwnerUserId: String? = nil,
+         ownerUserId: String? = nil) {
         self.id = id
         self.title = title
         self.designJSON = designJSON
@@ -61,5 +81,6 @@ final class ProfileDraft {
         self.publishedUsername = publishedUsername
         self.lastPublishedAt = lastPublishedAt
         self.publishedOwnerUserId = publishedOwnerUserId
+        self.ownerUserId = ownerUserId
     }
 }

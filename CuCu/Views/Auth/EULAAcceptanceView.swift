@@ -27,47 +27,48 @@ struct EULAAcceptanceView: View {
     ]
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                header
-                bulletList
-                termsLink
+        ZStack {
+            Color.cucuPaper.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    header
+                    bulletList
+                    termsLink
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 32)
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 32)
         }
         .safeAreaInset(edge: .bottom) {
-            agreeButton
-                .padding(.horizontal, 20)
-                .padding(.vertical, 14)
-                .background(.regularMaterial)
+            agreeBar
         }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: "checkmark.shield")
-                .font(.system(size: 36, weight: .light))
-                .foregroundStyle(.tint)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("❦")
+                .font(.cucuSerif(40, weight: .regular))
+                .foregroundStyle(Color.cucuInkFaded)
             Text("Welcome to CuCu")
-                .font(.title.weight(.semibold))
+                .font(.cucuSerif(28, weight: .bold))
+                .foregroundStyle(Color.cucuInk)
             Text("Before you post or comment, please agree to our content rules. We don't tolerate objectionable content — and we act fast when something gets reported.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(.cucuEditorial(14, italic: true))
+                .foregroundStyle(Color.cucuInkSoft)
         }
     }
 
     private var bulletList: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("What's not allowed")
-                .font(.headline)
+            CucuSectionLabel(text: "What's not allowed")
             ForEach(prohibitedItems, id: \.text) { item in
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: item.icon)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.cucuBurgundy)
                         .frame(width: 22)
                     Text(item.text)
-                        .font(.callout)
+                        .font(.cucuSans(14))
+                        .foregroundStyle(Color.cucuInk)
                 }
             }
         }
@@ -78,23 +79,45 @@ struct EULAAcceptanceView: View {
             openURL(termsURL)
         } label: {
             Label("Read full Terms of Service", systemImage: "doc.text")
-                .font(.footnote.weight(.semibold))
+                .font(.cucuSerif(13, weight: .semibold))
         }
         .buttonStyle(.bordered)
+        .tint(Color.cucuInk)
     }
 
-    private var agreeButton: some View {
+    /// Bottom safe-area inset — paper-toned with a top hairline so
+    /// the action bar reads as a printed footer, not a floating
+    /// material strip. The agree button is the only affordance.
+    private var agreeBar: some View {
+        ZStack(alignment: .top) {
+            Color.cucuPaper.ignoresSafeArea(edges: .bottom)
+            Rectangle()
+                .fill(Color.cucuInkRule)
+                .frame(height: 1)
+            agreeChip
+                .padding(.horizontal, 20)
+                .padding(.vertical, 14)
+        }
+    }
+
+    private var agreeChip: some View {
         Button {
+            CucuHaptics.success()
             auth.acceptEULA()
         } label: {
-            HStack {
-                Spacer()
-                Text("I agree").fontWeight(.semibold)
-                Spacer()
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("I agree")
+                    .font(.cucuSerif(17, weight: .semibold))
             }
-            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .foregroundStyle(Color.cucuMoss)
+            .background(Capsule().fill(Color.cucuMossSoft))
+            .overlay(Capsule().strokeBorder(Color.cucuMoss, lineWidth: 1))
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(CucuPressableButtonStyle())
         .controlSize(.large)
     }
 }

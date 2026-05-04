@@ -134,7 +134,34 @@ nonisolated struct PublishService {
 
         // 2. Determine profile id BEFORE any I/O so storage paths are stable
         //    across upload + DB insert (and across republishes).
-        let profileId: String = existingProfileId ?? UUID().uuidString
+        //
+        //    Server-of-truth ownership check: if `existingProfileId` is
+        //    handed in but we don't actually own that row (sign-out →
+        //    sign-up on the same device leaves the draft pointing at the
+        //    previous user's profile, and pre-`publishedOwnerUserId`
+        //    drafts bypass the local cross-account guard in
+        //    `PublishViewModel`), upsert-onto-someone-else's-row would
+        //    silently no-op: PostgREST returns success but Postgres'
+        //    `Owners can update their own profiles` RLS policy
+        //    (`using (auth.uid() = user_id)`) hides the conflicted row
+        //    from the UPDATE branch of `INSERT ... ON CONFLICT (id)`,
+        //    so zero rows are written and the caller stamps the local
+        //    draft with a foreign profile id. Querying ownership here
+        //    lets us mint a fresh UUID instead and treat the publish as
+        //    a clean insert.
+        let canonicalUserId = user.id.lowercased()
+        let resolvedProfileId: String
+        if let candidate = existingProfileId?.lowercased(),
+           !candidate.isEmpty {
+            let ownsExisting = try await isOwnedByCurrentUser(
+                client: client,
+                profileId: candidate,
+                userId: canonicalUserId
+            )
+            resolvedProfileId = ownsExisting ? candidate : UUID().uuidString
+        } else {
+            resolvedProfileId = UUID().uuidString
+        }
 
         // Storage RLS compares the path's first folder component to
         // `'user_' || auth.uid()::text`. Postgres renders a UUID as
@@ -142,8 +169,7 @@ nonisolated struct PublishService {
         // (`E621E1F8-...`). Without normalisation the policy rejects
         // every upload as an RLS violation. Lowercase here once and
         // reuse the canonical form for the entire publish.
-        let canonicalUserId = user.id.lowercased()
-        let canonicalProfileId = profileId.lowercased()
+        let canonicalProfileId = resolvedProfileId.lowercased()
 
         let uploads = collectUploads(from: document)
         try validateLocalAssets(uploads)
@@ -406,6 +432,50 @@ nonisolated struct PublishService {
             return url.absoluteString
         } catch {
             throw PublishError.uploadFailed(SupabaseErrorMapper.detail(error))
+        }
+    }
+
+    /// True when the row at `id = profileId` is owned by `userId`.
+    /// Used as a pre-flight before the upsert so a stale local
+    /// `existingProfileId` (e.g. signed-out → signed-up on the same
+    /// device, where SwiftData carries the previous user's pointer)
+    /// doesn't smuggle into someone else's row. The query is
+    /// constrained on both id and user_id so the
+    /// `Owners can read their own profiles` RLS policy
+    /// (`using (auth.uid() = user_id)`) returns the row only when
+    /// the current user actually owns it — the public-readable
+    /// policy can't leak it through because we explicitly
+    /// `eq("user_id", canonical)`.
+    ///
+    /// Returns false on a "not found" or RLS-hidden row, which is
+    /// the right behaviour: in either case the caller should mint a
+    /// fresh UUID rather than try to upsert into a row it doesn't
+    /// own. Network errors propagate so the publish surfaces the
+    /// real problem instead of silently treating it as
+    /// not-our-row.
+    private func isOwnedByCurrentUser(
+        client: SupabaseClient,
+        profileId: String,
+        userId: String
+    ) async throws -> Bool {
+        struct OwnedCheckRow: Decodable, Sendable {
+            let id: String
+        }
+        do {
+            let rows: [OwnedCheckRow] = try await client
+                .from("profiles")
+                .select("id")
+                .eq("id", value: profileId)
+                .eq("user_id", value: userId)
+                .limit(1)
+                .execute()
+                .value
+            return !rows.isEmpty
+        } catch {
+            if SupabaseErrorMapper.isNetwork(error) {
+                throw PublishError.network
+            }
+            throw PublishError.database(SupabaseErrorMapper.detail(error))
         }
     }
 

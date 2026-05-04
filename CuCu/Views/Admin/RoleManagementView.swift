@@ -34,7 +34,8 @@ struct RoleManagementView: View {
             grantSection
             existingSection
         }
-        .navigationTitle("Manage roles")
+        .cucuFormBackdrop()
+        .cucuSheetTitle("Roles")
         #if os(iOS) || os(visionOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -60,35 +61,61 @@ struct RoleManagementView: View {
         Section {
             HStack(spacing: 6) {
                 Text("@")
-                    .foregroundStyle(.secondary)
-                    .font(.body.monospaced())
+                    .font(.cucuMono(15, weight: .regular))
+                    .foregroundStyle(Color.cucuInkFaded)
                 TextField("username", text: $grantInput)
-                    .font(.body.monospaced())
+                    .font(.cucuMono(15, weight: .regular))
+                    .foregroundStyle(Color.cucuInk)
                     #if os(iOS) || os(visionOS)
                     .textInputAutocapitalization(.never)
                     #endif
                     .autocorrectionDisabled()
                     .disabled(isGranting)
             }
-            Button {
-                Task { await grantModerator() }
-            } label: {
-                HStack {
-                    Spacer()
-                    if isGranting {
-                        ProgressView()
-                    } else {
-                        Text("Grant moderator").fontWeight(.semibold)
-                    }
-                    Spacer()
-                }
+            HStack {
+                Spacer()
+                grantChip
+                Spacer()
             }
-            .disabled(grantInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGranting)
+            .listRowBackground(Color.clear)
         } header: {
-            Text("Grant moderator")
+            CucuSectionLabel(text: "Grant moderator")
         } footer: {
             Text("Give an existing user moderator privileges. Bootstrap admins are added via SQL.")
+                .font(.cucuEditorial(12, italic: true))
+                .foregroundStyle(Color.cucuInkSoft)
         }
+    }
+
+    /// Moss-variant grant chip — affirmative palette for the "add
+    /// a mod" action so the destructive revokes below read as a
+    /// clear contrast.
+    private var grantChip: some View {
+        Button {
+            Task { await grantModerator() }
+        } label: {
+            HStack(spacing: 6) {
+                if isGranting {
+                    ProgressView()
+                        .tint(Color.cucuMoss)
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Grant moderator")
+                        .font(.cucuSerif(14, weight: .semibold))
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .frame(minWidth: 140)
+            .foregroundStyle(Color.cucuMoss)
+            .background(Capsule().fill(Color.cucuMossSoft))
+            .overlay(Capsule().strokeBorder(Color.cucuMoss, lineWidth: 1))
+        }
+        .buttonStyle(CucuPressableButtonStyle())
+        .disabled(grantInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGranting)
+        .opacity(grantInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGranting ? 0.55 : 1.0)
     }
 
     // MARK: - Existing list
@@ -98,28 +125,39 @@ struct RoleManagementView: View {
         Section {
             switch status {
             case .loading:
-                HStack { Spacer(); ProgressView(); Spacer() }
+                HStack {
+                    Spacer()
+                    ProgressView().tint(Color.cucuInkSoft)
+                    Spacer()
+                }
+                .listRowBackground(Color.clear)
             case .empty:
                 Text("No moderators or admins yet.")
-                    .foregroundStyle(.secondary)
+                    .font(.cucuEditorial(13, italic: true))
+                    .foregroundStyle(Color.cucuInkSoft)
+                    .listRowBackground(Color.clear)
             case .loaded:
                 ForEach(assignments) { assignment in
                     row(assignment)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
             case .error(let message):
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Couldn't load roles")
-                        .font(.subheadline.weight(.semibold))
+                        .font(.cucuSerif(14, weight: .semibold))
+                        .foregroundStyle(Color.cucuInk)
                     Text(message)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Button("Try again") {
+                        .font(.cucuEditorial(12, italic: true))
+                        .foregroundStyle(Color.cucuInkSoft)
+                    CucuChip("Try again", systemImage: "arrow.clockwise") {
                         Task { await load() }
                     }
                 }
+                .listRowBackground(Color.clear)
             }
         } header: {
-            Text("Current admins & moderators")
+            CucuSectionLabel(text: "Current admins & moderators")
         }
     }
 
@@ -127,22 +165,50 @@ struct RoleManagementView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(displayHandle(for: assignment))
-                    .font(.body.monospaced())
+                    .font(.cucuMono(14, weight: .regular))
+                    .foregroundStyle(Color.cucuInk)
                 Text(assignment.role == .admin ? "Admin" : "Moderator")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.cucuMono(10, weight: .medium))
+                    .tracking(1.4)
+                    .foregroundStyle(Color.cucuInkFaded)
             }
             Spacer()
             if inFlightRevokes.contains(assignment.userId) {
-                ProgressView().controlSize(.small)
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(Color.cucuBurgundy)
             } else {
-                Button("Revoke", role: .destructive) {
-                    Task { await revoke(assignment) }
-                }
-                .buttonStyle(.bordered)
-                .disabled(isOwnRow(assignment))
+                revokeChip(for: assignment)
             }
         }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .cucuCard(corner: 12, innerRule: false, elevation: .flat)
+    }
+
+    /// Burgundy revoke chip — destructive palette to telegraph
+    /// that tapping pulls a privilege. Disabled on the admin's
+    /// own row so they can't lock themselves out.
+    private func revokeChip(for assignment: RoleAssignment) -> some View {
+        let disabled = isOwnRow(assignment)
+        return Button(role: .destructive) {
+            Task { await revoke(assignment) }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "minus.circle")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Revoke")
+                    .font(.cucuSerif(13, weight: .semibold))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .foregroundStyle(Color.cucuBurgundy)
+            .background(Capsule().fill(Color.cucuRose))
+            .overlay(Capsule().strokeBorder(Color.cucuRoseStroke, lineWidth: 1))
+        }
+        .buttonStyle(CucuPressableButtonStyle())
+        .disabled(disabled)
+        .opacity(disabled ? 0.4 : 1.0)
     }
 
     private func displayHandle(for assignment: RoleAssignment) -> String {

@@ -294,6 +294,59 @@ nonisolated struct PublishedProfileService {
         #endif
     }
 
+    /// Username-keyed avatar lookup. Used by `PostFeedView` to paint
+    /// each post's row with the author's real hero avatar (when the
+    /// author has published a profile) instead of the bookplate
+    /// letter fallback. Mirrors `fetchBackgrounds(for:)` but keyed
+    /// on `username` because posts carry the author's handle, not
+    /// the profile-id.
+    ///
+    /// Returns a `[lowercaseUsername: avatarURL]` dictionary so the
+    /// caller can do an O(1) lookup per row. Authors who haven't
+    /// published — or who published without a hero avatar — are
+    /// simply absent from the map; the row keeps its letter
+    /// fallback.
+    func fetchAvatars(forUsernames usernames: [String]) async throws -> [String: String] {
+        let normalized = Array(Set(usernames
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }))
+        guard !normalized.isEmpty else { return [:] }
+        #if canImport(Supabase)
+        guard let client = SupabaseClientProvider.shared else {
+            throw PublishedProfileError.notConfigured(reason: .missingCredentials)
+        }
+        struct AvatarRow: Decodable, Sendable {
+            let username: String?
+            let hero_avatar_url: String?
+        }
+        let select = "username,hero_avatar_url:design_json->>heroAvatarURL"
+        do {
+            let rows: [AvatarRow] = try await client
+                .from("profiles")
+                .select(select)
+                .in("username", values: normalized)
+                .eq("is_published", value: true)
+                .execute()
+                .value
+            var out: [String: String] = [:]
+            for row in rows {
+                guard let u = row.username?.lowercased(),
+                      let url = row.hero_avatar_url,
+                      !url.isEmpty else { continue }
+                out[u] = url
+            }
+            return out
+        } catch {
+            if SupabaseErrorMapper.isNetwork(error) {
+                throw PublishedProfileError.network
+            }
+            throw PublishedProfileError.unknown(SupabaseErrorMapper.detail(error))
+        }
+        #else
+        throw PublishedProfileError.notConfigured(reason: .packageNotAdded)
+        #endif
+    }
+
     /// Fetch the published profile feed ranked by the SQL view's MVP hot
     /// score: votes in the last 24h carry the most weight, then votes in the
     /// last 7d, then total votes.

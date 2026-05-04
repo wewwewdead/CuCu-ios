@@ -55,7 +55,7 @@ struct ReportPostSheet: View {
                     form
                 }
             }
-            .navigationTitle("Report post")
+            .cucuSheetTitle("Report post")
             #if os(iOS) || os(visionOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -65,6 +65,7 @@ struct ReportPostSheet: View {
                         onFinish(.cancelled)
                         dismiss()
                     }
+                    .foregroundStyle(Color.cucuInk)
                     .disabled(isSubmitting)
                 }
             }
@@ -81,45 +82,75 @@ struct ReportPostSheet: View {
                 }
                 .pickerStyle(.inline)
             } header: {
-                Text("Why are you reporting this?")
+                CucuSectionLabel(text: "Why are you reporting this?")
             }
 
             Section {
                 ZStack(alignment: .topLeading) {
+                    TextEditor(text: $note)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 96)
+                        .padding(10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color.cucuBone)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(Color.cucuInk, lineWidth: 1)
+                        )
                     if note.isEmpty {
                         Text("Add a note (optional)")
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 8)
-                            .padding(.leading, 4)
+                            .font(.cucuEditorial(15, italic: true))
+                            .foregroundStyle(Color.cucuInkFaded)
+                            .padding(.top, 18)
+                            .padding(.leading, 16)
                             .allowsHitTesting(false)
                     }
-                    TextEditor(text: $note)
-                        .frame(minHeight: 96)
                 }
                 HStack {
                     Spacer()
                     Text("\(note.count) / \(PostReportService.noteCharacterLimit)")
-                        .font(.caption.monospacedDigit())
+                        .font(.cucuMono(11, weight: .medium))
+                        .monospacedDigit()
                         .foregroundStyle(noteCounterTone)
                 }
             } header: {
-                Text("Notes for moderators")
+                CucuSectionLabel(text: "Notes for moderators")
             } footer: {
                 Text("If you can, tell us what's wrong with this post. We review every report.")
+                    .font(.cucuEditorial(12, italic: true))
+                    .foregroundStyle(Color.cucuInkSoft)
             }
 
             if alreadyReportedNotice {
                 Section {
-                    Label(
-                        "You already reported this post. Our team will review it soon.",
-                        systemImage: "checkmark.circle"
+                    Label {
+                        Text("You already reported this post. Our team will review it soon.")
+                            .font(.cucuEditorial(13, italic: true))
+                            .foregroundStyle(Color.cucuInkSoft)
+                    } icon: {
+                        Image(systemName: "checkmark.circle")
+                            .foregroundStyle(Color.cucuMoss)
+                    }
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.cucuMossSoft)
                     )
-                    .foregroundStyle(.secondary)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.cucuMoss.opacity(0.4), lineWidth: 1)
+                    )
+                    .listRowBackground(Color.clear)
                 }
             } else if let inlineError {
                 Section {
                     Label(inlineError, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
+                        .font(.cucuEditorial(13, italic: true))
+                        .foregroundStyle(Color.cucuBurgundy)
                 }
             }
 
@@ -131,23 +162,54 @@ struct ReportPostSheet: View {
                         Spacer()
                         if isSubmitting {
                             ProgressView()
+                                .tint(Color.cucuInk)
                         } else {
-                            Text(alreadyReportedNotice ? "Done" : "Submit report")
-                                .fontWeight(.semibold)
+                            submitChip
                         }
                         Spacer()
                     }
                 }
+                .buttonStyle(CucuPressableButtonStyle())
                 .disabled(isSubmitting || note.count > PostReportService.noteCharacterLimit)
+                .listRowBackground(Color.clear)
             }
         }
+        .cucuFormBackdrop()
         .scrollDismissesKeyboard(.interactively)
     }
 
+    /// Submit chip — burgundy variant when the user is filing a
+    /// fresh report (the destructive read), moss variant for the
+    /// "Done" branch after the server returned `alreadyReported`
+    /// (the affirmative read).
+    @ViewBuilder
+    private var submitChip: some View {
+        let isDone = alreadyReportedNotice
+        HStack(spacing: 6) {
+            Image(systemName: isDone ? "checkmark" : "flag.fill")
+                .font(.system(size: 11, weight: .semibold))
+            Text(isDone ? "Done" : "Submit report")
+                .font(.cucuSerif(14, weight: .semibold))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .foregroundStyle(isDone ? Color.cucuMoss : Color.cucuBurgundy)
+        .background(Capsule().fill(isDone ? Color.cucuMossSoft : Color.cucuRose))
+        .overlay(
+            Capsule().strokeBorder(
+                isDone ? Color.cucuMoss : Color.cucuRoseStroke,
+                lineWidth: 1
+            )
+        )
+    }
+
+    /// Three-tier counter colour — paper ink while comfortable,
+    /// burgundy on the warning band, cherry once the writer's
+    /// blown past the server-enforced cap.
     private var noteCounterTone: Color {
-        if note.count > PostReportService.noteCharacterLimit { return .red }
-        if note.count > Int(Double(PostReportService.noteCharacterLimit) * 0.85) { return .orange }
-        return .secondary
+        if note.count > PostReportService.noteCharacterLimit { return .cucuCherry }
+        if note.count > Int(Double(PostReportService.noteCharacterLimit) * 0.85) { return .cucuBurgundy }
+        return .cucuInkSoft
     }
 
     private func submit() async {
@@ -168,6 +230,7 @@ struct ReportPostSheet: View {
                 reason: reason,
                 note: note.isEmpty ? nil : note
             )
+            CucuHaptics.success()
             onFinish(.submitted)
             dismiss()
         } catch let err as PostReportError {

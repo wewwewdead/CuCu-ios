@@ -58,6 +58,32 @@ final class PublishViewModel {
             return
         }
 
+        let canonicalUserId = user.id.lowercased()
+
+        // Authorship guard: refuse to publish someone else's draft.
+        // SwiftData isn't user-scoped, so a sign-out → sign-in-as-
+        // different-account on the same device can leave the
+        // editor pointed at the previous user's draft. Without
+        // this guard, hitting Publish would write the previous
+        // user's design under the new user's username — exactly
+        // the "publishing another user's profile" symptom we're
+        // closing off. `BuildTab` already filters drafts to ones
+        // the current account owns or hasn't claimed yet, so this
+        // path should be unreachable in normal flow; the guard is
+        // a second line of defense for stale views and any
+        // pre-existing draft that snuck through pre-fix.
+        if let draftOwner = draft.ownerUserId, draftOwner != canonicalUserId {
+            status = .failure("This draft belongs to a different account. Switch back, or start a new draft to publish.")
+            return
+        }
+        // Claim the draft if it's never been stamped — the user
+        // is publishing it, so they're authoring it as far as we
+        // care. Stops it from getting re-claimed by a future
+        // account on the same device.
+        if draft.ownerUserId == nil {
+            draft.ownerUserId = canonicalUserId
+        }
+
         // Cross-account guard: if this draft was last published by a
         // *different* Supabase user (sign-out → sign-up on the same
         // device), drop the stale `publishedProfileId` so the upsert
@@ -66,7 +92,6 @@ final class PublishViewModel {
         // Postgres would reject the upsert on the profiles UPDATE
         // policy's `using (auth.uid() = user_id)` clause — surfacing
         // as the cryptic "(using expression)" RLS failure.
-        let canonicalUserId = user.id.lowercased()
         if let owner = draft.publishedOwnerUserId, owner != canonicalUserId {
             draft.publishedProfileId = nil
             draft.publishedUsername = nil

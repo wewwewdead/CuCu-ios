@@ -135,6 +135,22 @@ final class PostThreadViewModel {
         }
     }
 
+    /// Collapse an expanded subtree. Mirror of `expandReplies`,
+    /// but synchronous and local — we only need to drop the id
+    /// from `expandedIds` and `flattenForRender` will route the
+    /// parent back through the "View N replies" branch on the
+    /// next pass. Loaded children, cursors, and `hasMore` flags
+    /// are kept in place so re-expanding is instant. The root
+    /// can't be collapsed: there'd be no surviving affordance
+    /// to bring it back, and the page would read empty.
+    func collapse(parentId: String) {
+        guard var current = thread else { return }
+        guard parentId != current.root.id else { return }
+        guard current.expandedIds.contains(parentId) else { return }
+        current.expandedIds.remove(parentId)
+        thread = current
+    }
+
     /// Paginate the next page of direct children under
     /// `parentId`. Reads `nextCursorByParent[parentId]` and
     /// asks the service for siblings created after that cursor.

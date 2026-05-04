@@ -34,23 +34,30 @@ struct AuthGateView: View {
     }
 
     private var authTabs: some View {
-        VStack(spacing: 0) {
-            header
+        ZStack {
+            Color.cucuPaper.ignoresSafeArea()
+            VStack(spacing: 0) {
+                header
 
-            Picker("", selection: $mode) {
-                ForEach(Mode.allCases, id: \.self) { mode in
-                    Text(mode.rawValue).tag(mode)
+                Picker("", selection: $mode) {
+                    ForEach(Mode.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
                 }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 20)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
-            .onChange(of: mode) { _, _ in auth.clearMessages() }
+                .pickerStyle(.segmented)
+                .tint(Color.cucuInk)
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+                .onChange(of: mode) { _, _ in
+                    CucuHaptics.selection()
+                    auth.clearMessages()
+                }
 
-            switch mode {
-            case .signIn: SignInView()
-            case .signUp: SignUpView()
+                switch mode {
+                case .signIn: SignInView()
+                case .signUp: SignUpView()
+                }
             }
         }
         .background {
@@ -63,15 +70,16 @@ struct AuthGateView: View {
     }
 
     private var header: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "person.crop.circle.badge.checkmark")
-                .font(.system(size: 40, weight: .light))
-                .foregroundStyle(.secondary)
+        VStack(spacing: 8) {
+            Text("❦")
+                .font(.cucuSerif(36, weight: .regular))
+                .foregroundStyle(Color.cucuInkFaded)
             Text("Sign in to publish")
-                .font(.title3.weight(.semibold))
+                .font(.cucuSerif(22, weight: .bold))
+                .foregroundStyle(Color.cucuInk)
             Text("You don't need an account to create or edit drafts. Sign in only to publish your profile online.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(.cucuEditorial(13, italic: true))
+                .foregroundStyle(Color.cucuInkSoft)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
         }
@@ -89,14 +97,23 @@ struct AuthGateView: View {
                 return "Add your Supabase URL and anon key to CuCu/Config/SupabaseSecrets.plist to enable publishing."
             }
         }()
-        Label(message, systemImage: "exclamationmark.triangle.fill")
-            .font(.caption)
-            .foregroundStyle(.orange)
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.orange.opacity(0.10))
-            )
-            .padding(.horizontal, 20)
+        Label {
+            Text(message)
+                .font(.cucuEditorial(12, italic: true))
+                .foregroundStyle(Color.cucuBurgundy)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Color.cucuBurgundy)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.cucuRose.opacity(0.5))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.cucuRoseStroke, lineWidth: 1)
+        )
+        .padding(.horizontal, 20)
     }
 }

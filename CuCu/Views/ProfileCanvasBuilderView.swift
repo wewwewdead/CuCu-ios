@@ -1111,12 +1111,6 @@ struct ProfileCanvasBuilderView: View {
             .disabled(legacyDraft)
             .accessibilityLabel("Add Element")
 
-            Button { sheets.showPreview = true } label: {
-                Image(systemName: "eye")
-            }
-            .disabled(legacyDraft || canvasIsEmpty)
-            .accessibilityLabel("Preview")
-
             Button { sheets.showPublishSheet = true } label: {
                 // Filled paperplane once a publish has succeeded —
                 // gives the user a free "this draft is live"
@@ -1129,6 +1123,10 @@ struct ProfileCanvasBuilderView: View {
             .accessibilityLabel("Publish")
 
             Menu {
+                Button("Preview", systemImage: "eye") {
+                    sheets.showPreview = true
+                }
+                .disabled(legacyDraft || canvasIsEmpty)
                 Button("Page Settings", systemImage: "photo.on.rectangle.angled") {
                     sheets.showPageBackgroundSheet = true
                 }

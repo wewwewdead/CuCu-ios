@@ -46,13 +46,14 @@ struct AccountSheet: View {
                     accountContent
                 }
             }
-            .navigationTitle("Account")
+            .cucuSheetTitle("Account")
             #if os(iOS) || os(visionOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .foregroundStyle(Color.cucuInk)
                 }
             }
         }
@@ -60,65 +61,75 @@ struct AccountSheet: View {
 
     private var accountContent: some View {
         Form {
-            Section("Account") {
+            Section {
                 Text(auth.currentUser?.email ?? "")
+                    .font(.cucuMono(13, weight: .regular))
+                    .foregroundStyle(Color.cucuInk)
                 Text("@\(auth.currentUser?.username ?? "")")
-                    .font(.body.monospaced())
+                    .font(.cucuSerif(15, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
+            } header: {
+                CucuSectionLabel(text: "Account")
             }
 
-            Section("Privacy") {
+            Section {
                 NavigationLink {
                     BlockedUsersListView()
                 } label: {
-                    Label("Blocked users", systemImage: "hand.raised")
+                    accountRow(label: "Blocked users", systemImage: "hand.raised")
                 }
                 Button {
                     openURL(termsURL)
                 } label: {
-                    Label("Terms of Service", systemImage: "doc.text")
-                        .foregroundStyle(Color.primary)
+                    accountRow(label: "Terms of Service", systemImage: "doc.text")
                 }
                 Button {
                     openURL(privacyURL)
                 } label: {
-                    Label("Privacy Policy", systemImage: "lock.shield")
-                        .foregroundStyle(Color.primary)
+                    accountRow(label: "Privacy Policy", systemImage: "lock.shield")
                 }
+            } header: {
+                CucuSectionLabel(text: "Privacy")
             }
 
-            Section("Support") {
+            Section {
                 Button {
                     if let url = URL(string: "mailto:\(supportEmail)") {
                         openURL(url)
                     }
                 } label: {
-                    Label(supportEmail, systemImage: "envelope")
-                        .foregroundStyle(Color.primary)
+                    accountRow(label: supportEmail, systemImage: "envelope")
                 }
+            } header: {
+                CucuSectionLabel(text: "Support")
             }
 
             // Mod-only: hidden when `isModerator` is false. Server-
             // side RLS would also empty the queue for a non-mod,
             // but the UI gate prevents the wasted request.
             if auth.currentUser?.isModerator == true {
-                Section("Moderation") {
+                Section {
                     NavigationLink {
                         ModerationQueueView()
                     } label: {
-                        Label("Moderation queue", systemImage: "flag")
+                        accountRow(label: "Moderation queue", systemImage: "flag")
                     }
+                } header: {
+                    CucuSectionLabel(text: "Moderation")
                 }
             }
 
             // Admin-only: same UI-gate pattern. Granting a role
             // would 42501 / RLS-deny on the server too.
             if auth.currentUser?.isAdmin == true {
-                Section("Admin") {
+                Section {
                     NavigationLink {
                         RoleManagementView()
                     } label: {
-                        Label("Manage roles", systemImage: "person.crop.rectangle.badge.plus")
+                        accountRow(label: "Manage roles", systemImage: "person.crop.rectangle.badge.plus")
                     }
+                } header: {
+                    CucuSectionLabel(text: "Admin")
                 }
             }
 
@@ -131,12 +142,30 @@ struct AccountSheet: View {
                 } label: {
                     HStack {
                         Spacer()
-                        Text("Sign Out").fontWeight(.semibold)
+                        Text("Sign Out")
+                            .font(.cucuSerif(15, weight: .semibold))
+                            .foregroundStyle(Color.cucuBurgundy)
                         Spacer()
                     }
                 }
                 .disabled(auth.isLoading)
             }
+        }
+        .cucuFormBackdrop()
+    }
+
+    /// Shared visual treatment for every link / button row in the
+    /// account form. Pulls the icon into ink-soft and keeps body
+    /// copy in deep ink so the rows scan as a list of editorial
+    /// entries rather than system-blue chevrons.
+    private func accountRow(label: String, systemImage: String) -> some View {
+        Label {
+            Text(label)
+                .font(.cucuSans(15))
+                .foregroundStyle(Color.cucuInk)
+        } icon: {
+            Image(systemName: systemImage)
+                .foregroundStyle(Color.cucuInkSoft)
         }
     }
 }

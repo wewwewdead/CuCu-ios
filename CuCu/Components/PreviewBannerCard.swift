@@ -19,9 +19,13 @@ import SwiftUI
 ///   4. **Avatar tile.** Small circular thumbnail to the left of the
 ///      banner — gives a stable identity beat next to the banner's
 ///      varying tone.
-///   5. **Close button.** Top-right "X" mirrors the screenshot's
-///      dismiss affordance; passes through to the `onDismiss` arg so
-///      the host can collapse / hide the row.
+///
+/// The dismiss "X" is composed by the parent (e.g. the explore feed)
+/// as a sibling of this view, **not** as a child. Nesting it inside a
+/// surrounding `NavigationLink`'s label was swallowing the row's tap
+/// because the inner `Button`'s hit area extended across the whole
+/// top-trailing overlay region — this view stays purely the banner so
+/// the navigation gesture has nothing to compete with.
 struct PreviewBannerCard: View {
     let profile: PublishedProfileSummary
     /// Late-binding override sourced from the explore feed's
@@ -38,7 +42,14 @@ struct PreviewBannerCard: View {
     /// and lets the banner show the user's actual hero avatar
     /// instead of falling through to the initial-letter chip.
     var avatarImageURLOverride: String? = nil
-    var onDismiss: (() -> Void)? = nil
+    /// True when this card represents the signed-in user's own
+    /// published profile. Drives a small "You" badge in the banner's
+    /// top-leading corner so the user can pick their own card out
+    /// of a feed of similar-looking templates without having to
+    /// read every `@handle` first. Mirrors the puck on the explore
+    /// title row — the two combine into a clear "this is you"
+    /// affordance regardless of which entry the user spots first.
+    var isOwn: Bool = false
 
     private var metadata: PublishedProfileCardMetadata? { profile.cardMetadata }
 
@@ -123,17 +134,8 @@ struct PreviewBannerCard: View {
             .background { gradientLayer }
             .background { backgroundLayer }
             .compositingGroup()
-            .overlay(alignment: .topTrailing) {
-                if let onDismiss {
-                    Button(action: onDismiss) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.92))
-                            .padding(8)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Hide \(profile.username)")
-                }
+            .overlay(alignment: .topLeading) {
+                if isOwn { ownBadge }
             }
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(
@@ -141,6 +143,28 @@ struct PreviewBannerCard: View {
                     .strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 0.8)
             )
             .shadow(color: Color.cucuInk.opacity(0.10), radius: 6, x: 0, y: 3)
+    }
+
+    /// "You" badge — paper-toned capsule on the banner's top-leading
+    /// edge that flags the signed-in user's own card. Sits inside the
+    /// banner's clip shape (so the rounded corner trims it) and uses
+    /// the cucu accent palette so it reads as identity, not a status
+    /// chip — the rose+burgundy pairing matches the title-row puck.
+    private var ownBadge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "sparkle")
+                .font(.system(size: 9, weight: .bold))
+            Text("YOU")
+                .font(.cucuMono(10, weight: .semibold))
+                .tracking(1.2)
+        }
+        .foregroundStyle(Color.cucuBurgundy)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(Color.cucuRose))
+        .overlay(Capsule().strokeBorder(Color.cucuRoseStroke, lineWidth: 1))
+        .padding(10)
+        .accessibilityLabel("Your profile")
     }
 
     // MARK: - Background layer

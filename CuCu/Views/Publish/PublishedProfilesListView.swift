@@ -30,6 +30,7 @@ import SwiftUI
 ///   - **empty (search)** — query has no matches
 ///   - **error** — Supabase / network failure (Retry button)
 struct PublishedProfilesListView: View {
+    @Environment(AuthViewModel.self) private var auth
     @State private var profiles: [PublishedProfileSummary] = []
     @State private var topPicks: [PublishedProfileSummary] = []
     @State private var status: Status = .loading
@@ -49,6 +50,32 @@ struct PublishedProfilesListView: View {
     /// keystroke and cancelled before re-arming so 'amelia' only
     /// hits the network once.
     @State private var searchTask: Task<Void, Never>?
+    /// True after the first `.task`-driven load completes. Lets the
+    /// `.onAppear` hook below skip the redundant fetch on first
+    /// paint (`.onAppear` fires before `.task`) and only refresh on
+    /// subsequent re-appears — i.e. when the user comes back to the
+    /// tab after publishing from Build, so their new card lands on
+    /// screen without requiring a manual pull-to-refresh.
+    @State private var hasInitiallyLoaded: Bool = false
+    /// Username the user just tapped on a feed card. Drives a
+    /// programmatic push via `.navigationDestination(item:)` —
+    /// `NavigationLink { … } label: { card }` was failing to fire on
+    /// iOS 17/18 inside the LazyVStack/ZStack composition we ended up
+    /// with (the custom `.buttonStyle` + nested overlays competed for
+    /// the link's gesture). A plain `Button` setting state and a
+    /// destination bound to that state is bulletproof — the tap
+    /// gesture is owned by SwiftUI's standard Button, and the push
+    /// happens reactively when the binding flips.
+    @State private var pushTarget: ProfileNavTarget?
+
+    /// Hashable + Identifiable wrapper around a username so
+    /// `.navigationDestination(item:)` can drive the push. Plain
+    /// `String` works for `Hashable` but not `Identifiable`, and using
+    /// a wrapper also documents intent.
+    private struct ProfileNavTarget: Hashable, Identifiable {
+        let username: String
+        var id: String { username }
+    }
 
     private enum Status: Equatable {
         case loading
@@ -122,12 +149,49 @@ struct PublishedProfilesListView: View {
         }
         .refreshable { await initialLoad() }
         .task {
-            await initialLoad()
-            await loadTopPicks()
+            // First-paint load. Guarded so subsequent `.task` fires
+            // (e.g. from a SwiftData refresh, view-tree churn) don't
+            // double-fetch — `.onAppear` below owns the
+            // tab-re-entry refresh.
+            if !hasInitiallyLoaded {
+                await initialLoad()
+                await loadTopPicks()
+                hasInitiallyLoaded = true
+            }
+        }
+        .onAppear {
+            // Tab re-entry refresh. `.onAppear` fires before
+            // `.task` on first paint, so the `hasInitiallyLoaded`
+            // guard skips the redundant fetch then. On every
+            // re-appear after that (user goes Explore → Build →
+            // publishes → Explore), this picks up their fresh row
+            // without requiring a manual pull-to-refresh.
+            if hasInitiallyLoaded {
+                Task {
+                    await initialLoad()
+                    await loadTopPicks()
+                }
+            }
+        }
+        // Re-pull the feed when the signed-in account changes
+        // (sign-out → sign-in, or sign-up + claim) so a brand-new
+        // user's card lands on the page without requiring a manual
+        // pull-to-refresh.
+        .onChange(of: auth.currentUser?.id) { _, _ in
+            Task {
+                await initialLoad()
+                await loadTopPicks()
+            }
         }
         .onDisappear {
             searchTask?.cancel()
             searchTask = nil
+        }
+        // Programmatic push for feed cards + Top picks. The destination
+        // resets `pushTarget` to nil on dismiss automatically (binding
+        // round-trip), so re-tapping the same card re-pushes cleanly.
+        .navigationDestination(item: $pushTarget) { target in
+            PublishedProfileView(username: target.username)
         }
     }
 
@@ -248,23 +312,68 @@ struct PublishedProfilesListView: View {
                 .foregroundStyle(Color.cucuInk)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
-            // Small puck — placeholder for the signed-in user's
-            // avatar. Until `AppUser` carries a thumbnail URL, this
-            // reads as a friendly cucu-tinted disc instead of a
-            // generic chip, and gives the title row the same
-            // visual cadence as the screenshot.
-            Circle()
-                .fill(Color.cucuRose)
-                .overlay(
-                    Image(systemName: "person.fill")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(Color.cucuBurgundy)
-                )
-                .frame(width: 38, height: 38)
-                .overlay(
-                    Circle().strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 1)
-                )
+            ownProfilePuck
         }
+    }
+
+    /// Trailing avatar puck that doubles as a one-tap route to the
+    /// signed-in user's own published profile. Without this, finding
+    /// "your card" in a busy feed of look-alike templates is genuinely
+    /// hard — two profiles started from the same template render
+    /// nearly-identical banners. The puck is the unambiguous "this is
+    /// you" affordance.
+    @ViewBuilder
+    private var ownProfilePuck: some View {
+        let myUsername = auth.currentUser?.username?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        if !myUsername.isEmpty {
+            Button {
+                pushTarget = ProfileNavTarget(username: myUsername)
+            } label: {
+                puckChrome
+            }
+            .buttonStyle(CucuPressableButtonStyle())
+            .accessibilityLabel("Your profile")
+        } else {
+            puckChrome
+        }
+    }
+
+    private var puckChrome: some View {
+        Circle()
+            .fill(Color.cucuRose)
+            .overlay(
+                Image(systemName: "person.fill")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color.cucuBurgundy)
+            )
+            .frame(width: 38, height: 38)
+            .overlay(
+                Circle().strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 1)
+            )
+    }
+
+    /// Lowercased signed-in username, or empty string when signed
+    /// out. Centralised so the explore card's `isOwn` derivation
+    /// stays in lock-step with the puck's destination — same
+    /// normalization (whitespace + lowercase) as the SQL query that
+    /// PublishedProfileView's fetch will run.
+    private var canonicalSelfUsername: String {
+        auth.currentUser?.username?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+    }
+
+    /// True when the row's username matches the signed-in user's
+    /// claimed username (case-insensitive). Used to flag the user's
+    /// own card with the "You" badge so they can pick it out of a
+    /// feed of similar-looking templates without parsing every
+    /// `@handle`.
+    private func isOwn(profile: PublishedProfileSummary) -> Bool {
+        let me = canonicalSelfUsername
+        guard !me.isEmpty else { return false }
+        return profile.username.lowercased() == me
     }
 
     // MARK: - Search
@@ -313,14 +422,15 @@ struct PublishedProfilesListView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(topPicks.prefix(8)) { pick in
-                        NavigationLink {
-                            PublishedProfileView(username: pick.username)
+                        Button {
+                            pushTarget = ProfileNavTarget(username: pick.username)
                         } label: {
                             TopPickTile(
                                 profile: pick,
                                 backgroundImageURLOverride: backgroundOverrides[pick.id]?.backgroundImageURL,
                                 backgroundHexOverride: backgroundOverrides[pick.id]?.backgroundHex
                             )
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(CucuPressableButtonStyle())
                     }
@@ -411,18 +521,41 @@ struct PublishedProfilesListView: View {
         } else {
             VStack(spacing: 12) {
                 ForEach(visibleProfiles) { profile in
-                    NavigationLink {
-                        PublishedProfileView(username: profile.username)
-                    } label: {
-                        PreviewBannerCard(
-                            profile: profile,
-                            backgroundImageURLOverride: backgroundOverrides[profile.id]?.backgroundImageURL,
-                            backgroundHexOverride: backgroundOverrides[profile.id]?.backgroundHex,
-                            avatarImageURLOverride: backgroundOverrides[profile.id]?.heroAvatarURL,
-                            onDismiss: { dismiss(profile) }
-                        )
+                    // Plain Button + programmatic push, ZStack layers
+                    // the dismiss "X" on top as a sibling. The push is
+                    // driven by `pushTarget` flipping; SwiftUI handles
+                    // the navigation reactively. NavigationLink with a
+                    // custom buttonStyle inside this LazyVStack was
+                    // unreliably consuming taps on iOS 17/18 — this
+                    // pattern routes the gesture through a vanilla
+                    // Button, which is rock-solid.
+                    ZStack(alignment: .topTrailing) {
+                        Button {
+                            pushTarget = ProfileNavTarget(username: profile.username)
+                        } label: {
+                            PreviewBannerCard(
+                                profile: profile,
+                                backgroundImageURLOverride: backgroundOverrides[profile.id]?.backgroundImageURL,
+                                backgroundHexOverride: backgroundOverrides[profile.id]?.backgroundHex,
+                                avatarImageURLOverride: backgroundOverrides[profile.id]?.heroAvatarURL,
+                                isOwn: isOwn(profile: profile)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(CucuPressableButtonStyle())
+
+                        Button {
+                            dismiss(profile)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.92))
+                                .padding(8)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Hide \(profile.username)")
                     }
-                    .buttonStyle(CucuPressableButtonStyle())
                     .onAppear { maybeLoadMore(triggeredBy: profile) }
                 }
 
