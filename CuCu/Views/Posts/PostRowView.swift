@@ -42,6 +42,14 @@ struct PostRowView: View {
     var onDelete: () -> Void = {}
     var onReport: () -> Void = {}
     var onBlock: () -> Void = {}
+    /// Fired when the viewer taps the avatar tile or the `@handle`
+    /// text. Hosts (feed, thread) hand a closure that pushes the
+    /// author's `PublishedProfileView`. Default no-op so callers
+    /// that don't want author navigation (e.g. inside the
+    /// `PublishedProfileView` posts section, where every row is
+    /// already by the visible profile owner) can simply omit it
+    /// without a visible behaviour change.
+    var onAuthorTap: () -> Void = {}
 
     /// Drives the heart-pulse pop on tap. Set true at the action
     /// site, cleared after a short delay so the spring releases.
@@ -112,24 +120,36 @@ struct PostRowView: View {
     /// row's rhythm doesn't change between fallback and real-photo
     /// states.
     private var avatar: some View {
-        Group {
-            if let urlString = avatarURL,
-               !urlString.isEmpty,
-               let url = URL(string: urlString) {
-                CachedRemoteImage(url: url, contentMode: .fill) {
+        // Wrapped in a plain Button so a tap on the bookplate tile
+        // navigates to the author's published profile rather than
+        // bubbling to the outer thread-push gesture. The plain
+        // button style suppresses SwiftUI's default press tint so
+        // the editorial monogram doesn't flash blue under the
+        // finger — the haptic + push are the feedback.
+        Button {
+            CucuHaptics.selection()
+            onAuthorTap()
+        } label: {
+            Group {
+                if let urlString = avatarURL,
+                   !urlString.isEmpty,
+                   let url = URL(string: urlString) {
+                    CachedRemoteImage(url: url, contentMode: .fill) {
+                        letterAvatar
+                    }
+                    .frame(width: 40, height: 40)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(Color.cucuInk.opacity(0.35), lineWidth: 0.8)
+                    )
+                } else {
                     letterAvatar
                 }
-                .frame(width: 40, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(Color.cucuInk.opacity(0.35), lineWidth: 0.8)
-                )
-            } else {
-                letterAvatar
             }
         }
-        .accessibilityHidden(true)
+        .buttonStyle(.plain)
+        .accessibilityLabel("View @\(post.authorUsername)'s profile")
     }
 
     private var letterAvatar: some View {
@@ -154,9 +174,22 @@ struct PostRowView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text("@\(post.authorUsername)")
-                    .font(.cucuSerif(15, weight: .semibold))
-                    .foregroundStyle(Color.cucuInk)
+                // The handle is the second tap target for navigating
+                // to the author's profile (the avatar is the first).
+                // Wrapped in a plain Button so the tap escapes the
+                // outer row Button — without this, tapping `@user`
+                // would push the thread view rather than the author.
+                Button {
+                    CucuHaptics.selection()
+                    onAuthorTap()
+                } label: {
+                    Text("@\(post.authorUsername)")
+                        .font(.cucuSerif(15, weight: .semibold))
+                        .foregroundStyle(Color.cucuInk)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("View @\(post.authorUsername)'s profile")
+
                 if post.editedAt != nil {
                     Text("· edited")
                         .font(.cucuEditorial(11, italic: true))

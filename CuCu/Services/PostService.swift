@@ -134,6 +134,18 @@ nonisolated struct PostService {
             // fresh insert is a one-off per submit, not a hot path.
             return try await fetchHydrated(client: client, id: inserted.id)
         } catch {
+            // The `posts_insert_own` policy's WITH CHECK requires
+            // both `auth.uid() = author_id` AND a row in
+            // `public.usernames`. The Swift always sets `author_id`
+            // to the current user, so an RLS reject here is almost
+            // always the missing-username case — surface it as
+            // `.noUsername` so the compose sheet shows the
+            // actionable "Pick a username before posting" message
+            // instead of leaking the raw `new row violates row-level
+            // security policy for table "posts"` string to the user.
+            if Self.isRowLevelSecurityViolation(error) {
+                throw PostError.noUsername
+            }
             throw mapError(error)
         }
         #else
@@ -181,34 +193,88 @@ nonisolated struct PostService {
         #endif
     }
 
-    /// Soft-delete: stamp `deleted_at = now()` on the row. The
-    /// post stays in the table so reply chains don't lose their
-    /// anchor; feeds filter on `deleted_at IS NULL`. Caller-side
-    /// the call returns Void — there's no useful state to render
-    /// for a row that's about to disappear from the feed.
-    func softDelete(postId: String) async throws {
+    /// Hard-delete a post from `public.posts`.
+    ///
+    /// The server RPC checks `auth.uid()` against the target row
+    /// and deletes the row physically. When the target has
+    /// replies, the RPC deletes the descendant subtree too so
+    /// thread foreign keys do not leave orphaned rows.
+    func deletePost(postId: String, authorId: String? = nil) async throws {
         #if canImport(Supabase)
         guard let client = SupabaseClientProvider.shared else {
+            print("[CuCu/deletePost] FAIL: Supabase client not configured")
             throw PostError.notConfigured(reason: .missingCredentials)
         }
 
-        // Encoded payload uses an ISO 8601 string so PostgREST
-        // sees a JSON value for the `timestamptz` column instead
-        // of trying to interpret a Swift `Date` directly. Letting
-        // Postgres run `now()` would be cleaner but PostgREST
-        // doesn't expose SQL functions through the table API —
-        // a client-supplied timestamp is the standard workaround.
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let payload = PostSoftDelete(deleted_at: formatter.string(from: .now))
+        // Read the current session up-front so the log shows the
+        // exact user id the JWT will carry — i.e. what `auth.uid()`
+        // will resolve to server-side. Mismatches between this and
+        // the row's `author_id` are the most common cause of a
+        // silent RLS no-op.
+        let sessionUserId: String
+        do {
+            sessionUserId = try await client.auth.session.user.id.uuidString.lowercased()
+        } catch {
+            sessionUserId = "<no session: \(error)>"
+        }
+        print("[CuCu/deletePost] start postId=\(postId) authorId=\(authorId ?? "<nil>") sessionUserId=\(sessionUserId)")
+
+        // Round-trip diagnostic: ask the server what it sees for
+        // `auth.uid()` on this very request. If `serverUid` comes
+        // back `<null>`, the JWT we just sent was rejected at the
+        // gateway and the user is being treated as `anon` — which
+        // is the dominant cause of "new row violates RLS" on
+        // owner-targeted UPDATEs (the `posts_update_*` policies
+        // are scoped `to authenticated`, so an anon caller has no
+        // permissive policy at all). Requires the `who_am_i()`
+        // function to exist server-side; if it doesn't, the call
+        // fails harmlessly and we just log the failure.
+        struct WhoAmI: Decodable { let uid: String; let is_authenticated: Bool; let is_mod: Bool }
+        do {
+            let rows: [WhoAmI] = try await client.rpc("who_am_i").execute().value
+            if let me = rows.first {
+                print("[CuCu/deletePost] server who_am_i uid=\(me.uid) is_authenticated=\(me.is_authenticated) is_mod=\(me.is_mod)")
+                if !me.is_authenticated {
+                    print("[CuCu/deletePost] !!! server treats this request as ANON. JWT is missing/expired/wrong-project. Sign out and sign back in.")
+                } else if me.uid != sessionUserId {
+                    print("[CuCu/deletePost] !!! server auth.uid()=\(me.uid) but local sessionUserId=\(sessionUserId). JWT subject diverges from local session.")
+                }
+            } else {
+                print("[CuCu/deletePost] server who_am_i returned no rows")
+            }
+        } catch {
+            print("[CuCu/deletePost] who_am_i RPC call failed (function may not exist yet): \(error)")
+        }
 
         do {
-            try await client
-                .from("posts")
-                .update(payload)
-                .eq("id", value: postId)
+            let affected: Int = try await client
+                .rpc(
+                    "hard_delete_post",
+                    params: [
+                        "p_post_id": postId,
+                        "p_expected_author_id": authorId?.lowercased()
+                    ]
+                )
                 .execute()
+                .value
+            print("[CuCu/deletePost] rpc hard_delete_post affected=\(affected)")
+
+            guard affected > 0 else {
+                // Zero rows matched — typically an RLS reject or
+                // a stale post id. Surface it so the caller can
+                // roll the optimistic removal back and show a
+                // toast, instead of letting the row silently
+                // re-appear on refresh.
+                print("[CuCu/deletePost] ZERO ROWS DELETED — RPC matched no rows. Caller is not the author/moderator, the post id is stale, or the post was already deleted. postId=\(postId) authorId=\(authorId ?? "<nil>") sessionUserId=\(sessionUserId)")
+                throw PostError.database("Couldn't delete this post. Make sure you're signed in as the post's author.")
+            }
+
+            print("[CuCu/deletePost] success: \(affected) row(s) deleted")
+        } catch let err as PostError {
+            print("[CuCu/deletePost] threw PostError: \(err.errorDescription ?? "<no description>")")
+            throw err
         } catch {
+            print("[CuCu/deletePost] threw raw error: \(error) detail=\(SupabaseErrorMapper.detail(error))")
             throw mapError(error)
         }
         #else
@@ -546,7 +612,36 @@ nonisolated struct PostService {
             return .bodyTooLong(limit: Self.bodyCharacterLimit)
         }
 
+        // RLS rejects on UPDATE / DELETE paths (edit, delete).
+        // The INSERT path overrides this in `createPost`'s catch
+        // block to return `.noUsername` because the missing-handle
+        // case is the dominant cause there. For other write paths,
+        // surface a calmer "permission denied" message rather than
+        // leaking the raw `violates row-level security policy`
+        // string. Most likely cause: the user is no longer signed
+        // in (session expired) or isn't the post's author.
+        if Self.isRowLevelSecurityViolation(error) {
+            return .database("Permission denied. Sign in again as the post's author and try again.")
+        }
+
         return .database(SupabaseErrorMapper.detail(error))
+    }
+
+    /// Detect a Postgres / PostgREST row-level-security rejection.
+    /// Postgres raises these with SQLSTATE `42501` and the error
+    /// message "new row violates row-level security policy" (for
+    /// INSERT WITH CHECK failures) or "row-level security policy"
+    /// (for UPDATE policy failures). Substring match because the
+    /// supabase-swift error is a wrapped `PostgrestError` whose
+    /// payload format isn't guaranteed across SDK versions.
+    static func isRowLevelSecurityViolation(_ error: Error) -> Bool {
+        if let pgErr = error as? PostgrestError, pgErr.code == "42501" {
+            return true
+        }
+        let text = SupabaseErrorMapper.detail(error).lowercased()
+        return text.contains("row-level security")
+            || text.contains("row level security")
+            || text.contains("violates row-level")
     }
     #endif
 }
@@ -566,12 +661,6 @@ private nonisolated struct PostInsert: Encodable {
 /// is stamped by a row trigger, not the client.
 private nonisolated struct PostUpdate: Encodable {
     let body: String
-}
-
-/// UPDATE on `public.posts` for a soft delete. Carries `deleted_at`
-/// alone so feeds can filter the row out.
-private nonisolated struct PostSoftDelete: Encodable {
-    let deleted_at: String
 }
 
 /// One-field decoder for the id PostgREST hands back from an

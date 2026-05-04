@@ -1,3 +1,4 @@
+import ImageIO
 import UIKit
 
 /// In-memory cache for images fetched from `https://` URLs (Supabase Storage
@@ -67,7 +68,7 @@ final class RemoteImageCache {
         guard shouldStart else { return }
 
         session.dataTask(with: url) { [weak self] data, _, _ in
-            let img = data.flatMap { UIImage(data: $0) }
+            let img = data.flatMap(Self.decodeRemoteImage)
             if let img, let self {
                 self.cache.setObject(img, forKey: key as NSString, cost: self.estimatedCost(of: img))
             }
@@ -96,5 +97,37 @@ final class RemoteImageCache {
         }
         let scale = max(image.scale, 1)
         return Int(image.size.width * scale * image.size.height * scale * 4)
+    }
+
+    nonisolated private static func decodeRemoteImage(data: Data) -> UIImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+            return UIImage(data: data)
+        }
+
+        // Preserve animated images through UIKit's existing decoder. Canvas
+        // assets are normally static, but this avoids silently flattening GIFs.
+        guard CGImageSourceGetCount(source) <= 1 else {
+            return UIImage(data: data)
+        }
+
+        let maxPixelSize = 2_400
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              max(width, height) > maxPixelSize else {
+            return UIImage(data: data)
+        }
+
+        let options = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ] as CFDictionary
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: thumbnail)
     }
 }

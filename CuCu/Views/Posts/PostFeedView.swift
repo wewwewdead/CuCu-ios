@@ -11,12 +11,20 @@ import SwiftUI
 /// sites compile unchanged.
 struct PostFeedView: View {
     @Environment(AuthViewModel.self) private var auth
+    @Environment(CucuPostFlightCoordinator.self) private var flightCoordinator
     @State private var vm: PostFeedViewModel
     @State private var showCompose: Bool = false
     @State private var threadDestination: Post? = nil
     @State private var reportTarget: Post? = nil
     @State private var blockTarget: Post? = nil
     @State private var toastMessage: String? = nil
+    /// Navigation push target for the author profile route. Set
+    /// when the viewer taps a row's avatar or `@handle`. Wrapped
+    /// in a tiny Identifiable struct because SwiftUI's
+    /// `.navigationDestination(item:)` requires the bound value
+    /// to be Identifiable, and a bare `String?` doesn't satisfy
+    /// that without a global extension we'd rather not add.
+    @State private var profileDestination: AuthorRoute? = nil
     /// Author-username → hero-avatar URL map. Filled by an
     /// enrichment pass that runs after the post page lands so the
     /// row's avatar can swap from the bookplate letter to the
@@ -32,6 +40,16 @@ struct PostFeedView: View {
     /// Leading-edge gate so a stream of `.onAppear`s during a
     /// scroll burst only spawns one debounce task at a time.
     @State private var avatarBatchInFlight: Bool = false
+    /// Drives the anticipation scale-up on the row about to be
+    /// deleted. Held for one frame so the row visibly pops before
+    /// the squish-fade transition takes it out.
+    @State private var poppingPostId: String? = nil
+
+    /// Last id that was inserted via the flight coordinator's
+    /// landing. Used to gate the column's transition swap so only
+    /// *that* row uses the materialise-in-place transition; every
+    /// other insertion keeps the standard top-edge slide.
+    @State private var lastLandedPostId: String? = nil
 
     private let title: String
     private let showsCompose: Bool
@@ -84,13 +102,15 @@ struct PostFeedView: View {
             }
         }
         .sheet(isPresented: $showCompose) {
-            ComposePostSheet(parentId: nil) { post in
-                // Prepended row will fire its own `.onAppear` and
-                // pull its author's avatar through the lazy path.
-                vm.prepend(post)
-            }
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
+            // `usesFlight: true` hands the inserted post off to the
+            // flight coordinator instead of prepending immediately.
+            // The row materialises down below in
+            // `onChange(of: flightCoordinator.landedPostId)` once
+            // the ghost arrives — so the user sees the card "fly"
+            // from the compose sheet up into its slot in the feed.
+            ComposePostSheet(parentId: nil, usesFlight: true)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
         .sheet(item: $reportTarget) { post in
             ReportPostSheet(post: post) { outcome in
@@ -116,10 +136,80 @@ struct PostFeedView: View {
         } message: { post in
             Text("You won't see @\(post.authorUsername)'s posts or replies.")
         }
+        .navigationDestination(item: $profileDestination) { route in
+            PublishedProfileView(username: route.username)
+        }
         .navigationDestination(item: $threadDestination) { post in
-            PostThreadView(rootId: post.rootId ?? post.id)
+            PostThreadView(
+                rootId: post.rootId ?? post.id,
+                onRootDeleted: { deletedRoot in
+                    // Thread view already ran the squish + retreat,
+                    // and it's about to dismiss. Scrub the row from
+                    // the feed (without re-running the in-feed pop)
+                    // and fire the delete here so the rollback
+                    // snapshot lives next to the column it'd be
+                    // re-inserted into.
+                    handleRootDeletedFromThread(deletedRoot)
+                }
+            )
         }
         .cucuToast(message: $toastMessage)
+        .onReceive(
+            NotificationCenter.default.publisher(for: .cucuPostOptimisticallyDeleted)
+        ) { notification in
+            // Cross-surface delete fan-out: any view that pulls a
+            // post out of its own column broadcasts the id, and we
+            // mirror the removal here so the feed stays in sync
+            // without a refetch. `removeLocally` is idempotent —
+            // posts that aren't in this column just no-op, which
+            // keeps the per-user feed and the global feed safely
+            // subscribing to the same channel.
+            guard let id = CucuPostEvents.deletedPostId(from: notification) else {
+                return
+            }
+            guard vm.posts.contains(where: { $0.id == id }) else { return }
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                vm.removeLocally(postId: id)
+            }
+        }
+        .onChange(of: flightCoordinator.landedPostId) { _, newValue in
+            // Flight ghost just reached the destination. Prepend
+            // the post the coordinator is carrying with the
+            // bouncy materialise-in-place transition so the row
+            // appears to *be* the ghost rather than a separate
+            // top-edge slide. The cucuPostLanding transition is
+            // gated below on `lastLandedPostId == post.id` so only
+            // this insertion uses the spring scale-up; subsequent
+            // server pushes still slide in from the top.
+            guard let id = newValue,
+                  let post = flightCoordinator.post,
+                  post.id == id else { return }
+            lastLandedPostId = id
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.62)) {
+                vm.prepend(post)
+            }
+        }
+        .onChange(of: threadDestination) { oldValue, newValue in
+            // User just dismissed back from a thread — pull fresh
+            // server data so anything that happened in the thread
+            // (root delete, reply deletions that bubble counters,
+            // edits) lands on this column without the user having
+            // to pull-to-refresh. The optimistic broadcast above
+            // already scrubs the row immediately; this is the
+            // canonical resync that catches edge cases where the
+            // notification was missed (cold-launched feed instance,
+            // a delete coming from a path that didn't broadcast).
+            //
+            // The brief hold gives any in-flight `softDelete` time
+            // to land server-side before we refetch — without it,
+            // a slow round-trip could resurrect the just-deleted
+            // row in the fresh page response.
+            guard oldValue != nil, newValue == nil else { return }
+            Task {
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                await vm.refresh()
+            }
+        }
         .task {
             await vm.initialLoad()
             // Visible rows pull their own avatars lazily via
@@ -168,6 +258,28 @@ struct PostFeedView: View {
             Rectangle()
                 .fill(Color.cucuInkRule)
                 .frame(height: 1)
+                // Use the bottom of the masthead's hairline as the
+                // landing anchor for the flight overlay. New rows
+                // sit directly under this rule, so the ghost
+                // dissolves into the exact slot the freshly-prepended
+                // row will occupy. Re-registers on layout changes
+                // (rotation, tab swap) so the target stays current.
+                .background(
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear {
+                                let frame = geo.frame(in: .global)
+                                flightCoordinator.registerDestination(
+                                    CGPoint(x: frame.midX, y: frame.maxY + 36)
+                                )
+                            }
+                            .onChange(of: geo.frame(in: .global)) { _, newFrame in
+                                flightCoordinator.registerDestination(
+                                    CGPoint(x: newFrame.midX, y: newFrame.maxY + 36)
+                                )
+                            }
+                    }
+                )
         }
         .padding(.top, 12)
         .padding(.bottom, 4)
@@ -284,12 +396,30 @@ struct PostFeedView: View {
                     onReply: { threadDestination = post },
                     onDelete: { handleDelete(post) },
                     onReport: { reportTarget = post },
-                    onBlock: { blockTarget = post }
+                    onBlock: { blockTarget = post },
+                    onAuthorTap: {
+                        profileDestination = AuthorRoute(
+                            username: post.authorUsername
+                        )
+                    }
                 )
-                .transition(.asymmetric(
-                    insertion: .move(edge: .top).combined(with: .opacity),
-                    removal: .opacity
-                ))
+                .scaleEffect(rowScaleEffect(for: post.id), anchor: .center)
+                .animation(.spring(response: 0.22, dampingFraction: 0.55), value: poppingPostId)
+                .animation(.spring(response: 0.32, dampingFraction: 0.5), value: flightCoordinator.pulsingPostId)
+                // Use the materialise-in-place transition only for
+                // the row that just received the flight; every
+                // other insertion (refresh, server push) keeps the
+                // standard top-edge slide.
+                .transition(
+                    lastLandedPostId == post.id
+                        ? .cucuPostLanding
+                        : .cucuPostPop
+                )
+                .zIndex(
+                    poppingPostId == post.id || flightCoordinator.pulsingPostId == post.id
+                        ? 1
+                        : 0
+                )
                 .onAppear {
                     requestAvatarLazy(for: post.authorUsername)
                     if post.id == vm.posts.last?.id {
@@ -314,7 +444,7 @@ struct PostFeedView: View {
                 endOfFeed
             }
         }
-        .animation(.spring(response: 0.42, dampingFraction: 0.86), value: vm.posts.map(\.id))
+        .animation(.spring(response: 0.46, dampingFraction: 0.7), value: vm.posts.map(\.id))
         .padding(.top, 14)
         .padding(.horizontal, 20)
     }
@@ -408,6 +538,18 @@ struct PostFeedView: View {
         .frame(minHeight: 360)
     }
 
+    /// Resolves the per-row scale across two competing animations:
+    /// the delete anticipation pop (1.06 swell before squish-fade)
+    /// and the flight-landing pulse (1.06 spring overshoot just
+    /// after the ghost dissolves into the row). The two never fire
+    /// on the same row at the same time, so a simple "whichever
+    /// matches wins" branch keeps the math straightforward.
+    private func rowScaleEffect(for postId: String) -> CGFloat {
+        if poppingPostId == postId { return 1.06 }
+        if flightCoordinator.pulsingPostId == postId { return 1.06 }
+        return 1.0
+    }
+
     // MARK: - Lazy avatar enrichment
 
     /// Per-row entry point. Each row calls this from its
@@ -487,23 +629,121 @@ struct PostFeedView: View {
         }
     }
 
-    private func handleDelete(_ post: Post) {
+    /// Counterpart to `handleDelete` for the case where the user
+    /// deleted the *root* of a thread from `PostThreadView`. The
+    /// thread view has already run its anticipation pop, squish,
+    /// and closing-flourish locally, and is about to dismiss; the
+    /// feed's job is to scrub the row from its column and fire
+    /// the delete with a rollback path that lands the
+    /// snapshot right back in place if the server rejects.
+    ///
+    /// Skipping the feed's own anticipation pop is intentional —
+    /// the user is mid-dismiss and never sees the feed during the
+    /// thread-side animation, so a second swell here would be a
+    /// pointless flash through the slide. The springy `removeLocally`
+    /// still fires inside `withAnimation` so the feed paints clean
+    /// once it's revealed.
+    private func handleRootDeletedFromThread(_ post: Post) {
         let snapshotIndex = vm.posts.firstIndex(where: { $0.id == post.id })
         let snapshot = post
-        CucuHaptics.delete()
-        vm.removeLocally(postId: post.id)
+
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+            vm.removeLocally(postId: post.id)
+        }
+        // Cross-surface fan-out so any other PostFeedView instance
+        // (per-user feed showing the same author's posts, etc.)
+        // mirrors the removal without waiting for a refetch.
+        CucuPostEvents.broadcastDeletion(postId: post.id)
+
         Task {
             do {
-                try await PostService().softDelete(postId: post.id)
+                try await PostService().deletePost(
+                    postId: post.id,
+                    authorId: post.authorId
+                )
             } catch {
-                if let idx = snapshotIndex {
-                    vm.reinsert(snapshot, at: idx)
-                } else {
-                    vm.prepend(snapshot)
+                await MainActor.run {
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                        if let idx = snapshotIndex {
+                            vm.reinsert(snapshot, at: idx)
+                        } else {
+                            vm.prepend(snapshot)
+                        }
+                    }
+                    if let err = error as? PostError {
+                        toastMessage = err.errorDescription ?? "Couldn't delete the post."
+                    } else {
+                        toastMessage = error.localizedDescription
+                    }
                 }
             }
         }
     }
+
+    private func handleDelete(_ post: Post) {
+        let currentUserId = auth.currentUser?.id.lowercased() ?? "<nil>"
+        print("[CuCu/handleDelete] tapped delete on postId=\(post.id) post.authorId=\(post.authorId) currentUserId=\(currentUserId) isOwn=\(post.authorId.lowercased() == currentUserId)")
+        let snapshotIndex = vm.posts.firstIndex(where: { $0.id == post.id })
+        let snapshot = post
+        CucuHaptics.delete()
+
+        // Phase 1: anticipation pop — flag the row so its
+        // `.scaleEffect` swells. Phase 2: after a short hold the
+        // squish-fade removal runs inside a bouncy spring so the
+        // surrounding rows snap up into the gap.
+        poppingPostId = post.id
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 130_000_000)
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.62)) {
+                vm.removeLocally(postId: post.id)
+            }
+            poppingPostId = nil
+            // Fan out to any other post-list surface that might
+            // be holding the same row in memory (per-user feed
+            // sheet, profile column).
+            CucuPostEvents.broadcastDeletion(postId: post.id)
+        }
+
+        Task {
+            do {
+                try await PostService().deletePost(postId: post.id, authorId: post.authorId)
+                print("[CuCu/handleDelete] deletePost returned without throwing for postId=\(post.id)")
+            } catch {
+                // Server didn't accept the delete (RLS reject,
+                // network drop, etc.). Roll the optimistic
+                // removal back and tell the user — without the
+                // toast the row would just bounce back into the
+                // column on the next refresh with no
+                // explanation.
+                print("[CuCu/handleDelete] caught error rolling back postId=\(post.id) error=\(error)")
+                await MainActor.run {
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                        if let idx = snapshotIndex {
+                            vm.reinsert(snapshot, at: idx)
+                        } else {
+                            vm.prepend(snapshot)
+                        }
+                    }
+                    if let err = error as? PostError {
+                        toastMessage = err.errorDescription ?? "Couldn't delete the post."
+                    } else {
+                        toastMessage = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Author route
+
+/// Navigation push target for the "tap a post's profile" intent.
+/// The username doubles as the identity (post authors are unique by
+/// handle in the schema), so it satisfies `Identifiable` directly
+/// without a separate id field — keeps the bound `@State` cheap.
+private struct AuthorRoute: Identifiable, Hashable {
+    let username: String
+    var id: String { username }
 }
 
 // MARK: - Skeleton card

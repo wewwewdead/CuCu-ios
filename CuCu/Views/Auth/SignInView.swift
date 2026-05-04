@@ -62,36 +62,48 @@ struct SignInView: View {
         .cucuFormBackdrop()
     }
 
-    /// Moss-variant submit chip for the affirmative action. Shows
-    /// the spinner inline so the chip stays put rather than
-    /// jumping when the network is in flight.
+    /// Monochrome ink-on-paper submit. Asymmetric pebble shape
+    /// (small radius leading, half-round trailing) leans toward
+    /// the action; paper hairline inset 3pt keeps the letterpress
+    /// detail in voice.
     private var submitChip: some View {
         let disabled = email.isEmpty || password.isEmpty || auth.isLoading
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: 18, bottomLeadingRadius: 18,
+            bottomTrailingRadius: 28, topTrailingRadius: 28,
+            style: .continuous
+        )
         return Button {
             auth.clearMessages()
             Task { await auth.signIn(email: email, password: password) }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 9) {
                 if auth.isLoading {
                     ProgressView()
-                        .tint(Color.cucuMoss)
+                        .tint(Color.cucuPaper)
                         .controlSize(.small)
                 } else {
-                    Image(systemName: "arrow.right.circle.fill")
-                        .font(.system(size: 11, weight: .semibold))
                     Text("Sign In")
                         .font(.cucuSerif(15, weight: .semibold))
+                        .tracking(0.6)
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 12, weight: .bold))
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 8)
-            .frame(minWidth: 120)
-            .foregroundStyle(Color.cucuMoss)
-            .background(Capsule().fill(Color.cucuMossSoft))
-            .overlay(Capsule().strokeBorder(Color.cucuMoss, lineWidth: 1))
+            .foregroundStyle(Color.cucuPaper)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 11)
+            .frame(minWidth: 132)
+            .background(shape.fill(Color.cucuInk))
+            .overlay(
+                shape
+                    .inset(by: 3)
+                    .strokeBorder(Color.cucuPaper.opacity(0.18), lineWidth: 0.5)
+            )
+            .shadow(color: Color.cucuInk.opacity(0.18), radius: 6, x: 0, y: 2)
         }
         .buttonStyle(CucuPressableButtonStyle())
         .disabled(disabled)
-        .opacity(disabled ? 0.4 : 1.0)
+        .opacity(disabled ? 0.35 : 1.0)
     }
 }

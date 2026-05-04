@@ -32,6 +32,15 @@ final class ContainerNodeView: NodeRenderView {
         return v
     }()
 
+    /// Linear-gradient fill drawn between the solid `backgroundColor`
+    /// and the optional `backgroundImageView`. Pinned to the
+    /// container's bounds via Auto Layout; the layer auto-resizes via
+    /// the layer's `frame` from `layoutSubviews()`. When the user
+    /// disables the gradient or the configuration is incomplete,
+    /// `apply(node:)` hides the view and lets the solid fill +
+    /// background image show through normally.
+    private let gradientView = LinearGradientView()
+
     /// **Backdrop-filter blur**: a `UIVisualEffectView` placed at the
     /// *back* of the container's subview stack. It samples content
     /// rendered BEHIND the container (page background, sibling nodes)
@@ -72,8 +81,14 @@ final class ContainerNodeView: NodeRenderView {
 
     override init(nodeID: UUID) {
         super.init(nodeID: nodeID)
+        addSubview(gradientView)
         addSubview(backgroundImageView)
         NSLayoutConstraint.activate([
+            gradientView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            gradientView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            gradientView.topAnchor.constraint(equalTo: topAnchor),
+            gradientView.bottomAnchor.constraint(equalTo: bottomAnchor),
+
             backgroundImageView.leadingAnchor.constraint(equalTo: leadingAnchor),
             backgroundImageView.trailingAnchor.constraint(equalTo: trailingAnchor),
             backgroundImageView.topAnchor.constraint(equalTo: topAnchor),
@@ -102,14 +117,41 @@ final class ContainerNodeView: NodeRenderView {
     /// reconciliation pass added children: vignette to the very front
     /// (so it darkens everything), blur to the very back (so it acts
     /// as a backdrop filter beneath the container's own content and
-    /// children).
+    /// children). The gradient view sits behind the background image
+    /// (and therefore behind every child) so it acts as a fill — the
+    /// solid `backgroundColor` is hidden while the gradient is on.
     func bringEffectOverlaysToFront() {
         sendSubviewToBack(blurOverlay)
+        sendSubviewToBack(gradientView)
         bringSubviewToFront(vignetteOverlay)
     }
 
     override func apply(node: CanvasNode) {
         super.apply(node: node)
+
+        // Linear-gradient fill. When enabled and both colors are
+        // present, paint the gradient layer and clear the solid
+        // `backgroundColor` set by `super.apply(...)` so the gradient
+        // is the visible fill. Disabled / incomplete configurations
+        // hide the layer and let the solid color show through.
+        let gradientOn = node.style.gradientEnabled == true
+            && node.style.gradientStartColorHex != nil
+            && node.style.gradientEndColorHex != nil
+        if gradientOn,
+           let startHex = node.style.gradientStartColorHex,
+           let endHex = node.style.gradientEndColorHex {
+            gradientView.isHidden = false
+            gradientView.configure(
+                startColor: uiColor(hex: startHex),
+                endColor: uiColor(hex: endHex),
+                direction: node.style.gradientDirection ?? .topToBottom,
+                spread: node.style.gradientSpread ?? 1.0,
+                smoothness: node.style.gradientSmoothness ?? 0.0
+            )
+            backgroundColor = .clear
+        } else {
+            gradientView.isHidden = true
+        }
 
         let path = node.style.backgroundImagePath
         let blur = node.style.backgroundBlur ?? 0
@@ -138,9 +180,6 @@ final class ContainerNodeView: NodeRenderView {
             }
             lastBackgroundSignature = (path, mtime, blur, vignette)
         }
-        // Always at the back of the subview stack so child node views
-        // render on top, no matter what order they were added in.
-        sendSubviewToBack(backgroundImageView)
 
         // Whole-container effects.
         let containerBlur = max(0, min(1, node.style.containerBlur ?? 0))
@@ -153,19 +192,26 @@ final class ContainerNodeView: NodeRenderView {
         vignetteOverlay.setIntensity(containerVignette)
 
         // Backdrop-filter mode: while blur > 0, hide the container's
-        // own background fill (color + image) so the blurred backdrop
-        // sampled from BEHIND the container is actually visible. Both
-        // restore on the next apply pass when the user dials blur back
-        // to 0 because `super.apply(...)` resets `backgroundColor` and
-        // the cached signature drives a re-load of the image.
+        // own background fill (color + image + gradient) so the
+        // blurred backdrop sampled from BEHIND the container is
+        // actually visible. All three restore on the next apply pass
+        // when the user dials blur back to 0 because `super.apply(...)`
+        // resets `backgroundColor`, the cached signature drives a
+        // re-load of the image, and the gradient block above re-shows
+        // the gradient view.
         if containerBlur > 0.01 {
             backgroundColor = .clear
             backgroundImageView.isHidden = true
+            gradientView.isHidden = true
         }
 
-        // Vignette stays on top of everything; blur stays at the very
-        // back (behind even the bg image) so it functions as a
-        // backdrop filter, not an over-content frosting.
+        // Final z-order, back → front: blur, gradient, background
+        // image, children, vignette. `sendSubviewToBack` always
+        // inserts at index 0, so the LAST `sendSubviewToBack` call
+        // determines what sits at the very back — call them in
+        // reverse-z order (frontmost-of-the-back-stack first).
+        sendSubviewToBack(backgroundImageView)
+        sendSubviewToBack(gradientView)
         sendSubviewToBack(blurOverlay)
         bringSubviewToFront(vignetteOverlay)
     }
@@ -225,10 +271,12 @@ final class ContainerNodeView: NodeRenderView {
         } else {
             scheduleFilterRender(image: image, blur: blur, vignette: vignette)
         }
-        // The container's render layering puts the background image at
-        // the very back so child nodes can sit on top — keep that
-        // invariant when applying out-of-band.
+        // Restore the back-to-front layering when applying out-of-band:
+        // bgImage above gradient above blurOverlay, all behind any
+        // children. Same order as the tail of `apply(node:)`.
         sendSubviewToBack(backgroundImageView)
+        sendSubviewToBack(gradientView)
+        sendSubviewToBack(blurOverlay)
     }
 
     /// Helper class — a `UIView` whose backing layer is a radial
@@ -260,6 +308,96 @@ final class ContainerNodeView: NodeRenderView {
             let clamped = max(0, min(1, intensity))
             let outer = UIColor(white: 0, alpha: CGFloat(clamped) * 0.85).cgColor
             gradientLayer.colors = [UIColor.clear.cgColor, outer]
+        }
+    }
+
+    /// Helper class — a `UIView` whose backing layer is a linear
+    /// `CAGradientLayer`. Owns the start/end-point math for the four
+    /// supported axes plus the spread + smoothness fields surfaced
+    /// in the inspector.
+    ///
+    /// **Spread** narrows or widens the transition band: `1` = the
+    /// two stops sit at the container's edges (smooth corner-to-corner
+    /// blend), `0` = both stops collapse to the midpoint (razor-sharp
+    /// 50/50 split).
+    ///
+    /// **Smoothness** controls the easing curve. `0` produces the
+    /// stock two-stop linear interpolation `CAGradientLayer` paints by
+    /// default; `>0` adds a fixed number of intermediate color stops
+    /// inside the spread band whose colors are blended via a
+    /// smoothstep curve (`3t² − 2t³`) lerped against linear by the
+    /// smoothness amount, so the user can dial from "linear" → "soft
+    /// S-curve" without leaving the control.
+    final class LinearGradientView: UIView {
+        override class var layerClass: AnyClass { CAGradientLayer.self }
+        var gradientLayer: CAGradientLayer { layer as! CAGradientLayer }
+
+        init() {
+            super.init(frame: .zero)
+            translatesAutoresizingMaskIntoConstraints = false
+            isUserInteractionEnabled = false
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { nil }
+
+        func configure(startColor: UIColor,
+                       endColor: UIColor,
+                       direction: NodeGradientDirection,
+                       spread: Double,
+                       smoothness: Double) {
+            let (start, end): (CGPoint, CGPoint)
+            switch direction {
+            case .topToBottom: start = CGPoint(x: 0.5, y: 0); end = CGPoint(x: 0.5, y: 1)
+            case .bottomToTop: start = CGPoint(x: 0.5, y: 1); end = CGPoint(x: 0.5, y: 0)
+            case .leftToRight: start = CGPoint(x: 0, y: 0.5); end = CGPoint(x: 1, y: 0.5)
+            case .rightToLeft: start = CGPoint(x: 1, y: 0.5); end = CGPoint(x: 0, y: 0.5)
+            }
+            gradientLayer.startPoint = start
+            gradientLayer.endPoint = end
+
+            let clampedSpread = CGFloat(max(0, min(1, spread)))
+            let clampedSmoothness = max(0, min(1, smoothness))
+            let lo = 0.5 - clampedSpread / 2
+            let hi = 0.5 + clampedSpread / 2
+
+            // 0 smoothness → just the two anchor stops, which gives
+            // CAGradientLayer's stock linear interpolation across the
+            // band. >0 smoothness inserts intermediate color stops
+            // whose color blend follows a smoothstep curve so the
+            // perceived gradient eases in / out of the band.
+            if clampedSmoothness <= 0.001 {
+                gradientLayer.colors = [startColor.cgColor, endColor.cgColor]
+                gradientLayer.locations = [NSNumber(value: Double(lo)), NSNumber(value: Double(hi))]
+            } else {
+                let stepCount = 9
+                var colors: [CGColor] = []
+                var locations: [NSNumber] = []
+                for i in 0...stepCount {
+                    let t = Double(i) / Double(stepCount)
+                    let smoothstep = t * t * (3 - 2 * t)
+                    let mix = (1 - clampedSmoothness) * t + clampedSmoothness * smoothstep
+                    colors.append(blend(start: startColor, end: endColor, t: mix).cgColor)
+                    let loc = Double(lo) + t * Double(hi - lo)
+                    locations.append(NSNumber(value: loc))
+                }
+                gradientLayer.colors = colors
+                gradientLayer.locations = locations
+            }
+        }
+
+        private func blend(start: UIColor, end: UIColor, t: Double) -> UIColor {
+            var sR: CGFloat = 0, sG: CGFloat = 0, sB: CGFloat = 0, sA: CGFloat = 0
+            var eR: CGFloat = 0, eG: CGFloat = 0, eB: CGFloat = 0, eA: CGFloat = 0
+            start.getRed(&sR, green: &sG, blue: &sB, alpha: &sA)
+            end.getRed(&eR, green: &eG, blue: &eB, alpha: &eA)
+            let f = CGFloat(t)
+            return UIColor(
+                red: sR + (eR - sR) * f,
+                green: sG + (eG - sG) * f,
+                blue: sB + (eB - sB) * f,
+                alpha: sA + (eA - sA) * f
+            )
         }
     }
 

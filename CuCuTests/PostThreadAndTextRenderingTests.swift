@@ -48,7 +48,7 @@ struct PostThreadAndTextRenderingTests {
         #expect(!staleFinished)
     }
 
-    @Test func threadRootRendersFromPostsDictionary() async throws {
+    @Test func threadRootRendersFreshCountsFromPostsDictionary() async throws {
         let root = makePost(id: "root", replyCount: 1)
         var thread = PostThread(
             rootId: root.id,
@@ -71,6 +71,21 @@ struct PostThreadAndTextRenderingTests {
         }
         #expect(renderedRoot.likeCount == 3)
         #expect(renderedRoot.replyCount == 2)
+    }
+
+    @Test func threadMissingRootRendersEmptyInsteadOfCrashing() async throws {
+        let thread = PostThread(
+            rootId: "missing",
+            posts: [:],
+            childrenByParent: [:],
+            expandedIds: ["missing"],
+            nextCursorByParent: [:],
+            hasMoreByParent: [:],
+            loadingByParent: []
+        )
+
+        #expect(thread.root == nil)
+        #expect(thread.flattenForRender().isEmpty)
     }
 
     @MainActor

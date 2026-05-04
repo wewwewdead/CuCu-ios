@@ -5,7 +5,7 @@ import SwiftUI
 /// oldest-first, with three actions per row:
 ///   - "View thread" — push the conversation so a moderator can
 ///                     see context before acting
-///   - "Take down"   — soft-delete the post via the mod RLS path
+///   - "Take down"   — delete the post via the moderator path
 ///                     and mark the report `actioned`
 ///   - "Dismiss"     — mark the report `dismissed` (post stays)
 ///
@@ -162,7 +162,7 @@ struct ModerationQueueView: View {
     /// resolved status (Taken down / Dismissed), the reviewer's
     /// `@handle`, and a relative timestamp. Plus a "View thread"
     /// link so a reviewing admin can still see the post (or its
-    /// soft-deleted shell) for context.
+    /// deleted post) for context.
     private func historyFooter(for report: Report) -> some View {
         HStack(spacing: 8) {
             statusBadge(for: report.status)
@@ -433,7 +433,7 @@ struct ModerationQueueView: View {
         }
     }
 
-    /// Soft-delete the reported post + mark the report actioned.
+    /// Delete the reported post + mark the report actioned.
     /// Both calls land in sequence rather than as a transaction;
     /// partial failure (post deleted, report not yet marked) is
     /// recoverable on the next refresh — the post is gone for
@@ -442,7 +442,7 @@ struct ModerationQueueView: View {
         actionInFlight.insert(report.id)
         defer { actionInFlight.remove(report.id) }
         do {
-            try await PostService().softDelete(postId: report.postId)
+            try await PostService().deletePost(postId: report.postId)
             try await PostReportService().markActioned(reportId: report.id)
             removeFromQueue(reportId: report.id)
             toastMessage = "Post taken down"

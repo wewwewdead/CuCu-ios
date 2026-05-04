@@ -425,6 +425,16 @@ struct TextInspectorV2: View {
                 bgSwatchRow
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Opacity controls the alpha byte of the stored
+            // backgroundColorHex. When the user has the "transparent"
+            // swatch selected (hex is nil), nudging the slider seeds a
+            // white fill at that alpha so the slider always produces a
+            // visible result instead of doing nothing on the first
+            // drag.
+            fieldSlider(label: "BG OPACITY",
+                        valueText: bgOpacityValueText,
+                        value: backgroundAlphaBinding,
+                        range: 0...1, step: 0.01)
             VStack(alignment: .leading, spacing: 6) {
                 fieldLabel("BORDER")
                 borderSwatchRow
@@ -442,7 +452,7 @@ struct TextInspectorV2: View {
     private var bgSwatchRow: some View {
         HStack(spacing: 6) {
             ForEach(Self.bgSwatchHexes, id: \.self) { hex in
-                let isSelected = (currentNode?.style.backgroundColorHex ?? "") == hex
+                let isSelected = isBackgroundSelected(hex)
                 Button {
                     mutate {
                         if hex == "transparent" {
@@ -456,7 +466,30 @@ struct TextInspectorV2: View {
                 }
                 .buttonStyle(.plain)
             }
+            // Custom color tile — mirrors the border row's ColorPicker
+            // tail so the user can pick any color (and adjust alpha
+            // inline via the system picker) without leaving the panel.
+            // `supportsOpacity: true` here too so the picker's own
+            // alpha slider stays in sync with the BG OPACITY field
+            // below.
+            ColorPicker("", selection: backgroundColorHexBinding.asColor(), supportsOpacity: true)
+                .labelsHidden()
+                .frame(width: 26, height: 26)
+                .accessibilityLabel("Custom background color")
         }
+    }
+
+    /// Compares the candidate swatch against the stored hex while
+    /// ignoring any trailing alpha byte — the swatch palette is
+    /// six-char hex only, so a stored `#FFE3ECCC` (the same color at
+    /// 80%) should still light up the matching swatch.
+    private func isBackgroundSelected(_ hex: String) -> Bool {
+        let current = currentNode?.style.backgroundColorHex
+        if hex == "transparent" {
+            return current == nil
+        }
+        guard let current else { return false }
+        return Self.splitHex(current).rgb.uppercased() == hex.uppercased()
     }
 
     private static let bgSwatchHexes = [
@@ -494,6 +527,47 @@ struct TextInspectorV2: View {
                 mutate { $0.style.borderColorHex = newHex }
             }
         )
+    }
+
+    private var backgroundColorHexBinding: Binding<String> {
+        Binding(
+            get: { currentNode?.style.backgroundColorHex ?? "#FFFFFF" },
+            set: { newHex in
+                mutate { $0.style.backgroundColorHex = newHex }
+            }
+        )
+    }
+
+    /// Slider binding for the background's alpha byte. Reads the
+    /// alpha out of the stored `#RRGGBB[AA]` form via `splitHex`.
+    /// Writing seeds `#FFFFFF` as the rgb base when the user has the
+    /// transparent swatch selected so dragging the slider always
+    /// produces a visible fill instead of being a no-op against a
+    /// nil background. Snapping the slider back to 0 clears the hex
+    /// entirely (round-trips with the transparent swatch).
+    private var backgroundAlphaBinding: Binding<Double> {
+        Binding(
+            get: {
+                guard let hex = currentNode?.style.backgroundColorHex else { return 0 }
+                return Self.splitHex(hex).alpha
+            },
+            set: { newAlpha in
+                let clamped = max(0, min(1, newAlpha))
+                if clamped <= 0.001 {
+                    mutate { $0.style.backgroundColorHex = nil }
+                    return
+                }
+                let stored = currentNode?.style.backgroundColorHex ?? "#FFFFFF"
+                let rgb = Self.splitHex(stored).rgb
+                let merged = Self.mergeHex(rgb: rgb, alpha: clamped)
+                mutate { $0.style.backgroundColorHex = merged }
+            }
+        )
+    }
+
+    private var bgOpacityValueText: String {
+        guard let hex = currentNode?.style.backgroundColorHex else { return "0%" }
+        return "\(Int(Self.splitHex(hex).alpha * 100))%"
     }
 
     private static let borderSwatchHexes = [

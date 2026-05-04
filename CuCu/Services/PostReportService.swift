@@ -160,7 +160,7 @@ nonisolated struct PostReportService {
     }
 
     /// Promote a report from `open` → `actioned`. Called after a
-    /// "Take down" succeeds (`PostService.softDelete`); both
+    /// "Take down" succeeds (`PostService.deletePost`); both
     /// updates land in sequence rather than as a transaction
     /// because the mod's value here is "post is gone *and* my
     /// queue stops showing it" — partial failure (post deleted but
@@ -185,7 +185,7 @@ nonisolated struct PostReportService {
         // purposes — we want to know which mod actioned which report
         // and when. PostgREST won't accept a Postgres `now()` call
         // through the table API, so we send an ISO-8601 string the
-        // same way `PostService.softDelete` does.
+        // same way `PostService.deletePost` does.
         guard let session = try? await client.auth.session else {
             throw PostReportError.notSignedIn
         }

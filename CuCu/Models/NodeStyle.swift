@@ -75,6 +75,23 @@ struct NodeStyle: Codable, Hashable {
     /// `backgroundVignette` which only fades the background image.
     var containerVignette: Double?
 
+    /// Linear gradient fill for container nodes. When `gradientEnabled`
+    /// is true, the renderer paints a `CAGradientLayer` underneath any
+    /// background image and replaces the solid `backgroundColorHex`
+    /// fill. Direction picks one of four axes (top↔bottom, left↔right);
+    /// `gradientSpread` controls how wide the transition band is
+    /// (`0` = razor-sharp split at the midpoint, `1` = corner-to-corner
+    /// blend); `gradientSmoothness` adds eased intermediate stops so
+    /// the transition fades with an S-curve instead of pure linear.
+    /// All fields are optional so older drafts decode unchanged and
+    /// containers with no gradient pay no JSON overhead.
+    var gradientEnabled: Bool?
+    var gradientStartColorHex: String?
+    var gradientEndColorHex: String?
+    var gradientDirection: NodeGradientDirection?
+    var gradientSpread: Double?
+    var gradientSmoothness: Double?
+
     /// Frosted-glass blur drawn **behind a text node** — samples
     /// whatever is rendered behind the text on the canvas (page bg,
     /// sibling nodes, parent container) and shows a blurred copy. The
@@ -155,6 +172,12 @@ struct NodeStyle: Codable, Hashable {
          backgroundVignette: Double? = nil,
          containerBlur: Double? = nil,
          containerVignette: Double? = nil,
+         gradientEnabled: Bool? = nil,
+         gradientStartColorHex: String? = nil,
+         gradientEndColorHex: String? = nil,
+         gradientDirection: NodeGradientDirection? = nil,
+         gradientSpread: Double? = nil,
+         gradientSmoothness: Double? = nil,
          textBackdropBlur: Double? = nil,
          iconStyleFamily: NodeIconStyleFamily? = nil,
          tintColorHex: String? = nil,
@@ -187,6 +210,12 @@ struct NodeStyle: Codable, Hashable {
         self.backgroundVignette = backgroundVignette
         self.containerBlur = containerBlur
         self.containerVignette = containerVignette
+        self.gradientEnabled = gradientEnabled
+        self.gradientStartColorHex = gradientStartColorHex
+        self.gradientEndColorHex = gradientEndColorHex
+        self.gradientDirection = gradientDirection
+        self.gradientSpread = gradientSpread
+        self.gradientSmoothness = gradientSmoothness
         self.textBackdropBlur = textBackdropBlur
         self.iconStyleFamily = iconStyleFamily
         self.tintColorHex = tintColorHex
@@ -224,6 +253,12 @@ extension NodeStyle {
         case backgroundVignette
         case containerBlur
         case containerVignette
+        case gradientEnabled
+        case gradientStartColorHex
+        case gradientEndColorHex
+        case gradientDirection
+        case gradientSpread
+        case gradientSmoothness
         case textBackdropBlur
         case iconStyleFamily
         case tintColorHex
@@ -263,6 +298,12 @@ extension NodeStyle {
         self.backgroundVignette = try c.decodeIfPresent(Double.self, forKey: .backgroundVignette)
         self.containerBlur = try c.decodeIfPresent(Double.self, forKey: .containerBlur)
         self.containerVignette = try c.decodeIfPresent(Double.self, forKey: .containerVignette)
+        self.gradientEnabled = try c.decodeIfPresent(Bool.self, forKey: .gradientEnabled)
+        self.gradientStartColorHex = try c.decodeIfPresent(String.self, forKey: .gradientStartColorHex)
+        self.gradientEndColorHex = try c.decodeIfPresent(String.self, forKey: .gradientEndColorHex)
+        self.gradientDirection = try c.decodeIfPresent(NodeGradientDirection.self, forKey: .gradientDirection)
+        self.gradientSpread = try c.decodeIfPresent(Double.self, forKey: .gradientSpread)
+        self.gradientSmoothness = try c.decodeIfPresent(Double.self, forKey: .gradientSmoothness)
         self.textBackdropBlur = try c.decodeIfPresent(Double.self, forKey: .textBackdropBlur)
         self.iconStyleFamily = try c.decodeIfPresent(NodeIconStyleFamily.self, forKey: .iconStyleFamily)
         self.tintColorHex = try c.decodeIfPresent(String.self, forKey: .tintColorHex)
@@ -378,6 +419,27 @@ enum NodeImageFit: String, Codable, CaseIterable, Hashable {
 enum NodeClipShape: String, Codable, CaseIterable, Hashable {
     case rectangle
     case circle
+}
+
+// MARK: - Container gradient
+
+/// Linear-gradient axis used by container nodes. Matches the four
+/// directions exposed in the inspector — the renderer maps each one
+/// to the equivalent `CAGradientLayer.startPoint`/`endPoint` pair.
+enum NodeGradientDirection: String, Codable, CaseIterable, Hashable {
+    case topToBottom
+    case bottomToTop
+    case leftToRight
+    case rightToLeft
+
+    var label: String {
+        switch self {
+        case .topToBottom: return "Top → Bottom"
+        case .bottomToTop: return "Bottom → Top"
+        case .leftToRight: return "Left → Right"
+        case .rightToLeft: return "Right → Left"
+        }
+    }
 }
 
 // MARK: - Icon style families

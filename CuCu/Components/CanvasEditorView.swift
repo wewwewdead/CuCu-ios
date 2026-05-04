@@ -540,14 +540,7 @@ final class CanvasEditorView: UIView {
     /// switch.
     private var backgroundImageCache = BackgroundImageLRUCache()
 
-    /// Async render coordination. CoreImage on the main thread blocks
-    /// SwiftUI re-renders, which makes the blur / vignette slider stutter
-    /// visibly. We dispatch the filter pass to a background queue and
-    /// coalesce in-flight requests: if a tick arrives while a render is
-    /// already running, we stash only its parameters and the running
-    /// task picks them up the moment it finishes. Latest-wins, so the
-    /// user's final slider position always lands in the visible result.
-    private var backgroundRenderVersions: [UUID: Int] = [:]
+    private let backgroundRenderer = CanvasBackgroundRenderer()
 
     /// Signature of the last document state we actually applied. Lets us
     /// skip whole `apply(...)` passes when nothing background-relevant
@@ -1057,7 +1050,7 @@ final class CanvasEditorView: UIView {
                 pagesStackView.removeArrangedSubview(surface.shadowView)
                 surface.shadowView.removeFromSuperview()
                 lastBackgroundSignatures.removeValue(forKey: pageID)
-                backgroundRenderVersions.removeValue(forKey: pageID)
+                backgroundRenderer.invalidate(pageID: pageID)
             }
         }
 
@@ -1351,7 +1344,7 @@ final class CanvasEditorView: UIView {
                 if blur <= 0.01 && vignette <= 0.01 {
                     surface.backgroundImageView.image = original
                 } else {
-                    scheduleBackgroundFilterRender(
+                    backgroundRenderer.render(
                         image: original,
                         blur: blur,
                         vignette: vignette,
@@ -2758,7 +2751,7 @@ final class CanvasEditorView: UIView {
         if blur <= 0.01 && vignette <= 0.01 {
             surface.backgroundImageView.image = image
         } else {
-            scheduleBackgroundFilterRender(
+            backgroundRenderer.render(
                 image: image,
                 blur: blur,
                 vignette: vignette,
@@ -2771,26 +2764,6 @@ final class CanvasEditorView: UIView {
         // calls `sendSubviewToBack` for us.
         surface.pageView.sendSubviewToBack(surface.backgroundImageView)
         lastBackgroundSignatures[pageID] = (path, mtime, blur, vignette)
-    }
-
-    /// Run `PageBackgroundEffects.apply(...)` on a background queue and
-    /// hand the resulting bitmap back to the main thread. A per-page version
-    /// token drops stale slider results so the latest effect values win.
-    private func scheduleBackgroundFilterRender(image: UIImage,
-                                                blur: Double,
-                                                vignette: Double,
-                                                pageID: UUID,
-                                                imageView: UIImageView) {
-        let version = (backgroundRenderVersions[pageID] ?? 0) + 1
-        backgroundRenderVersions[pageID] = version
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-            let result = PageBackgroundEffects.apply(to: image, blur: blur, vignette: vignette)
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                guard self.backgroundRenderVersions[pageID] == version else { return }
-                imageView.image = result
-            }
-        }
     }
 
     // MARK: - Layout

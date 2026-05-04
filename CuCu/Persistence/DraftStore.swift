@@ -4,6 +4,7 @@ import SwiftData
 @MainActor
 private enum DraftDocumentSaveDebouncer {
     static var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+    private static let encodeQueue = DispatchQueue(label: "DraftDocumentSaveDebouncer.encode", qos: .utility)
 
     static func cancel(for draft: ProfileDraft) {
         let key = ObjectIdentifier(draft)
@@ -17,10 +18,13 @@ private enum DraftDocumentSaveDebouncer {
                          delayNanoseconds: UInt64) {
         let key = ObjectIdentifier(draft)
         tasks[key]?.cancel()
+        let snapshot = document
         tasks[key] = Task { @MainActor in
             try? await Task.sleep(nanoseconds: delayNanoseconds)
             guard !Task.isCancelled else { return }
-            guard let json = try? CanvasDocumentCodec.encode(document),
+            let json = await encode(snapshot)
+            guard !Task.isCancelled,
+                  let json,
                   draft.designJSON != json else {
                 tasks[key] = nil
                 return
@@ -29,6 +33,14 @@ private enum DraftDocumentSaveDebouncer {
             draft.updatedAt = .now
             try? context.save()
             tasks[key] = nil
+        }
+    }
+
+    private static func encode(_ document: ProfileDocument) async -> String? {
+        await withCheckedContinuation { continuation in
+            encodeQueue.async {
+                continuation.resume(returning: try? CanvasDocumentCodec.encodeWithFreshEncoder(document))
+            }
         }
     }
 }

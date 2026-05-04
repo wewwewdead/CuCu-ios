@@ -21,9 +21,7 @@ nonisolated struct PostThread: Equatable, Sendable {
 
     /// Canonical root row. Stored only in `posts` so optimistic
     /// counter/like mutations cannot leave the rendered root stale.
-    var root: Post {
-        posts[rootId]!
-    }
+    var root: Post? { posts[rootId] }
 
     /// Every post we've fetched so far, keyed by id. Mutated in
     /// place when an optimistic like / reply / delete lands so

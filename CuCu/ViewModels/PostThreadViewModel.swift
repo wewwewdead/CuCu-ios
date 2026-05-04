@@ -149,7 +149,7 @@ final class PostThreadViewModel {
     /// to bring it back, and the page would read empty.
     func collapse(parentId: String) {
         guard var current = thread else { return }
-        guard parentId != current.root.id else { return }
+        guard parentId != current.rootId else { return }
         guard current.expandedIds.contains(parentId) else { return }
         current.expandedIds.remove(parentId)
         thread = current
@@ -248,20 +248,44 @@ final class PostThreadViewModel {
 
     // MARK: - Delete (own posts only)
 
-    /// Optimistic remove + service call. Pulls the deleted post
-    /// (and any descendants we'd loaded for it) out of the
-    /// tree, then decrements the parent's and root's
-    /// `replyCount` by one. Failure restores the snapshot and
-    /// surfaces an error message via `lastDeleteError`.
+    /// Optimistic remove + service call. Root deletes clear the
+    /// whole thread locally; reply deletes pull the post and any
+    /// loaded descendants out of the tree, then decrement the
+    /// parent's and root's `replyCount` by one. Failure restores
+    /// the snapshot and surfaces an error message via
+    /// `lastDeleteError`.
     func delete(postId: String) {
         guard var current = thread else { return }
-        // Root deletion isn't reachable from this flow — feed
-        // owns that. Defensive guard.
-        guard postId != current.root.id else { return }
         guard let target = current.posts[postId] else { return }
-        guard let parentId = target.parentId else { return }
         let snapshot = current
+        let likedSnapshot = viewerLikedIds
         let token = deleteOperationTokens.begin(for: postId)
+
+        if postId == current.rootId {
+            thread = nil
+            viewerLikedIds.removeAll()
+
+            Task { [weak self, snapshot, likedSnapshot, token, authorId = target.authorId] in
+                guard let self else { return }
+                do {
+                    try await self.service.deletePost(postId: postId, authorId: authorId)
+                    self.deleteOperationTokens.finish(token, for: postId)
+                } catch let err as PostError {
+                    guard self.deleteOperationTokens.finish(token, for: postId) else { return }
+                    self.thread = snapshot
+                    self.viewerLikedIds = likedSnapshot
+                    self.lastDeleteError = err.errorDescription
+                } catch {
+                    guard self.deleteOperationTokens.finish(token, for: postId) else { return }
+                    self.thread = snapshot
+                    self.viewerLikedIds = likedSnapshot
+                    self.lastDeleteError = error.localizedDescription
+                }
+            }
+            return
+        }
+
+        guard let parentId = target.parentId else { return }
 
         // Detach from parent's children list.
         if var siblings = current.childrenByParent[parentId] {
@@ -270,10 +294,9 @@ final class PostThreadViewModel {
         }
 
         // Drop the post and its loaded subtree (if any). The
-        // server soft-deletes a single row, but on the client
-        // a deleted parent should pull its locally-loaded
-        // replies out of view too — a refetch later will get
-        // the canonical state.
+        // The server hard-deletes the target subtree. Mirror that
+        // locally for loaded descendants so the visible thread
+        // matches the database mutation.
         var toRemove: [String] = [postId]
         var stack: [String] = [postId]
         while let next = stack.popLast() {
@@ -299,12 +322,10 @@ final class PostThreadViewModel {
             parent.replyCount = max(0, parent.replyCount - 1)
             current.posts[parentId] = parent
         }
-        if parentId != current.root.id {
-            // Root's replyCount lives on the immutable `root`
-            // field too; the in-dict copy is what render reads.
-            if var rootCopy = current.posts[current.root.id] {
+        if parentId != current.rootId {
+            if var rootCopy = current.posts[current.rootId] {
                 rootCopy.replyCount = max(0, rootCopy.replyCount - 1)
-                current.posts[current.root.id] = rootCopy
+                current.posts[current.rootId] = rootCopy
             }
         }
 
@@ -313,7 +334,7 @@ final class PostThreadViewModel {
         Task { [weak self, snapshot, token] in
             guard let self else { return }
             do {
-                try await self.service.softDelete(postId: postId)
+                try await self.service.deletePost(postId: postId, authorId: snapshot.posts[postId]?.authorId ?? "")
                 self.deleteOperationTokens.finish(token, for: postId)
             } catch let err as PostError {
                 guard self.deleteOperationTokens.finish(token, for: postId) else { return }
@@ -349,7 +370,12 @@ final class PostThreadViewModel {
         // Edge: root itself is the blocked author. Tear the whole
         // thread; the surrounding NavigationStack will pop back on
         // its own once the user notices.
-        if current.root.authorId.lowercased() == canonical {
+        guard let root = current.root else {
+            thread = nil
+            return
+        }
+
+        if root.authorId.lowercased() == canonical {
             thread = nil
             return
         }
@@ -358,7 +384,7 @@ final class PostThreadViewModel {
         // descendants up front so we can compute how much to
         // decrement each ancestor's replyCount by.
         let blockedSeed = current.posts.values
-            .filter { $0.authorId.lowercased() == canonical && $0.id != current.root.id }
+            .filter { $0.authorId.lowercased() == canonical && $0.id != current.rootId }
             .map(\.id)
 
         var toRemove: Set<String> = []
@@ -464,9 +490,9 @@ final class PostThreadViewModel {
             parent.replyCount += 1
             current.posts[parentId] = parent
         }
-        if parentId != current.root.id, var rootCopy = current.posts[current.root.id] {
+        if parentId != current.rootId, var rootCopy = current.posts[current.rootId] {
             rootCopy.replyCount += 1
-            current.posts[current.root.id] = rootCopy
+            current.posts[current.rootId] = rootCopy
         }
 
         thread = current

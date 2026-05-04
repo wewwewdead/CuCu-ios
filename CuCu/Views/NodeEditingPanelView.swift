@@ -738,6 +738,9 @@ struct NodeEditingPanelView: View {
                             valueText: "\(Int(document.nodes[node.id]?.style.backgroundBlur ?? 0))"
                         )
                     }
+                    if node.type == .container {
+                        gradientGroupCard(node.id)
+                    }
                 case .text:
                     colorCard(
                         title: "Text",
@@ -1238,6 +1241,152 @@ struct NodeEditingPanelView: View {
         )
     }
 
+    /// Single grouped card that owns every gradient control: the
+    /// on/off switch in the header, the two color stops, the
+    /// direction picker, and the spread + smoothness sliders. Keeping
+    /// the cluster in one card (instead of six siblings on the
+    /// horizontal scroller) makes the relationship obvious — the
+    /// sub-controls are visibly part of the same surface as the
+    /// toggle that gates them, and they collapse out of view when
+    /// the gradient is off so the rest of the Style tab stays
+    /// uncluttered.
+    private func gradientGroupCard(_ id: UUID) -> some View {
+        let enabled = bindingGradientEnabled(id)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("GRADIENT")
+                    .font(.cucuMono(9, weight: .semibold))
+                    .tracking(1.4)
+                    .foregroundStyle(Color.cucuInkFaded)
+                Spacer(minLength: 0)
+                Toggle("", isOn: enabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .onChange(of: enabled.wrappedValue) { _, _ in commitNow() }
+            }
+
+            if enabled.wrappedValue {
+                HStack(spacing: 8) {
+                    gradientColorTile(
+                        title: "Start",
+                        hex: bindingStyleHex(id, key: \.gradientStartColorHex, defaultHex: "#FFFFFF")
+                    )
+                    gradientColorTile(
+                        title: "End",
+                        hex: bindingStyleHex(id, key: \.gradientEndColorHex, defaultHex: "#FFC1D8")
+                    )
+                    gradientDirectionTile(id: id)
+                }
+
+                gradientSliderRow(
+                    title: "Spread",
+                    binding: bindingStyleDouble(id, key: \.gradientSpread, defaultValue: 1.0),
+                    valueText: "\(Int((document.nodes[id]?.style.gradientSpread ?? 1.0) * 100))%"
+                )
+                gradientSliderRow(
+                    title: "Smoothness",
+                    binding: bindingStyleDouble(id, key: \.gradientSmoothness, defaultValue: 0),
+                    valueText: "\(Int((document.nodes[id]?.style.gradientSmoothness ?? 0) * 100))%"
+                )
+            } else {
+                Text("Off")
+                    .font(.cucuSerif(13, weight: .semibold))
+                    .foregroundStyle(Color.cucuInkFaded)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(width: enabled.wrappedValue ? 320 : 158,
+               height: enabled.wrappedValue ? nil : 86,
+               alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.cucuCard))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.cucuInk.opacity(0.14), lineWidth: 1)
+        )
+    }
+
+    /// Compact color-stop tile used inside the gradient group card.
+    /// Mirrors the `colorCard` look but shrinks the chrome so two
+    /// tiles plus the direction picker fit comfortably on one row.
+    private func gradientColorTile(title: String, hex: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title.uppercased())
+                .font(.cucuMono(8, weight: .semibold))
+                .tracking(1.2)
+                .foregroundStyle(Color.cucuInkFaded)
+            ColorPicker("", selection: hex.asColor(), supportsOpacity: true)
+                .labelsHidden()
+                .frame(width: 30, height: 30)
+                .onChange(of: hex.wrappedValue) { _, _ in commitNow() }
+        }
+    }
+
+    /// Direction picker tile inside the gradient group card. Uses a
+    /// menu so the four named directions stay legible without forcing
+    /// the card to widen for a segmented control.
+    private func gradientDirectionTile(id: UUID) -> some View {
+        let direction = bindingGradientDirection(id)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("DIRECTION")
+                .font(.cucuMono(8, weight: .semibold))
+                .tracking(1.2)
+                .foregroundStyle(Color.cucuInkFaded)
+            Menu {
+                ForEach(NodeGradientDirection.allCases, id: \.self) { option in
+                    Button {
+                        direction.wrappedValue = option
+                        commitNow()
+                    } label: {
+                        if option == direction.wrappedValue {
+                            Label(option.label, systemImage: "checkmark")
+                        } else {
+                            Text(option.label)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(direction.wrappedValue.label)
+                        .font(.cucuSerif(13, weight: .semibold))
+                        .foregroundStyle(Color.cucuInk)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.cucuInkFaded)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.cucuCardSoft))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Compact slider row used inside the gradient group card. Lays
+    /// out as `[label] [slider] [value]` so spread and smoothness
+    /// each take exactly one line of vertical space, keeping the
+    /// card from growing taller than the other Style-tab cards by
+    /// more than necessary.
+    private func gradientSliderRow(title: String,
+                                   binding: Binding<Double>,
+                                   valueText: String) -> some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.cucuSerif(12, weight: .semibold))
+                .foregroundStyle(Color.cucuInk)
+                .frame(width: 86, alignment: .leading)
+            Slider(value: binding, in: 0...1, step: 0.01) { editing in
+                if !editing { commitNow() }
+            }
+            Text(valueText)
+                .font(.cucuMono(10, weight: .medium))
+                .foregroundStyle(Color.cucuInkSoft)
+                .frame(width: 40, alignment: .trailing)
+        }
+    }
+
     private func galleryLayoutCard(_ id: UUID) -> some View {
         menuCard(
             title: "Gallery",
@@ -1703,6 +1852,49 @@ struct NodeEditingPanelView: View {
             set: { newValue in
                 guard var node = document.nodes[id] else { return }
                 node.style.galleryLayout = newValue
+                document.nodes[id] = node
+            }
+        )
+    }
+
+    private func bindingGradientDirection(_ id: UUID) -> Binding<NodeGradientDirection> {
+        Binding(
+            get: { document.nodes[id]?.style.gradientDirection ?? .topToBottom },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.style.gradientDirection = newValue
+                document.nodes[id] = node
+            }
+        )
+    }
+
+    /// Toggle binding for the container gradient. The setter seeds
+    /// default colors on first enable so the toggle produces a
+    /// visible result without forcing the user to pick two colors
+    /// before they see anything change.
+    private func bindingGradientEnabled(_ id: UUID) -> Binding<Bool> {
+        Binding(
+            get: { document.nodes[id]?.style.gradientEnabled == true },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.style.gradientEnabled = newValue ? true : nil
+                if newValue {
+                    if node.style.gradientStartColorHex == nil {
+                        node.style.gradientStartColorHex = node.style.backgroundColorHex ?? "#FFFFFF"
+                    }
+                    if node.style.gradientEndColorHex == nil {
+                        node.style.gradientEndColorHex = "#FFC1D8"
+                    }
+                    if node.style.gradientDirection == nil {
+                        node.style.gradientDirection = .topToBottom
+                    }
+                    if node.style.gradientSpread == nil {
+                        node.style.gradientSpread = 1.0
+                    }
+                    if node.style.gradientSmoothness == nil {
+                        node.style.gradientSmoothness = 0.0
+                    }
+                }
                 document.nodes[id] = node
             }
         )

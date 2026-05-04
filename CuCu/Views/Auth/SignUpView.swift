@@ -70,33 +70,49 @@ struct SignUpView: View {
         .cucuFormBackdrop()
     }
 
+    /// Monochrome ink-on-paper submit, paired with the Sign In
+    /// chip. Same asymmetric pebble shape so both auth tabs read
+    /// as siblings; ✦ flourish kept in paper-tinted form to hold
+    /// onto the editorial voice.
     private var submitChip: some View {
         let disabled = email.isEmpty || password.count < 8 || auth.isLoading
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: 18, bottomLeadingRadius: 18,
+            bottomTrailingRadius: 28, topTrailingRadius: 28,
+            style: .continuous
+        )
         return Button {
             auth.clearMessages()
             Task { await auth.signUp(email: email, password: password) }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 9) {
                 if auth.isLoading {
                     ProgressView()
-                        .tint(Color.cucuMoss)
+                        .tint(Color.cucuPaper)
                         .controlSize(.small)
                 } else {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 11, weight: .semibold))
                     Text("Create account")
                         .font(.cucuSerif(15, weight: .semibold))
+                        .tracking(0.6)
+                    Text("✦")
+                        .font(.cucuSerif(13, weight: .regular))
+                        .foregroundStyle(Color.cucuPaper.opacity(0.6))
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 8)
-            .frame(minWidth: 140)
-            .foregroundStyle(Color.cucuMoss)
-            .background(Capsule().fill(Color.cucuMossSoft))
-            .overlay(Capsule().strokeBorder(Color.cucuMoss, lineWidth: 1))
+            .foregroundStyle(Color.cucuPaper)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 11)
+            .frame(minWidth: 168)
+            .background(shape.fill(Color.cucuInk))
+            .overlay(
+                shape
+                    .inset(by: 3)
+                    .strokeBorder(Color.cucuPaper.opacity(0.18), lineWidth: 0.5)
+            )
+            .shadow(color: Color.cucuInk.opacity(0.18), radius: 6, x: 0, y: 2)
         }
         .buttonStyle(CucuPressableButtonStyle())
         .disabled(disabled)
-        .opacity(disabled ? 0.4 : 1.0)
+        .opacity(disabled ? 0.35 : 1.0)
     }
 }

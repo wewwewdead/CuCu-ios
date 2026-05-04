@@ -24,6 +24,7 @@ struct ComposePostSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(AuthViewModel.self) private var auth
+    @Environment(CucuPostFlightCoordinator.self) private var flightCoordinator
 
     let parentId: String?
     var parentPreview: ParentPreview? = nil
@@ -31,9 +32,25 @@ struct ComposePostSheet: View {
     /// the caller can prepend it to a feed without a refetch.
     var onPosted: (Post) -> Void = { _ in }
 
+    /// When `true`, a successful submit launches the post-flight
+    /// animation (ghost card flying from this sheet up to the feed)
+    /// and skips the immediate `onPosted` callback. The feed picks
+    /// up the new post via the coordinator's `landedPostId` so the
+    /// row materialises exactly when the ghost dissolves into it,
+    /// not earlier. Replies and other non-feed callers leave this
+    /// off and keep the original "prepend on success" path.
+    var usesFlight: Bool = false
+
     @State private var vm = ComposePostViewModel()
     @State private var showDiscardConfirm = false
     @FocusState private var bodyFocused: Bool
+
+    /// Submit button center-x in window coordinates, captured by a
+    /// background `GeometryReader` so the flight ghost emerges
+    /// directly above where the user just tapped. We snapshot this
+    /// at submit time so the value is stable even if the sheet's
+    /// dismissal is reflowing the layout.
+    @State private var submitCenterX: CGFloat = 0
 
     var body: some View {
         NavigationStack {
@@ -79,8 +96,19 @@ struct ComposePostSheet: View {
         // alive for the entire lifetime of the sheet.
         .onChange(of: vm.status) { _, newStatus in
             if case .success(let post) = newStatus {
-                CucuHaptics.success()
-                onPosted(post)
+                if usesFlight {
+                    // Hand the post off to the flight coordinator —
+                    // it owns the choreography from here, including
+                    // the success haptic on landing. We deliberately
+                    // skip `onPosted` so the feed doesn't prepend
+                    // the row twice (once now, once on land); the
+                    // feed instead observes `landedPostId` and
+                    // pulls the post off the coordinator at land.
+                    flightCoordinator.launch(post: post, sourceX: submitCenterX)
+                } else {
+                    CucuHaptics.success()
+                    onPosted(post)
+                }
                 dismiss()
             }
         }
@@ -307,56 +335,74 @@ struct ComposePostSheet: View {
         return (.cucuInk, .cucuCard, .cucuInk)
     }
 
-    /// Letterpress-style submit pill. Moss palette marks it as
-    /// the affirmative action (matching the bottom-bar send
-    /// glyph in the thread view), but the typography and
-    /// detailing borrow the rest of the design system's printed
-    /// idiom: 16pt cucuSerif bold label, a faded `✦` sparkle
-    /// (the same flourish that closes the feed and thread
-    /// columns), and a double-ruled capsule — a 1pt outer ink
-    /// stroke with a hairline 0.5pt inner stroke inset 3pt, so
-    /// the chip reads like a stamped seal instead of a generic
-    /// tinted button. The in-flight state swaps in italic
-    /// Fraunces copy ("Sending…") alongside the spinner so the
-    /// transition stays in voice.
+    /// Monochrome submit, paired visually with the Sign In and
+    /// Sign Up chips: solid ink fill on paper text, asymmetric
+    /// pebble shape that leans trailing-side toward the action,
+    /// and a paper hairline inset 3pt for letterpress detail.
+    /// The faded `✦` flourish — the same closer used by the feed
+    /// and thread columns — survives in paper-tinted form. The
+    /// in-flight state swaps in italic Fraunces "Sending…"
+    /// alongside the spinner so the transition stays in voice.
     private var submitButton: some View {
-        Button {
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: 18, bottomLeadingRadius: 18,
+            bottomTrailingRadius: 28, topTrailingRadius: 28,
+            style: .continuous
+        )
+        return Button {
             Task {
                 guard let user = auth.currentUser else { return }
                 await vm.submit(user: user, parentId: parentId)
             }
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 9) {
                 if vm.isSubmitting {
                     ProgressView()
-                        .tint(Color.cucuMoss)
+                        .tint(Color.cucuPaper)
                         .controlSize(.small)
                     Text("Sending…")
                         .font(.cucuEditorial(14, italic: true))
                 } else {
                     Text(parentId == nil ? "Post" : "Reply")
                         .font(.cucuSerif(16, weight: .bold))
+                        .tracking(0.6)
                     Text("✦")
                         .font(.cucuSerif(13, weight: .regular))
-                        .foregroundStyle(Color.cucuMoss.opacity(0.55))
+                        .foregroundStyle(Color.cucuPaper.opacity(0.6))
                 }
             }
-            .foregroundStyle(Color.cucuMoss)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 9)
-            .frame(minWidth: 112)
-            .background(Capsule().fill(Color.cucuMossSoft))
-            .overlay(Capsule().strokeBorder(Color.cucuMoss, lineWidth: 1))
+            .foregroundStyle(Color.cucuPaper)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 11)
+            .frame(minWidth: 124)
+            .background(shape.fill(Color.cucuInk))
             .overlay(
-                Capsule()
+                shape
                     .inset(by: 3)
-                    .strokeBorder(Color.cucuMoss.opacity(0.22), lineWidth: 0.5)
+                    .strokeBorder(Color.cucuPaper.opacity(0.18), lineWidth: 0.5)
             )
+            .shadow(color: Color.cucuInk.opacity(0.18), radius: 6, x: 0, y: 2)
         }
         .buttonStyle(CucuPressableButtonStyle())
         .disabled(!vm.canSubmit)
-        .opacity(vm.canSubmit ? 1.0 : 0.55)
+        .opacity(vm.canSubmit ? 1.0 : 0.35)
         .accessibilityLabel(parentId == nil ? "Post" : "Reply")
+        // Snapshot the button's center-x in window coordinates so
+        // the flight overlay can launch the ghost card from the
+        // exact horizontal position the user just tapped. Cheap to
+        // re-read here — `.global` resolves on the same pass as
+        // the rest of layout. Only used when `usesFlight` is on.
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear {
+                        submitCenterX = geo.frame(in: .global).midX
+                    }
+                    .onChange(of: geo.frame(in: .global)) { _, newFrame in
+                        submitCenterX = newFrame.midX
+                    }
+            }
+        )
     }
 
     // MARK: - Cancel handling

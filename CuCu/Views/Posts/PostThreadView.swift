@@ -11,7 +11,15 @@ import SwiftUI
 /// `RenderItem` case. No tree traversal lives in the view.
 struct PostThreadView: View {
     @Environment(AuthViewModel.self) private var auth
+    @Environment(\.dismiss) private var dismiss
     let rootId: String
+    /// Optional callback fired when the user deletes the *root*
+    /// of this thread. The host (typically `PostFeedView`) handles
+    /// the server-side delete + feed scrub there so the
+    /// rollback snapshot lives next to the column it'd be
+    /// re-inserted into. When nil, the view falls back to a
+    /// fire-and-forget service call before dismissing.
+    let onRootDeleted: ((Post) -> Void)?
 
     @State private var vm = PostThreadViewModel()
     @State private var replyTarget: Post? = nil
@@ -38,6 +46,33 @@ struct PostThreadView: View {
     /// scroll only spawns one debounce task at a time. The task
     /// flips this back off after the batch fetch resolves.
     @State private var avatarBatchInFlight: Bool = false
+    /// Drives the anticipation scale-up on the row about to be
+    /// deleted. The thread view animates one row at a time, so a
+    /// single optional id is enough.
+    @State private var poppingPostId: String? = nil
+    /// Set when the root-delete sequence wants the root card to
+    /// vanish from the rendered list while `vm.thread` is still
+    /// non-nil. Lets the squish-fade transition fire inside the
+    /// LazyVStack instead of being shortcut by the `.unavailable`
+    /// branch when the VM clears `thread` itself.
+    @State private var hiddenRootId: String? = nil
+    /// Drives the page-closing flourish on root delete: a brief
+    /// scale-down + fade applied to the whole scroller right
+    /// before `dismiss()` so the thread reads as visually
+    /// "closing" before the navigation slide reveals the feed.
+    @State private var threadRetreating: Bool = false
+    /// Push target for the "tap a post's avatar / @handle"
+    /// intent. Lets visitors jump from a reply row directly to
+    /// that author's published profile without having to
+    /// backtrack to a feed first. Wrapped in an Identifiable
+    /// struct so `.navigationDestination(item:)` can drive the
+    /// push — see `AuthorRoute` at the bottom of this file.
+    @State private var profileDestination: AuthorRoute? = nil
+
+    init(rootId: String, onRootDeleted: ((Post) -> Void)? = nil) {
+        self.rootId = rootId
+        self.onRootDeleted = onRootDeleted
+    }
 
     /// 12pt indent step per visual depth. Both posts and the
     /// affordance buttons run through this so a "View N replies"
@@ -60,9 +95,13 @@ struct PostThreadView: View {
         .safeAreaInset(edge: .bottom) {
             // Bottom bar always targets the root post — per the
             // spec, this is the "Reply to thread" affordance,
-            // not "reply to whatever's deepest visible".
-            if let root = vm.thread?.root {
+            // not "reply to whatever's deepest visible". Hidden
+            // once the user starts the root-delete sequence so
+            // the closing flourish reads cleanly without a stray
+            // input pinned to the bottom.
+            if let root = vm.thread?.root, hiddenRootId == nil {
                 replyToThreadBar(root: root)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
         .sheet(item: $replyTarget) { parent in
@@ -111,6 +150,9 @@ struct PostThreadView: View {
             Text(vm.lastDeleteError ?? "")
         }
         .cucuToast(message: $toastMessage)
+        .navigationDestination(item: $profileDestination) { route in
+            PublishedProfileView(username: route.username)
+        }
         .task { await vm.load(rootId: rootId) }
     }
 
@@ -151,7 +193,7 @@ struct PostThreadView: View {
             if let thread = vm.thread {
                 threadColumn(thread)
             } else {
-                Color.clear
+                unavailableState
             }
         }
     }
@@ -186,7 +228,21 @@ struct PostThreadView: View {
         // scroller (rather than pinning to the nav bar) so the
         // page reads as a magazine spread that gives the thread
         // its own opening real estate — same idiom the feed uses.
-        let items = thread.flattenForRender()
+        //
+        // The `hiddenRootId` filter is what lets the root-delete
+        // sequence run the squish-fade transition: we drop the
+        // root from the rendered items while keeping `vm.thread`
+        // intact, so the LazyVStack registers a removal (firing
+        // `.cucuPostPop`) instead of the whole branch flipping to
+        // `unavailableState`.
+        let items = thread.flattenForRender().filter { item in
+            if let hidden = hiddenRootId,
+               case .post(let post, _, _) = item,
+               post.id == hidden {
+                return false
+            }
+            return true
+        }
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 masthead
@@ -194,10 +250,8 @@ struct PostThreadView: View {
                     .padding(.top, 4)
                 ForEach(items) { item in
                     renderItem(item, in: thread)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .top).combined(with: .opacity),
-                            removal: .opacity
-                        ))
+                        .transition(.cucuPostPop)
+                        .zIndex(isPopping(item) ? 1 : 0)
                     if shouldDrawDivider(after: item) {
                         Rectangle()
                             .fill(Color.cucuInkRule)
@@ -207,10 +261,12 @@ struct PostThreadView: View {
                 }
                 endOfThread
             }
-            .animation(.spring(response: 0.42, dampingFraction: 0.86), value: items.map(\.id))
+            .animation(.spring(response: 0.46, dampingFraction: 0.7), value: items.map(\.id))
             .padding(.vertical, 4)
             .padding(.bottom, 16)
         }
+        .scaleEffect(threadRetreating ? 0.985 : 1.0, anchor: .top)
+        .opacity(threadRetreating ? 0 : 1)
     }
 
     /// Skip the row-divider after the root post — the root sits in
@@ -218,7 +274,7 @@ struct PostThreadView: View {
     /// double-rule the surface. Every other row keeps the spec's
     /// 1pt ink-rule break.
     private func shouldDrawDivider(after item: PostThread.RenderItem) -> Bool {
-        if case .post(let post, _, _) = item, post.id == vm.thread?.root.id {
+        if case .post(let post, _, _) = item, post.id == vm.thread?.rootId {
             return false
         }
         return true
@@ -228,7 +284,7 @@ struct PostThreadView: View {
     private func renderItem(_ item: PostThread.RenderItem, in thread: PostThread) -> some View {
         switch item {
         case .post(let post, let depth, _):
-            postRow(post, depth: depth, isRoot: post.id == thread.root.id)
+            postRow(post, depth: depth, isRoot: post.id == thread.rootId)
         case .viewReplies(let parentId, let count, let depth):
             viewRepliesButton(parentId: parentId, count: count, depth: depth)
         case .loadingChildren(_, let depth):
@@ -252,12 +308,14 @@ struct PostThreadView: View {
             onTap: {},
             onLike: { vm.toggleLike(postId: post.id) },
             onReply: { replyTarget = post },
-            // Root delete tears the thread; route only via the
-            // feed for now. Descendant deletes go through the
-            // VM's optimistic flow.
-            onDelete: { if !isRoot { vm.delete(postId: post.id) } },
+            onDelete: { handleDelete(post) },
             onReport: { reportTarget = post },
-            onBlock: { blockTarget = post }
+            onBlock: { blockTarget = post },
+            onAuthorTap: {
+                profileDestination = AuthorRoute(
+                    username: post.authorUsername
+                )
+            }
         )
         .environment(\.cucuPostRowSuppressCard, true)
 
@@ -278,7 +336,97 @@ struct PostThreadView: View {
                     }
             }
         }
+        .scaleEffect(poppingPostId == post.id ? 1.06 : 1.0, anchor: .center)
+        .animation(.spring(response: 0.22, dampingFraction: 0.55), value: poppingPostId)
         .onAppear { requestAvatarLazy(for: post.authorUsername) }
+    }
+
+    /// True when this render item corresponds to the row currently
+    /// in its anticipation-pop phase — used to lift it above its
+    /// neighbours while it scales so the swell isn't clipped.
+    private func isPopping(_ item: PostThread.RenderItem) -> Bool {
+        if case .post(let post, _, _) = item, post.id == poppingPostId {
+            return true
+        }
+        return false
+    }
+
+    /// Two paths depending on what's being deleted:
+    ///
+    /// **Reply** — anticipation pop on the row, then the squish-fade
+    /// removal runs inside a bouncy spring so the surrounding rows
+    /// snap up to close the gap. `vm.delete` owns the server call
+    /// and the rollback snapshot for this path.
+    ///
+    /// **Root** — the whole thread is about to evaporate. We hold
+    /// the same anticipation pop, then *visually* remove the root
+    /// (via `hiddenRootId`, leaving `vm.thread` intact so the
+    /// LazyVStack fires the squish transition rather than swapping
+    /// to `unavailableState`). After the squish, a brief retreat
+    /// flourish — a small scale-down + fade applied to the whole
+    /// scroller — reads as the journal entry being closed. We then
+    /// delegate the server delete + feed scrub to the host via
+    /// `onRootDeleted` (so the rollback snapshot lives where the
+    /// re-insert would land), and `dismiss()` triggers the standard
+    /// navigation pop back to the feed.
+    private func handleDelete(_ post: Post) {
+        CucuHaptics.delete()
+        let isRoot = post.id == vm.thread?.rootId
+
+        if isRoot {
+            poppingPostId = post.id
+            Task { @MainActor in
+                // Anticipation hold — the row's `.scaleEffect`
+                // swells before we pull it from the list.
+                try? await Task.sleep(nanoseconds: 110_000_000)
+                withAnimation(.spring(response: 0.40, dampingFraction: 0.62)) {
+                    hiddenRootId = post.id
+                }
+                // Wait for the squish to mostly settle before
+                // closing the page — the eye reads ~80% as
+                // complete and a dragged-out tail muddies the
+                // hand-off into the nav pop.
+                try? await Task.sleep(nanoseconds: 280_000_000)
+                withAnimation(.easeOut(duration: 0.22)) {
+                    threadRetreating = true
+                }
+                try? await Task.sleep(nanoseconds: 180_000_000)
+                poppingPostId = nil
+                if let onRootDeleted {
+                    onRootDeleted(post)
+                } else {
+                    // No host to delegate to (deep-link entry,
+                    // moderation queue, etc.): fire the delete
+                    // ourselves and accept that we can't
+                    // surface a rollback — the view is leaving.
+                    // The broadcast still goes out so any list
+                    // surface holding this id locally scrubs it.
+                    let target = post
+                    CucuPostEvents.broadcastDeletion(postId: target.id)
+                    Task.detached {
+                        try? await PostService().deletePost(
+                            postId: target.id,
+                            authorId: target.authorId
+                        )
+                    }
+                }
+                dismiss()
+            }
+        } else {
+            poppingPostId = post.id
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 130_000_000)
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.62)) {
+                    vm.delete(postId: post.id)
+                }
+                poppingPostId = nil
+                // Replies don't appear in the global feed, but a
+                // per-user "Posts" surface or a profile column
+                // might be holding this id — broadcast so they
+                // can scrub without a refetch.
+                CucuPostEvents.broadcastDeletion(postId: post.id)
+            }
+        }
     }
 
     private func viewRepliesButton(parentId: String, count: Int, depth: Int) -> some View {
@@ -460,6 +608,23 @@ struct PostThreadView: View {
 
     // MARK: - Error state
 
+    private var unavailableState: some View {
+        VStack(spacing: 14) {
+            Spacer(minLength: 60)
+            Text("Post unavailable")
+                .font(.cucuSerif(22, weight: .bold))
+                .foregroundStyle(Color.cucuInk)
+            Text("This thread is no longer available.")
+                .font(.cucuEditorial(13, italic: true))
+                .foregroundStyle(Color.cucuInkSoft)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+            Spacer(minLength: 60)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: 360)
+    }
+
     /// Editorial error treatment — matches the feed's fleuron-led
     /// surface (❦ marker, serif headline, italic detail, retry
     /// chip) instead of the SF Symbols warning glyph. Reads as a
@@ -533,7 +698,7 @@ struct PostThreadView: View {
 
     @ViewBuilder
     private var mastheadAvatarPuck: some View {
-        let rootUsername = vm.thread?.root.authorUsername.lowercased() ?? ""
+        let rootUsername = vm.thread?.root?.authorUsername.lowercased() ?? ""
         if !rootUsername.isEmpty,
            let urlString = avatarOverrides[rootUsername],
            !urlString.isEmpty,
@@ -651,4 +816,15 @@ struct PostThreadView: View {
             }
         }
     }
+}
+
+// MARK: - Author route
+
+/// Push target for the "tap a row's profile" intent. Mirrors the
+/// type used in `PostFeedView` — kept fileprivate per surface so
+/// each navigation stack owns its own destination type instead of
+/// sharing a global definition that would invite drift.
+private struct AuthorRoute: Identifiable, Hashable {
+    let username: String
+    var id: String { username }
 }

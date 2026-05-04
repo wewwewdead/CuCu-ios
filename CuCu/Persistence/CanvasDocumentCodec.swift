@@ -43,6 +43,14 @@ enum CanvasDocumentCodec {
         return String(decoding: data, as: UTF8.self)
     }
 
+    static func encodeWithFreshEncoder(_ document: ProfileDocument) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let envelope = Envelope(schemaVersion: schemaVersion, document: document)
+        let data = try encoder.encode(envelope)
+        return String(decoding: data, as: UTF8.self)
+    }
+
     static func decode(_ json: String) -> DecodeResult {
         let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,

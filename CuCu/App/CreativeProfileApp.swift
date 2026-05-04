@@ -8,6 +8,13 @@ struct CreativeProfileApp: App {
     /// builder is fully usable while this hydrates (or fails) silently.
     @State private var authViewModel = AuthViewModel()
 
+    /// Coordinator for the post-submission flight animation. Lives at
+    /// the app root so the overlay (mounted inside `RootView`) and
+    /// the compose sheet / feed (mounted further down the tree) all
+    /// read the same instance — phase transitions stay coherent
+    /// across the sheet's dismissal.
+    @State private var postFlightCoordinator = CucuPostFlightCoordinator()
+
     init() {
         // Register the bundled Lexend faces before any view tries to look
         // them up via `Font.custom("Lexend-…")`. Failure to register simply
@@ -19,6 +26,7 @@ struct CreativeProfileApp: App {
         WindowGroup {
             RootView()
                 .environment(authViewModel)
+                .environment(postFlightCoordinator)
         }
         .modelContainer(for: [ProfileDraft.self, ProfileTemplate.self])
     }
