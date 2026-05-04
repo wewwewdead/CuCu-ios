@@ -3,6 +3,12 @@ import SwiftUI
 /// Sign-in / sign-up tab pair, used inside the publish sheet when the user
 /// isn't signed in yet. Drafts and editing don't depend on this view —
 /// it's only reachable through Publish.
+///
+/// After a successful sign-up, if the new account hasn't claimed a
+/// username yet (`auth.requiresUsernameClaim`), this view swaps to
+/// `UsernamePickerView` in place rather than letting the publish sheet
+/// dismiss back to the publish form. Existing accounts whose username
+/// was backfilled by the Phase 1 SQL migration skip the picker entirely.
 struct AuthGateView: View {
     enum Mode: String, Hashable, CaseIterable {
         case signIn = "Sign In"
@@ -13,6 +19,21 @@ struct AuthGateView: View {
     @State private var mode: Mode = .signIn
 
     var body: some View {
+        if auth.isSignedIn && auth.requiresUsernameClaim {
+            UsernamePickerView()
+        } else if auth.isSignedIn && auth.requiresEULAAcceptance {
+            // Phase 7 — Apple Guideline 1.2 acceptance gate. The
+            // username picker chains into this so brand-new
+            // accounts do `claim → agree → land` in one
+            // continuous flow. Pre-Phase-7 users are grandfathered
+            // out of this branch by `runEULAMigrationIfNeeded`.
+            EULAAcceptanceView()
+        } else {
+            authTabs
+        }
+    }
+
+    private var authTabs: some View {
         VStack(spacing: 0) {
             header
 

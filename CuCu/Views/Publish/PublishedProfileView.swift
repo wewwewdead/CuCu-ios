@@ -53,6 +53,35 @@ struct PublishedProfileView: View {
     @State private var isVoting = false
     @State private var voteMessage: String?
     @State private var showShareSheet = false
+    /// Last 10 top-level posts authored by the profile owner. Hydrated
+    /// in `loadUserPosts` once the profile resolves; an empty array
+    /// (the default) hides the Posts section so a user with nothing
+    /// posted yet doesn't see an empty stub under their canvas.
+    @State private var userPosts: [Post] = []
+    /// Set of `Post.id` that the current viewer has liked. Best-effort
+    /// — failures fall back to "not liked" rather than blocking the
+    /// section from rendering.
+    @State private var viewerLikedPostIds: Set<String> = []
+    /// Drives the navigation push into a thread when the visitor taps
+    /// a row in the Posts section.
+    @State private var threadDestination: Post?
+    /// Drives the "View all" push. The ID + username of the owner are
+    /// captured at push-time so the destination view doesn't depend on
+    /// the in-flight fetch state.
+    @State private var allPostsDestination: AllPostsDestination?
+
+    private struct AllPostsDestination: Hashable, Identifiable {
+        let authorId: String
+        let username: String
+        var id: String { authorId }
+    }
+
+    /// Phase 7 — report sheet target for a row in the Posts
+    /// section. Held alongside the canvas state so dismissal
+    /// doesn't fight with the lightbox / journal modals.
+    @State private var postReportTarget: Post? = nil
+    @State private var postBlockTarget: Post? = nil
+    @State private var moderationToast: String? = nil
 
     private let nextPageLoadThreshold: CGFloat = 520
 
@@ -214,6 +243,46 @@ struct PublishedProfileView: View {
                 Task { await loadVoteState(profileId: profile.id) }
             }
         }
+        .navigationDestination(item: $threadDestination) { post in
+            PostThreadView(rootId: post.rootId ?? post.id)
+        }
+        .navigationDestination(item: $allPostsDestination) { destination in
+            UserPostsListView(
+                authorId: destination.authorId,
+                displayUsername: destination.username
+            )
+        }
+        .sheet(item: $postReportTarget) { post in
+            ReportPostSheet(post: post) { outcome in
+                switch outcome {
+                case .submitted:
+                    moderationToast = "Reported. Thanks — we review every report."
+                case .alreadyReported:
+                    moderationToast = "Already reported. We'll review it soon."
+                case .cancelled:
+                    break
+                }
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+        .confirmationDialog(
+            postBlockTarget.map { "Block @\($0.authorUsername)?" } ?? "Block user?",
+            isPresented: Binding(
+                get: { postBlockTarget != nil },
+                set: { if !$0 { postBlockTarget = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: postBlockTarget
+        ) { post in
+            Button("Block", role: .destructive) {
+                Task { await blockAuthorOfPost(post) }
+            }
+            Button("Cancel", role: .cancel) { postBlockTarget = nil }
+        } message: { post in
+            Text("You won't see @\(post.authorUsername)'s posts or replies.")
+        }
+        .cucuToast(message: $moderationToast)
         .alert(
             "Voting",
             isPresented: Binding(
@@ -374,6 +443,14 @@ struct PublishedProfileView: View {
                     if renderedCount < pageCount {
                         loadingNextPageSentinel
                     }
+
+                    // Posts section under the last loaded page. Held
+                    // off until every page is mounted so it doesn't
+                    // jump around mid-pagination — the canvas is the
+                    // headline; posts are the footer.
+                    if renderedCount >= pageCount, !userPosts.isEmpty {
+                        postsSection(profile: profile)
+                    }
                 }
                 .padding(.vertical, 16)
             }
@@ -499,6 +576,67 @@ struct PublishedProfileView: View {
         }
     }
 
+    /// Vertical stack of compact post rows under the canvas — the
+    /// owner's last 10 top-level posts plus a "View all" link.
+    /// Keys off `Color.cucuInk` / `Color.cucuPaper` so the section
+    /// reads as part of the same paper-and-ink chrome the rest of
+    /// the public viewer uses.
+    @ViewBuilder
+    private func postsSection(profile: PublishedProfile) -> some View {
+        let viewerId = auth.currentUser?.id.lowercased()
+
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Posts")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(Color.cucuInk)
+                .padding(.horizontal, 16)
+                .padding(.top, 24)
+                .padding(.bottom, 8)
+
+            Divider()
+                .background(Color.cucuInkRule)
+
+            ForEach(userPosts) { post in
+                PostRowView(
+                    post: post,
+                    style: .compact,
+                    viewerHasLiked: viewerLikedPostIds.contains(post.id),
+                    isOwnPost: post.authorId == viewerId,
+                    onTap: { threadDestination = post },
+                    onLike: {},
+                    onReply: {},
+                    onDelete: {},
+                    onReport: { postReportTarget = post },
+                    onBlock: { postBlockTarget = post }
+                )
+                Divider()
+                    .padding(.leading, 16)
+                    .background(Color.cucuInkRule)
+            }
+
+            Button {
+                allPostsDestination = AllPostsDestination(
+                    authorId: profile.userId,
+                    username: profile.username
+                )
+            } label: {
+                HStack {
+                    Text("View all")
+                        .font(.callout.weight(.semibold))
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                }
+                .foregroundStyle(Color.cucuInk)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .background(Color.cucuPaper)
+    }
+
     private func pageCountOverlay(current: Int, total: Int) -> some View {
         Text("Page \(min(current + 1, total)) of \(total)")
             .font(.caption.weight(.semibold))
@@ -534,8 +672,14 @@ struct PublishedProfileView: View {
             let profile = try await PublishedProfileService().fetch(username: username)
             loadedPageCount = 1
             visiblePageIndex = 0
+            // Reset the posts section so re-fetching for a different
+            // username doesn't briefly show the previous owner's posts
+            // under the new canvas.
+            userPosts = []
+            viewerLikedPostIds = []
             state = .loaded(profile)
             await loadVoteState(profileId: profile.id)
+            await loadUserPosts(authorId: profile.userId)
         } catch let err as PublishedProfileError {
             switch err {
             case .notFound: state = .notFound
@@ -552,6 +696,50 @@ struct PublishedProfileView: View {
             return "\(count / 1_000)k"
         }
         return "\(count)"
+    }
+
+    /// Block + scrub the loaded Posts section in place. The
+    /// owner's canvas stays untouched (the visitor came here to
+    /// see *that*) — only the per-author posts list is filtered.
+    /// Service failure surfaces as a toast; the section
+    /// otherwise stays as-is.
+    private func blockAuthorOfPost(_ post: Post) async {
+        postBlockTarget = nil
+        do {
+            try await UserBlockService().block(userId: post.authorId)
+            let canonical = post.authorId.lowercased()
+            userPosts.removeAll { $0.authorId.lowercased() == canonical }
+            moderationToast = "Blocked @\(post.authorUsername)"
+        } catch let err as UserBlockError {
+            moderationToast = err.errorDescription ?? "Couldn't block right now."
+        } catch {
+            moderationToast = error.localizedDescription
+        }
+    }
+
+    /// Best-effort fetch of the profile owner's last 10 top-level
+    /// posts. Failures silently leave `userPosts` empty so the
+    /// section stays hidden — the visitor came to see the canvas,
+    /// and a network error banner under it would just be noise.
+    private func loadUserPosts(authorId: String) async {
+        do {
+            let posts = try await PostService().fetchUserPosts(
+                authorId: authorId,
+                before: nil,
+                limit: 10
+            )
+            userPosts = posts
+            // Hydrate like state for the visible posts. Tolerates
+            // signed-out viewers (returns an empty set), which is
+            // fine because the compact row doesn't render the heart
+            // anyway.
+            viewerLikedPostIds = await PostLikeService().fetchLikeState(
+                postIds: posts.map(\.id)
+            )
+        } catch {
+            userPosts = []
+            viewerLikedPostIds = []
+        }
     }
 
     private func loadVoteState(profileId: String) async {

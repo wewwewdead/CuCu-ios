@@ -28,6 +28,20 @@ final class ProfileDraft {
     var publishedUsername: String?
     /// Timestamp of the most recent successful publish.
     var lastPublishedAt: Date?
+    /// Canonical (lowercased) Supabase user id that owns the published row
+    /// referenced by `publishedProfileId`. Stamped on every successful
+    /// publish so a later sign-out + sign-up on the same device can detect
+    /// "this draft's published profile belongs to a different account" and
+    /// drop the stale pointer before the next publish — without it, the
+    /// upsert tries to UPDATE the old owner's row, fails RLS on the
+    /// `using (auth.uid() = user_id)` clause, and the upsert fall-through
+    /// surfaces as a confusing "row violates RLS policy (using expression)"
+    /// error to the new account.
+    ///
+    /// Pre-fix drafts have this nil; the next successful publish by the
+    /// original owner stamps it, after which the cross-account check
+    /// works for that draft going forward.
+    var publishedOwnerUserId: String?
 
     init(id: UUID = UUID(),
          title: String = "Untitled",
@@ -36,7 +50,8 @@ final class ProfileDraft {
          updatedAt: Date = .now,
          publishedProfileId: String? = nil,
          publishedUsername: String? = nil,
-         lastPublishedAt: Date? = nil) {
+         lastPublishedAt: Date? = nil,
+         publishedOwnerUserId: String? = nil) {
         self.id = id
         self.title = title
         self.designJSON = designJSON
@@ -45,5 +60,6 @@ final class ProfileDraft {
         self.publishedProfileId = publishedProfileId
         self.publishedUsername = publishedUsername
         self.lastPublishedAt = lastPublishedAt
+        self.publishedOwnerUserId = publishedOwnerUserId
     }
 }

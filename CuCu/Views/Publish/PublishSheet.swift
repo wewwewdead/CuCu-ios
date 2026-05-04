@@ -6,10 +6,15 @@ import UIKit
 /// One sheet that handles the full publish journey:
 ///
 ///   - if not signed in   → AuthGateView
-///   - if signed in, idle → username form
+///   - if signed in but unclaimed → UsernamePickerView (one-time, post-signup)
+///   - if signed in, idle → publish form (no username field)
 ///   - while publishing   → progress
 ///   - on success         → public path + Done / Copy Path
 ///   - on failure         → message + Retry
+///
+/// The username lives on `auth.currentUser.username` from sign-in onward
+/// (hydrated from the `usernames` table by `AuthViewModel`); the publish
+/// service reads it off the `AppUser`. This sheet no longer asks for it.
 ///
 /// Local draft state is updated only after a successful publish; the local
 /// design itself is never mutated, so the offline builder keeps using local
@@ -29,20 +34,22 @@ struct PublishSheet: View {
     var onViewPublished: ((String) -> Void)? = nil
 
     @State private var publishVM = PublishViewModel()
-    @State private var username: String = ""
     @State private var showShareSheet = false
     @State private var copiedLinkMessage: String?
 
     var body: some View {
         NavigationStack {
             Group {
-                if !auth.isSignedIn {
+                if !auth.isSignedIn || auth.requiresUsernameClaim {
+                    // Pre-publish: not signed in *or* signed in but no
+                    // username yet. AuthGateView routes between the
+                    // sign-in/up tabs and the picker on its own.
                     AuthGateView()
                 } else {
                     publishContent
                 }
             }
-            .navigationTitle("Publish")
+            .navigationTitle(navigationTitle)
             #if os(iOS) || os(visionOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -50,26 +57,9 @@ struct PublishSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
-                if auth.isSignedIn {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Menu {
-                            Button(role: .destructive) {
-                                Task { await auth.signOut() }
-                            } label: {
-                                Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
-                            }
-                            if let email = auth.currentUser?.email {
-                                Text(email)
-                            }
-                        } label: {
-                            Image(systemName: "person.crop.circle")
-                        }
-                    }
-                }
+                // Sign Out / account-glance lives in the editor's
+                // AccountSheet now; no per-sheet duplicate here.
             }
-        }
-        .onAppear {
-            username = draft.publishedUsername ?? username
         }
         .sheet(isPresented: $showShareSheet) {
             if case .success(let result) = publishVM.status {
@@ -93,17 +83,35 @@ struct PublishSheet: View {
 
     // MARK: - Content states
 
+    /// Title flips to "Pick username" while the picker is on screen so
+    /// the nav bar matches the form below it.
+    private var navigationTitle: String {
+        if auth.isSignedIn && auth.requiresUsernameClaim {
+            return "Pick username"
+        }
+        return "Publish"
+    }
+
     @ViewBuilder
     private var publishContent: some View {
-        switch publishVM.status {
-        case .idle:
-            publishForm
-        case .validating, .uploadingAssets, .savingProfile:
-            publishProgress
-        case .success(let result):
-            publishSuccess(result)
-        case .failure(let message):
-            publishFailure(message)
+        // Safety net: if we somehow landed inside `publishContent` with
+        // no claimed username (state corruption, race after sign-out),
+        // surface the picker instead of a form that can't submit.
+        // Normal flow keeps this branch unreachable thanks to the
+        // body-level gate on `requiresUsernameClaim`.
+        if (auth.currentUser?.username ?? "").isEmpty {
+            UsernamePickerView()
+        } else {
+            switch publishVM.status {
+            case .idle:
+                publishForm
+            case .validating, .uploadingAssets, .savingProfile:
+                publishProgress
+            case .success(let result):
+                publishSuccess(result)
+            case .failure(let message):
+                publishFailure(message)
+            }
         }
     }
 
@@ -114,22 +122,14 @@ struct PublishSheet: View {
                     Text("@")
                         .foregroundStyle(.secondary)
                         .font(.body.monospaced())
-                    TextField("yourname", text: $username)
+                    Text(auth.currentUser?.username ?? "")
                         .font(.body.monospaced())
-                        #if os(iOS) || os(visionOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                        .autocorrectionDisabled()
-                }
-                if let hint = validationHint {
-                    Text(hint)
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
+                    Spacer()
                 }
             } header: {
-                Text("Username")
+                Text("Publishing as")
             } footer: {
-                Text("Lowercase letters, numbers, and underscores. 3–30 characters.")
+                Text("Your username is set for life. The published page lives at \(ProfileShareLink.linkString(username: auth.currentUser?.username ?? "")).")
             }
 
             Section {
@@ -139,8 +139,7 @@ struct PublishSheet: View {
                         await publishVM.publish(
                             user: user,
                             draft: draft,
-                            document: document,
-                            username: username
+                            document: document
                         )
                         if case .success(let result) = publishVM.status {
                             applySuccessToDraft(result)
@@ -153,7 +152,7 @@ struct PublishSheet: View {
                         Spacer()
                     }
                 }
-                .disabled(!canSubmit)
+                .disabled(publishVM.isWorking)
             }
         }
     }
@@ -282,19 +281,6 @@ struct PublishSheet: View {
 
     // MARK: - Helpers
 
-    private var canSubmit: Bool {
-        guard !username.isEmpty, validationHint == nil else { return false }
-        return !publishVM.isWorking
-    }
-
-    private var validationHint: String? {
-        guard !username.isEmpty else { return nil }
-        switch UsernameValidator.validate(username) {
-        case .success: return nil
-        case .failure(let err): return err.errorDescription
-        }
-    }
-
     private var progressLabel: String {
         switch publishVM.status {
         case .validating: return "Validating…"
@@ -308,6 +294,10 @@ struct PublishSheet: View {
         draft.publishedProfileId = result.profileId
         draft.publishedUsername = result.username
         draft.lastPublishedAt = .now
+        // Stamp the canonical (lowercased) owner id so a later
+        // sign-out + sign-up on this device drops the stale pointer
+        // instead of trying to upsert into someone else's row.
+        draft.publishedOwnerUserId = auth.currentUser?.id.lowercased()
     }
 
     private func copyToClipboard(_ text: String) {

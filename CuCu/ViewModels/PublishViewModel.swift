@@ -37,24 +37,41 @@ final class PublishViewModel {
     /// onto the local ProfileDraft on success.
     ///
     /// The flow operates on the v2 `ProfileDocument` directly — the local
-    /// document is never mutated, only walked for asset paths. Username
-    /// is the only user-facing identifier — display name and bio fields
-    /// were removed; the canvas itself carries any "About" text the
-    /// author wants on the public page.
+    /// document is never mutated, only walked for asset paths. The
+    /// authenticated user already carries their claimed `username`
+    /// (hydrated by `AuthViewModel` after sign-in), so no username
+    /// argument is plumbed through here — the publish service pulls
+    /// it directly off `user`.
     func publish(
         user: AppUser,
         draft: ProfileDraft,
-        document: ProfileDocument,
-        username: String
+        document: ProfileDocument
     ) async {
         status = .validating
 
-        switch UsernameValidator.validate(username) {
-        case .failure(let err):
+        guard let username = user.username, !username.isEmpty else {
+            status = .failure("Pick a username before publishing.")
+            return
+        }
+        if case .failure(let err) = UsernameValidator.validate(username) {
             status = .failure(err.errorDescription ?? "Username is invalid.")
             return
-        case .success:
-            break
+        }
+
+        // Cross-account guard: if this draft was last published by a
+        // *different* Supabase user (sign-out → sign-up on the same
+        // device), drop the stale `publishedProfileId` so the upsert
+        // becomes a fresh INSERT for the current user. Without this
+        // we'd hand the service the previous owner's profile id and
+        // Postgres would reject the upsert on the profiles UPDATE
+        // policy's `using (auth.uid() = user_id)` clause — surfacing
+        // as the cryptic "(using expression)" RLS failure.
+        let canonicalUserId = user.id.lowercased()
+        if let owner = draft.publishedOwnerUserId, owner != canonicalUserId {
+            draft.publishedProfileId = nil
+            draft.publishedUsername = nil
+            draft.lastPublishedAt = nil
+            draft.publishedOwnerUserId = nil
         }
 
         // Service drives explicit phase transitions through `onPhaseChange`,
@@ -66,7 +83,6 @@ final class PublishViewModel {
             let result = try await service.publish(
                 existingProfileId: draft.publishedProfileId,
                 document: document,
-                username: username,
                 onPhaseChange: { [weak self] phase in
                     guard let self else { return }
                     switch phase {

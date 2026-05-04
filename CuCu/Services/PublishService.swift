@@ -113,14 +113,18 @@ nonisolated struct PublishService {
     func publish(
         existingProfileId: String?,
         document: ProfileDocument,
-        username rawUsername: String,
         onPhaseChange: (@MainActor (Phase) -> Void)? = nil
     ) async throws -> PublishedProfileResult {
-        // 1. Validate
+        // 1. Pull the username from the authenticated user. The picker
+        //    flow guarantees this is set before we ever reach Publish;
+        //    a nil here means the caller bypassed `requiresUsernameClaim`
+        //    routing and should send the user back through the picker.
         let username: String
-        switch UsernameValidator.validate(rawUsername) {
+        switch UsernameValidator.validate(user.username ?? "") {
         case .success(let v): username = v
-        case .failure(let e): throw e
+        case .failure: throw PublishError.usernameInvalid(
+            reason: "Pick a username before publishing."
+        )
         }
 
         #if canImport(Supabase)

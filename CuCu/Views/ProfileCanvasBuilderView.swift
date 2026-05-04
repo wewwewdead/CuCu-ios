@@ -105,6 +105,14 @@ struct ProfileCanvasBuilderView: View {
     @State private var showUnpublishConfirmation = false
     @State private var isUnpublishing = false
     @State private var unpublishErrorMessage: String?
+
+    /// Drives the editor's Account sheet (top-left toolbar). Local
+    /// `@State` rather than living in `CanvasSheetCoordinator` because
+    /// it has no chained presentation hand-offs and isn't tied to the
+    /// document — keeping it simple matches the user-facing model:
+    /// "tap the person icon, manage your session, dismiss."
+    @State private var showAccountSheet: Bool = false
+
     /// One `DraftStore` for the lifetime of this view. Initialized in
     /// `.onAppear` once the model context is available — never per
     /// property access (the previous computed-getter pattern allocated
@@ -618,6 +626,11 @@ struct ProfileCanvasBuilderView: View {
                 }
             }
         ))
+        .sheet(isPresented: $showAccountSheet) {
+            AccountSheet()
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         .navigationDestination(item: $sheets.publishedViewerUsername) { username in
             PublishedProfileView(username: username)
         }
@@ -1063,6 +1076,18 @@ struct ProfileCanvasBuilderView: View {
             .disabled(legacyDraft)
         }
 
+        // Account: signed-in glance + sign in/out without entering
+        // the Publish flow. Filled glyph mirrors the auth state so
+        // the toolbar reads "you're signed in" at a distance.
+        ToolbarItem(placement: .topBarLeading) {
+            Button { showAccountSheet = true } label: {
+                Image(systemName: auth.isSignedIn
+                      ? "person.crop.circle.fill"
+                      : "person.crop.circle")
+            }
+            .accessibilityLabel(auth.isSignedIn ? "Account" : "Sign in")
+        }
+
         // Title moved out of the navigation bar onto the canvas
         // surface (see `canvasTitleOverlay`) so it sits as part of
         // the editing chrome instead of fighting for room with the
@@ -1412,6 +1437,7 @@ struct ProfileCanvasBuilderView: View {
             draft.publishedProfileId = nil
             draft.publishedUsername = nil
             draft.lastPublishedAt = nil
+            draft.publishedOwnerUserId = nil
         }
         draft.updatedAt = .now
 
@@ -1459,6 +1485,7 @@ struct ProfileCanvasBuilderView: View {
         draft.publishedProfileId = nil
         draft.publishedUsername = nil
         draft.lastPublishedAt = nil
+        draft.publishedOwnerUserId = nil
         draft.updatedAt = .now
         try? context.save()
 
