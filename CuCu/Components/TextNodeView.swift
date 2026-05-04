@@ -1,5 +1,20 @@
 import UIKit
 
+private struct TextRenderSignature: Equatable {
+    var text: String
+    var spans: [TextStyleSpan]?
+    var fontFamily: NodeFontFamily
+    var fontWeight: NodeFontWeight
+    var fontSize: Double
+    var textColorHex: String?
+    var textAlignment: NodeTextAlignment
+    var textUnderlined: Bool
+    var textItalic: Bool
+    var textStrikethrough: Bool
+    var letterSpacing: Double?
+    var lineSpacing: Double
+}
+
 /// Renders (and edits) a text node. Uses a `UITextView` so the same view
 /// can both display the formatted string and become the editing surface
 /// when the user taps the already-selected node — no swapping subviews,
@@ -82,6 +97,14 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
     /// or highlight is only ever applied through an explicit user span,
     /// never as a typing carry-over.
     private var baseTypingAttributes: [NSAttributedString.Key: Any] = [:]
+    private var lastTextRenderSignature: TextRenderSignature?
+
+    #if DEBUG
+    nonisolated(unsafe) static var attributedTextRebuildCount: Int = 0
+    static func resetAttributedTextRebuildCount() {
+        attributedTextRebuildCount = 0
+    }
+    #endif
 
     /// Padding constraints stored as members so `apply(node:)` can
     /// drive their constants from `node.style.padding`. Initial
@@ -118,74 +141,7 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
     override func apply(node: CanvasNode) {
         super.apply(node: node)
 
-        // 1. Resolve every styling input up front so the attributed
-        //    string + the typingAttributes path agree on the same
-        //    values. Resolution lives in `NodeFontFamilyResolver` so
-        //    every text site (canvas + viewer + previews) speaks the
-        //    same family→UIFont logic.
-        let size = CGFloat(node.style.fontSize ?? 17)
-        let weight = (node.style.fontWeight ?? .regular).uiFontWeight
-        let family = node.style.fontFamily ?? .system
-        let baseFont = family.uiFont(size: size, weight: weight)
-        // Italic toggle: prefer the family's real italic face (looks
-        // hand-drawn, kerning baked in). Fall back to obliqueness so
-        // pixel-retro / bungee-style families that ship without an
-        // italic face still slant — the inspector toggle never reads
-        // as a no-op.
-        let italicEnabled = node.style.textItalic == true
-        let font: UIFont
-        var fallbackObliqueness: CGFloat = 0
-        if italicEnabled,
-           let italicDescriptor = baseFont.fontDescriptor.withSymbolicTraits(
-               baseFont.fontDescriptor.symbolicTraits.union(.traitItalic)
-           ) {
-            font = UIFont(descriptor: italicDescriptor, size: size)
-        } else {
-            font = baseFont
-            if italicEnabled { fallbackObliqueness = 0.18 }
-        }
-        let textColor: UIColor = node.style.textColorHex.map(uiColor(hex:)) ?? .label
-
-        let alignment: NSTextAlignment
-        switch node.style.textAlignment ?? .leading {
-        case .leading:  alignment = .left
-        case .center:   alignment = .center
-        case .trailing: alignment = .right
-        }
-
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = alignment
-        paragraph.lineSpacing = max(CGFloat(node.style.lineSpacing ?? 0), 0)
-
-        var attrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: textColor,
-            .paragraphStyle: paragraph,
-        ]
-        if node.style.textUnderlined == true {
-            attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
-        }
-        if node.style.textStrikethrough == true {
-            attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
-            attrs[.strikethroughColor] = textColor
-        }
-        if let kern = node.style.letterSpacing, kern != 0 {
-            attrs[.kern] = CGFloat(kern)
-        }
-        if fallbackObliqueness != 0 {
-            attrs[.obliqueness] = fallbackObliqueness
-        }
-
-        // Keep these UIKit properties in sync for empty-text editing
-        // and system insertion behavior, but set them before assigning
-        // `attributedText`. Setting `textColor` / `font` afterwards can
-        // cause UITextView to restyle the full string and visually wipe
-        // range-level foreground-color spans.
-        textView.font = font
-        textView.textColor = textColor
-        textView.textAlignment = alignment
-
-        // 2. Apply the attributed text. Source-of-truth for the string
+        // 1. Apply the attributed text. Source-of-truth for the string
         //    differs by edit state:
         //    - Not editing: pull `node.content.text` (last committed).
         //    - Editing: pull `textView.text` (in-flight keystrokes), so
@@ -204,23 +160,13 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
             incoming = node.content.text ?? ""
             savedSelection = nil
         }
-        let attributed = NSMutableAttributedString(string: incoming, attributes: attrs)
-        applyInlineSpans(
-            node.content.textStyleSpans,
-            family: family,
-            size: size,
-            baseWeight: node.style.fontWeight ?? .regular,
-            baseItalic: italicEnabled,
-            to: attributed
-        )
-        textView.attributedText = attributed
-        if let savedSelection {
-            textView.selectedRange = savedSelection
+        let signature = textRenderSignature(node: node, text: incoming)
+        if signature != lastTextRenderSignature {
+            rebuildAttributedText(node: node, text: incoming, savedSelection: savedSelection)
+            lastTextRenderSignature = signature
         }
-        baseTypingAttributes = attrs
-        textView.typingAttributes = attrs
 
-        // 3. Apply padding. `nil` falls back to the historical
+        // 2. Apply padding. `nil` falls back to the historical
         //    4pt-horizontal / 2pt-vertical split so drafts that
         //    predate the inspector slider keep their look. A set
         //    value (including 0) drives uniform padding on all four
@@ -238,7 +184,7 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
             bottomPadding.constant = -2
         }
 
-        // 4. Backdrop blur. Quadratic alpha ramp matches the
+        // 3. Backdrop blur. Quadratic alpha ramp matches the
         //    container path so the slider has the same gentle low-end
         //    feel — slider 0.1 → alpha 0.01, 0.5 → 0.25, 1.0 → 1.0.
         //    When blur > 0 we clear the node's own background fill
@@ -399,6 +345,97 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
         return separators.contains(scalar)
     }
 
+    private func textRenderSignature(node: CanvasNode, text: String) -> TextRenderSignature {
+        TextRenderSignature(
+            text: text,
+            spans: node.content.textStyleSpans,
+            fontFamily: node.style.fontFamily ?? .system,
+            fontWeight: node.style.fontWeight ?? .regular,
+            fontSize: node.style.fontSize ?? 17,
+            textColorHex: node.style.textColorHex,
+            textAlignment: node.style.textAlignment ?? .leading,
+            textUnderlined: node.style.textUnderlined == true,
+            textItalic: node.style.textItalic == true,
+            textStrikethrough: node.style.textStrikethrough == true,
+            letterSpacing: node.style.letterSpacing,
+            lineSpacing: max(node.style.lineSpacing ?? 0, 0)
+        )
+    }
+
+    private func rebuildAttributedText(node: CanvasNode,
+                                       text incoming: String,
+                                       savedSelection: NSRange?) {
+        let size = CGFloat(node.style.fontSize ?? 17)
+        let baseWeight = node.style.fontWeight ?? .regular
+        let family = node.style.fontFamily ?? .system
+        let italicEnabled = node.style.textItalic == true
+        let fontResolution = family.cachedUIFont(
+            size: size,
+            weight: baseWeight.uiFontWeight,
+            italic: italicEnabled
+        )
+        let font = fontResolution.font
+        let textColor: UIColor = node.style.textColorHex.map(uiColor(hex:)) ?? .label
+
+        let alignment: NSTextAlignment
+        switch node.style.textAlignment ?? .leading {
+        case .leading:  alignment = .left
+        case .center:   alignment = .center
+        case .trailing: alignment = .right
+        }
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = alignment
+        paragraph.lineSpacing = max(CGFloat(node.style.lineSpacing ?? 0), 0)
+
+        var attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: textColor,
+            .paragraphStyle: paragraph,
+        ]
+        if node.style.textUnderlined == true {
+            attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        }
+        if node.style.textStrikethrough == true {
+            attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            attrs[.strikethroughColor] = textColor
+        }
+        if let kern = node.style.letterSpacing, kern != 0 {
+            attrs[.kern] = CGFloat(kern)
+        }
+        if fontResolution.obliqueness != 0 {
+            attrs[.obliqueness] = fontResolution.obliqueness
+        }
+
+        // Keep these UIKit properties in sync for empty-text editing
+        // and system insertion behavior, but set them before assigning
+        // `attributedText`. Setting `textColor` / `font` afterwards can
+        // cause UITextView to restyle the full string and visually wipe
+        // range-level foreground-color spans.
+        textView.font = font
+        textView.textColor = textColor
+        textView.textAlignment = alignment
+
+        let attributed = NSMutableAttributedString(string: incoming, attributes: attrs)
+        applyInlineSpans(
+            node.content.textStyleSpans,
+            family: family,
+            size: size,
+            baseWeight: baseWeight,
+            baseItalic: italicEnabled,
+            to: attributed
+        )
+        textView.attributedText = attributed
+        if let savedSelection {
+            textView.selectedRange = savedSelection
+        }
+        baseTypingAttributes = attrs
+        textView.typingAttributes = attrs
+        #if DEBUG
+        Self.attributedTextRebuildCount &+= 1
+        #endif
+    }
+
     private func applyInlineSpans(_ spans: [TextStyleSpan]?,
                                   family: NodeFontFamily,
                                   size: CGFloat,
@@ -451,20 +488,13 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
                                 size: CGFloat,
                                 weight: NodeFontWeight,
                                 italic: Bool) -> [NSAttributedString.Key: Any] {
-        let baseFont = family.uiFont(size: size, weight: weight.uiFontWeight)
-        guard italic else {
-            return [.font: baseFont]
-        }
-
-        if let italicDescriptor = baseFont.fontDescriptor.withSymbolicTraits(
-            baseFont.fontDescriptor.symbolicTraits.union(.traitItalic)
-        ) {
-            return [.font: UIFont(descriptor: italicDescriptor, size: size)]
-        }
-        return [
-            .font: baseFont,
-            .obliqueness: CGFloat(0.18),
-        ]
+        let resolved = family.cachedUIFont(
+            size: size,
+            weight: weight.uiFontWeight,
+            italic: italic
+        )
+        guard resolved.obliqueness != 0 else { return [.font: resolved.font] }
+        return [.font: resolved.font, .obliqueness: resolved.obliqueness]
     }
 
     private func clampedRange(for span: TextStyleSpan, textLength: Int) -> NSRange? {

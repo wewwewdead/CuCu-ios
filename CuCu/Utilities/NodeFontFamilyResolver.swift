@@ -3,6 +3,24 @@ import SwiftUI
 import UIKit
 #endif
 
+#if canImport(UIKit)
+private final class NodeUIFontResolution: NSObject {
+    let font: UIFont
+    let obliqueness: CGFloat
+
+    init(font: UIFont, obliqueness: CGFloat) {
+        self.font = font
+        self.obliqueness = obliqueness
+    }
+}
+
+private let nodeUIFontCache: NSCache<NSString, NodeUIFontResolution> = {
+    let cache = NSCache<NSString, NodeUIFontResolution>()
+    cache.countLimit = 192
+    return cache
+}()
+#endif
+
 /// Bridges `NodeFontFamily` (a pure-data enum that lives in the model
 /// layer) to the rendering primitives both UIKit (`UIFont`) and
 /// SwiftUI (`Font`) need. Splitting this off keeps `NodeStyle.swift`
@@ -150,6 +168,36 @@ extension NodeFontFamily {
         default:
             return baseFont
         }
+    }
+
+    /// Cached resolver for hot UIKit text rendering. The result includes
+    /// obliqueness because some bundled faces do not have a real italic cut.
+    func cachedUIFont(size: CGFloat,
+                      weight: UIFont.Weight = .regular,
+                      italic: Bool = false) -> (font: UIFont, obliqueness: CGFloat) {
+        let key = "\(rawValue)|\(size)|\(weight.rawValue)|\(italic)" as NSString
+        if let cached = nodeUIFontCache.object(forKey: key) {
+            return (cached.font, cached.obliqueness)
+        }
+
+        let baseFont = uiFont(size: size, weight: weight)
+        let resolvedFont: UIFont
+        var obliqueness: CGFloat = 0
+        if italic,
+           let italicDescriptor = baseFont.fontDescriptor.withSymbolicTraits(
+               baseFont.fontDescriptor.symbolicTraits.union(.traitItalic)
+           ) {
+            resolvedFont = UIFont(descriptor: italicDescriptor, size: size)
+        } else {
+            resolvedFont = baseFont
+            if italic { obliqueness = 0.18 }
+        }
+
+        nodeUIFontCache.setObject(
+            NodeUIFontResolution(font: resolvedFont, obliqueness: obliqueness),
+            forKey: key
+        )
+        return (resolvedFont, obliqueness)
     }
     #endif
 }

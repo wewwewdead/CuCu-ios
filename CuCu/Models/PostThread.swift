@@ -17,7 +17,13 @@ import Foundation
 /// reason about which ancestor's subtree is closing where —
 /// that's all baked in here.
 nonisolated struct PostThread: Equatable, Sendable {
-    let root: Post
+    let rootId: String
+
+    /// Canonical root row. Stored only in `posts` so optimistic
+    /// counter/like mutations cannot leave the rendered root stale.
+    var root: Post {
+        posts[rootId]!
+    }
 
     /// Every post we've fetched so far, keyed by id. Mutated in
     /// place when an optimistic like / reply / delete lands so
@@ -97,11 +103,12 @@ nonisolated struct PostThread: Equatable, Sendable {
     /// of `replyCount` — the affordance entries surface "View N
     /// replies" alongside them.
     func flattenForRender() -> [RenderItem] {
+        guard let root = posts[rootId] else { return [] }
         var items: [RenderItem] = []
-        let rootIsExpanded = expandedIds.contains(root.id)
+        let rootIsExpanded = expandedIds.contains(rootId)
         items.append(.post(root, depth: 0, isExpanded: rootIsExpanded))
         if rootIsExpanded {
-            appendChildren(of: root.id, into: &items)
+            appendChildren(of: rootId, into: &items)
         }
         return items
     }

@@ -45,6 +45,7 @@ final class PostFeedViewModel {
 
     private let service = PostService()
     private let likeService = PostLikeService()
+    private var likeOperationTokens = OptimisticMutationTokens()
 
     init(feedSource: FeedSource = .global) {
         self.feedSource = feedSource
@@ -64,6 +65,7 @@ final class PostFeedViewModel {
         do {
             let next = try await fetchPage(before: nil)
             posts = next
+            likeOperationTokens.invalidateAll()
             canLoadMore = next.count >= PostService.feedPageSize
             status = next.isEmpty ? .empty : .loaded
             await hydrateLikes(for: next.map(\.id))
@@ -184,6 +186,7 @@ final class PostFeedViewModel {
         guard let idx = posts.firstIndex(where: { $0.id == postId }) else { return }
         let wasLiked = viewerLikedIds.contains(postId)
         let snapshot = posts[idx]
+        let token = likeOperationTokens.begin(for: postId)
 
         // Apply the optimistic flip.
         if wasLiked {
@@ -194,7 +197,7 @@ final class PostFeedViewModel {
             posts[idx].likeCount += 1
         }
 
-        Task { [weak self, wasLiked, snapshot] in
+        Task { [weak self, wasLiked, snapshot, token] in
             guard let self else { return }
             do {
                 if wasLiked {
@@ -202,7 +205,9 @@ final class PostFeedViewModel {
                 } else {
                     try await self.likeService.like(postId: postId)
                 }
+                self.likeOperationTokens.finish(token, for: postId)
             } catch {
+                guard self.likeOperationTokens.finish(token, for: postId) else { return }
                 // Roll back. Re-find the row (its index may have
                 // shifted if the user paginated meanwhile) and
                 // restore the snapshot's count + liked-set entry.

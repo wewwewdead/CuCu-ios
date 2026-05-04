@@ -32,6 +32,8 @@ final class PostThreadViewModel {
 
     private let service = PostService()
     private let likeService = PostLikeService()
+    private var likeOperationTokens = OptimisticMutationTokens()
+    private var deleteOperationTokens = OptimisticMutationTokens()
 
     // MARK: - Initial load
 
@@ -72,7 +74,7 @@ final class PostThreadViewModel {
             }
 
             thread = PostThread(
-                root: root,
+                rootId: root.id,
                 posts: posts,
                 childrenByParent: children,
                 expandedIds: [root.id],
@@ -80,6 +82,8 @@ final class PostThreadViewModel {
                 hasMoreByParent: hasMore,
                 loadingByParent: []
             )
+            likeOperationTokens.invalidateAll()
+            deleteOperationTokens.invalidateAll()
             status = .loaded
 
             await hydrateLikes(for: Array(posts.keys))
@@ -211,6 +215,7 @@ final class PostThreadViewModel {
         guard let post = current.posts[postId] else { return }
         let wasLiked = viewerLikedIds.contains(postId)
         let snapshot = current
+        let token = likeOperationTokens.begin(for: postId)
 
         var updated = post
         if wasLiked {
@@ -223,7 +228,7 @@ final class PostThreadViewModel {
         current.posts[postId] = updated
         thread = current
 
-        Task { [weak self, wasLiked, snapshot] in
+        Task { [weak self, wasLiked, snapshot, token] in
             guard let self else { return }
             do {
                 if wasLiked {
@@ -231,7 +236,9 @@ final class PostThreadViewModel {
                 } else {
                     try await self.likeService.like(postId: postId)
                 }
+                self.likeOperationTokens.finish(token, for: postId)
             } catch {
+                guard self.likeOperationTokens.finish(token, for: postId) else { return }
                 self.thread = snapshot
                 if wasLiked { self.viewerLikedIds.insert(postId) }
                 else { self.viewerLikedIds.remove(postId) }
@@ -254,6 +261,7 @@ final class PostThreadViewModel {
         guard let target = current.posts[postId] else { return }
         guard let parentId = target.parentId else { return }
         let snapshot = current
+        let token = deleteOperationTokens.begin(for: postId)
 
         // Detach from parent's children list.
         if var siblings = current.childrenByParent[parentId] {
@@ -302,14 +310,17 @@ final class PostThreadViewModel {
 
         thread = current
 
-        Task { [weak self, snapshot] in
+        Task { [weak self, snapshot, token] in
             guard let self else { return }
             do {
                 try await self.service.softDelete(postId: postId)
+                self.deleteOperationTokens.finish(token, for: postId)
             } catch let err as PostError {
+                guard self.deleteOperationTokens.finish(token, for: postId) else { return }
                 self.thread = snapshot
                 self.lastDeleteError = err.errorDescription
             } catch {
+                guard self.deleteOperationTokens.finish(token, for: postId) else { return }
                 self.thread = snapshot
                 self.lastDeleteError = error.localizedDescription
             }

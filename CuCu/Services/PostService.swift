@@ -474,7 +474,7 @@ nonisolated struct PostService {
             }
 
             return PostThread(
-                root: root,
+                rootId: root.id,
                 posts: posts,
                 childrenByParent: childrenByParent,
                 expandedIds: expandedIds,

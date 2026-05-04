@@ -88,13 +88,25 @@ class NodeRenderView: UIView {
 
 // MARK: - Color parsing
 
+private let uiColorHexCache: NSCache<NSString, UIColor> = {
+    let cache = NSCache<NSString, UIColor>()
+    cache.countLimit = 256
+    return cache
+}()
+
 /// Mirrors the parsing rules in `Color(hex:)` (see `Utilities/ColorHex.swift`)
 /// so we render canvas nodes through UIColor without bridging through SwiftUI.
 func uiColor(hex: String) -> UIColor {
+    if let cached = uiColorHexCache.object(forKey: hex as NSString) {
+        return cached
+    }
     let trimmed = hex.trimmingCharacters(in: .whitespacesAndNewlines)
     let cleaned = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
     var value: UInt64 = 0
-    guard Scanner(string: cleaned).scanHexInt64(&value) else { return .black }
+    guard Scanner(string: cleaned).scanHexInt64(&value) else {
+        uiColorHexCache.setObject(.black, forKey: hex as NSString)
+        return .black
+    }
     let r, g, b, a: CGFloat
     switch cleaned.count {
     case 8:
@@ -113,7 +125,10 @@ func uiColor(hex: String) -> UIColor {
         b = CGFloat(value & 0xF) * 17.0 / 255
         a = 1.0
     default:
+        uiColorHexCache.setObject(.black, forKey: hex as NSString)
         return .black
     }
-    return UIColor(red: r, green: g, blue: b, alpha: a)
+    let color = UIColor(red: r, green: g, blue: b, alpha: a)
+    uiColorHexCache.setObject(color, forKey: hex as NSString)
+    return color
 }

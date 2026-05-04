@@ -824,8 +824,8 @@ final class CanvasEditorView: UIView {
             // through `ensureSelectedNodeVisible` so the node is
             // walked above the panel either way.
             self.ensureSelectedNodeVisible(animated: true)
-            DispatchQueue.main.async {
-                self.ensureSelectedNodeVisible(animated: true)
+            DispatchQueue.main.async { [weak self] in
+                self?.ensureSelectedNodeVisible(animated: true)
             }
         }
 

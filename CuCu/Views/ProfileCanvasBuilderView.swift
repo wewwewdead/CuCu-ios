@@ -1057,7 +1057,7 @@ struct ProfileCanvasBuilderView: View {
         var normalized = doc
         StructuredProfileLayout.normalize(&normalized)
         document = normalized
-        resolvedStore.updateDocument(draft, document: normalized)
+        resolvedStore.updateDocumentDebounced(draft, document: normalized)
     }
 
     @ToolbarContentBuilder
