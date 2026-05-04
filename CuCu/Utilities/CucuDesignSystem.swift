@@ -410,7 +410,7 @@ struct CucuPressableButtonStyle: ButtonStyle {
 // Using a free function keeps the design system independent of the domain
 // types — callers pass the type directly.
 
-enum CucuNodeKind { case container, text, image, icon, divider, link, gallery, carousel }
+enum CucuNodeKind { case container, text, image, icon, divider, link, gallery, carousel, note }
 
 extension Color {
     static func cucuBadgeTint(for kind: CucuNodeKind) -> Color {
@@ -427,6 +427,9 @@ extension Color {
         // of "multi-content" surface (paginated vs. tiled), and
         // rose is unused by the other type badges.
         case .carousel:  return .cucuRoseStroke
+        // Notes share the cobalt family with containers because they
+        // *are* a container variant under the hood (chrome + text).
+        case .note:      return .cucuCobalt
         }
     }
 }

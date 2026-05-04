@@ -263,6 +263,13 @@ struct PropertyInspectorView: View {
                 case .link:      linkCards(node: node)
                 case .gallery:   galleryCards(node: node)
                 case .carousel:  carouselCards(node: node)
+                // Notes share the chrome (fill / border / radius) of a
+                // container, so the full property inspector reuses
+                // `containerCards`. The note-specific text fields
+                // (title / timestamp / body) are surfaced in the bottom
+                // panel's content tab — see `noteTab` in
+                // `NodeEditingPanelView`.
+                case .note:      containerCards(node: node)
                 }
             }
             .padding(.horizontal, 18)
@@ -1415,6 +1422,7 @@ struct PropertyInspectorView: View {
         case .link:      return .link
         case .gallery:   return .gallery
         case .carousel:  return .carousel
+        case .note:      return .note
         }
     }
 
@@ -1428,6 +1436,7 @@ struct PropertyInspectorView: View {
         case .link:      return "link"
         case .gallery:   return "rectangle.grid.2x2"
         case .carousel:  return "rectangle.stack"
+        case .note:      return "note.text"
         }
     }
 
@@ -1441,6 +1450,7 @@ struct PropertyInspectorView: View {
         case .link:      return "Link"
         case .gallery:   return "Gallery"
         case .carousel:  return "Carousel"
+        case .note:      return "Note"
         }
     }
 

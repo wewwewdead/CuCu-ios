@@ -43,11 +43,16 @@ struct PublishedProfileView: View {
     /// tap on a tile inside the grid opens the lightbox without
     /// dismissing the grid first.
     @State private var fullGalleryState: FullGalleryState?
+    /// When non-nil, the note expand modal is presented with the
+    /// extracted title / timestamp / body of the tapped note. Mirrors
+    /// `journalContent` for journal cards.
+    @State private var noteContent: NoteContent?
     @State private var loadedPageCount: Int = 1
     @State private var visiblePageIndex: Int = 0
     @State private var voteState: ProfileVoteState?
     @State private var isVoting = false
     @State private var voteMessage: String?
+    @State private var showShareSheet = false
 
     private let nextPageLoadThreshold: CGFloat = 520
 
@@ -167,13 +172,27 @@ struct PublishedProfileView: View {
                 ))
                 .zIndex(3)
             }
+
+            if let note = noteContent {
+                NoteModalView(
+                    content: note,
+                    onClose: { closeNote() }
+                )
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .scale(scale: 0.88)),
+                    removal: .opacity.combined(with: .scale(scale: 0.94))
+                ))
+                .zIndex(3)
+            }
         }
         .animation(.easeOut(duration: 0.22), value: lightboxState)
         .animation(.spring(response: 0.46, dampingFraction: 0.78), value: journalContent)
         .animation(.spring(response: 0.46, dampingFraction: 0.78), value: fullGalleryState)
+        .animation(.spring(response: 0.46, dampingFraction: 0.78), value: noteContent)
         .navigationTitle("@\(username)")
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                shareToolbarButton
                 voteToolbarButton
             }
         }
@@ -206,6 +225,13 @@ struct PublishedProfileView: View {
         } message: {
             Text(voteMessage ?? "")
         }
+        .sheet(isPresented: $showShareSheet) {
+            if case .loaded(let profile) = state {
+                ProfileShareSheet(username: profile.username, document: profile.document)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            }
+        }
     }
 
     private func closeLightbox() {
@@ -225,6 +251,12 @@ struct PublishedProfileView: View {
     private func closeFullGallery() {
         withAnimation(.easeOut(duration: 0.26)) {
             fullGalleryState = nil
+        }
+    }
+
+    private func closeNote() {
+        withAnimation(.easeOut(duration: 0.26)) {
+            noteContent = nil
         }
     }
 
@@ -284,6 +316,18 @@ struct PublishedProfileView: View {
         // the publish flow. Identity is whatever the author drew on
         // the canvas itself, so it gets the full screen.
         incrementalScrollCanvas(profile: profile)
+    }
+
+    @ViewBuilder
+    private var shareToolbarButton: some View {
+        if case .loaded = state {
+            Button {
+                showShareSheet = true
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .accessibilityLabel("Share profile")
+        }
     }
 
     @ViewBuilder
@@ -412,6 +456,10 @@ struct PublishedProfileView: View {
             },
             onOpenFullGallery: { urls in
                 fullGalleryState = FullGalleryState(id: UUID(), urls: urls)
+            },
+            onOpenNote: { nodeID in
+                guard let extracted = profile.document.noteContent(for: nodeID) else { return }
+                noteContent = extracted
             },
             viewerPageIndex: pageIndex
         )

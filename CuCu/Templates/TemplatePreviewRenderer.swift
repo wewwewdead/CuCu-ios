@@ -82,6 +82,9 @@ struct TplNodeView: View {
         case .gallery:   tplGallery
         case .container: tplContainer
         case .carousel:  tplContainer
+        // Notes preview as a generic chrome card — no need to recreate
+        // the title/timestamp/body internals at thumbnail scale.
+        case .note:      tplContainer
         }
     }
 

@@ -79,6 +79,8 @@ struct CanvasMutator {
                 node = .defaultLink()
             case .carousel:
                 node = .defaultCarousel()
+            case .note:
+                node = .defaultNote()
             case .image, .gallery:
                 return
             }
@@ -117,6 +119,8 @@ struct CanvasMutator {
             case .gallery:   return
             case .carousel:
                 node = .defaultCarousel()
+            case .note:
+                node = .defaultNote()
             }
         }
         applyAdaptivePlacement(to: &node, parentID: parentID, pageIndex: pageIndex)

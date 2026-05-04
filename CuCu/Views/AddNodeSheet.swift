@@ -314,6 +314,14 @@ struct AddNodeSheet: View {
                 rowLabel(symbol: "rectangle.stack", title: "Carousel",
                         subtitle: "A horizontal strip for text, images, and other items.")
             }
+
+            Button {
+                onPickType(.note)
+                dismiss()
+            } label: {
+                rowLabel(symbol: "note.text", title: "Note",
+                         subtitle: "Memo card — title, time, and a body of text.")
+            }
         } header: {
             CucuSectionLabel(text: "Social / Profile")
         }

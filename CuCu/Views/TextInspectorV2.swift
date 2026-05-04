@@ -20,6 +20,9 @@ struct TextInspectorV2: View {
     @State private var pickerTarget: PickerTarget = .textColor
     @State private var sizeOpen: Bool = false
     @State private var paragraphPreset: ParagraphPreset = .body
+    /// Drives the font-family picker sheet. Set to true by the
+    /// toolbar's font button.
+    @State private var fontPickerOpen: Bool = false
 
     var body: some View {
         ElementInspectorChrome(
@@ -82,6 +85,8 @@ struct TextInspectorV2: View {
             HStack(spacing: 4) {
                 paragraphPresetButton
                 vRule
+                fontFamilyButton
+                vRule
                 textColorButton
                 highlightButton
                 vRule
@@ -102,6 +107,43 @@ struct TextInspectorV2: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.cucuInk.opacity(0.08)).frame(height: 1)
         }
+        // Modal font grid. Selection writes through `writeFontFamily`
+        // which targets either the active text selection (per-span
+        // override) or the whole node (`style.fontFamily` + clear
+        // overlapping spans).
+        .sheet(isPresented: $fontPickerOpen) {
+            FontPickerSheet(
+                selection: fontPickerBinding,
+                onCommit: {}
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+    }
+
+    /// Toolbar tile that opens `FontPickerSheet`. Shows the currently-
+    /// effective family — inline override (if a selection lives inside
+    /// a styled span) wins over the node's `style.fontFamily`. The
+    /// glyph is rendered in the family's own face so the user can read
+    /// the current pick at a glance.
+    private var fontFamilyButton: some View {
+        let family = currentFontFamily
+        return Button {
+            fontPickerOpen = true
+        } label: {
+            HStack(spacing: 4) {
+                Text("Aa")
+                    .font(family.swiftUIFont(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk.opacity(0.55))
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Font family")
     }
 
     private var vRule: some View {
@@ -383,6 +425,15 @@ struct TextInspectorV2: View {
                 bgSwatchRow
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                fieldLabel("BORDER")
+                borderSwatchRow
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            fieldSlider(label: "BORDER WIDTH",
+                        valueText: String(format: "%.1fpt", currentNode?.style.borderWidth ?? 0),
+                        value: borderWidthBinding,
+                        range: 0...8, step: 0.5)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -411,6 +462,60 @@ struct TextInspectorV2: View {
     private static let bgSwatchHexes = [
         "transparent", "#FFE3EC", "#FFF1B8", "#DDF1D5", "#D9E5F5", "#3A1A1F"
     ]
+
+    private var borderSwatchRow: some View {
+        HStack(spacing: 6) {
+            ForEach(Self.borderSwatchHexes, id: \.self) { hex in
+                let isSelected = isBorderSelected(hex)
+                Button {
+                    mutate {
+                        if hex == "transparent" {
+                            $0.style.borderColorHex = nil
+                        } else {
+                            $0.style.borderColorHex = hex
+                        }
+                    }
+                } label: {
+                    swatchCircle(hex: hex, selected: isSelected)
+                }
+                .buttonStyle(.plain)
+            }
+            ColorPicker("", selection: borderColorHexBinding.asColor(), supportsOpacity: false)
+                .labelsHidden()
+                .frame(width: 26, height: 26)
+                .accessibilityLabel("Custom border color")
+        }
+    }
+
+    private var borderColorHexBinding: Binding<String> {
+        Binding(
+            get: { currentNode?.style.borderColorHex ?? "#1A140E" },
+            set: { newHex in
+                mutate { $0.style.borderColorHex = newHex }
+            }
+        )
+    }
+
+    private static let borderSwatchHexes = [
+        "transparent", "#1A140E", "#B22A4A", "#3A1A1F", "#FFFFFF", "#D9E5F5"
+    ]
+
+    private func isBorderSelected(_ hex: String) -> Bool {
+        let current = currentNode?.style.borderColorHex
+        if hex == "transparent" {
+            return current == nil
+        }
+        return (current ?? "") == hex
+    }
+
+    private var borderWidthBinding: Binding<Double> {
+        Binding(
+            get: { currentNode?.style.borderWidth ?? 0 },
+            set: { newValue in
+                mutate { $0.style.borderWidth = max(0, newValue) }
+            }
+        )
+    }
 
     private func swatchCircle(hex: String, selected: Bool) -> some View {
         ZStack {
@@ -584,6 +689,47 @@ struct TextInspectorV2: View {
             return inline
         }
         return node.style.textColorHex ?? "#1A140E"
+    }
+
+    /// Family that should drive the toolbar's Font preview glyph.
+    /// Mirrors the color resolver: inline span overlapping the active
+    /// selection wins, otherwise the node-level `style.fontFamily`,
+    /// otherwise `.system`.
+    private var currentFontFamily: NodeFontFamily {
+        guard let node = currentNode else { return .system }
+        if let range = activeSelectedTextRange,
+           let inline = inlineFontFamily(in: node, range: range) {
+            return inline
+        }
+        return node.style.fontFamily ?? .system
+    }
+
+    /// Binding the picker sheet writes through. Reading delegates to
+    /// `currentFontFamily`. Writing routes to `writeFontFamily(_:)`
+    /// which respects the selection-vs-node-wide rule.
+    private var fontPickerBinding: Binding<NodeFontFamily> {
+        Binding(
+            get: { currentFontFamily },
+            set: { writeFontFamily($0) }
+        )
+    }
+
+    /// Selection wins when the user has a non-empty highlight inside
+    /// the text view — that range gets a per-span `fontFamily`
+    /// override. With no selection (or a collapsed cursor) the change
+    /// hits the whole node via `style.fontFamily` and any leftover
+    /// per-span overrides are cleared so they can't shadow the new
+    /// node-wide choice.
+    private func writeFontFamily(_ family: NodeFontFamily) {
+        mutate { node in
+            if let range = activeSelectedTextRange {
+                applyFontFamily(family, range: range, to: &node)
+            } else {
+                node.style.fontFamily = family
+                let range = normalizedRange(selection: nil, text: node.content.text ?? "")
+                clearFontFamily(range: range, from: &node)
+            }
+        }
     }
 
     private var letterSpacingValueText: String {

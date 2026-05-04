@@ -187,6 +187,7 @@ extension ElementInspectorChrome {
         case .link:      return "LINK"
         case .gallery:   return "GALLERY"
         case .carousel:  return "CAROUSEL"
+        case .note:      return "NOTE"
         }
     }
 

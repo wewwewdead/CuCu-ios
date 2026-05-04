@@ -85,6 +85,19 @@ struct ProfileDocument: Codable, Hashable {
     var pages: [PageStyle]
     var nodes: [UUID: CanvasNode]
 
+    /// Denormalized hero avatar URL for the explore feed's banner
+    /// cards. Only ever populated during publish (after the avatar's
+    /// local path has been rewritten to a Supabase public URL by
+    /// `PublishedDocumentTransformer`); the in-app document leaves it
+    /// `nil`. Lives at the top of `design_json` so the explore feed
+    /// can extract it via `design_json->>heroAvatarURL` without
+    /// shipping the entire scene graph per row — same pattern
+    /// `pageBackgroundImagePath` uses for backgrounds.
+    ///
+    /// Excluded from Equatable / Hashable so a publish-time mutation
+    /// doesn't make SwiftUI think the in-memory document changed.
+    var heroAvatarURL: String?
+
     /// `child -> parent` index. Rebuilt on decode, kept in sync by every
     /// mutation helper below. Not Codable; never serialized to disk.
     private var parentIndex: [UUID: UUID]
@@ -142,6 +155,7 @@ struct ProfileDocument: Codable, Hashable {
             ]
         }
         self.nodes = nodes
+        self.heroAvatarURL = nil
         self.parentIndex = Self.buildParentIndex(nodes: nodes)
     }
 
@@ -160,6 +174,7 @@ extension ProfileDocument {
         case rootChildrenIDs
         case pages
         case nodes
+        case heroAvatarURL
         // `parentIndex` is intentionally absent — derived state, never persisted.
     }
 
@@ -201,6 +216,7 @@ extension ProfileDocument {
             ]
         }
         self.nodes = try c.decodeIfPresent([UUID: CanvasNode].self, forKey: .nodes) ?? [:]
+        self.heroAvatarURL = try c.decodeIfPresent(String.self, forKey: .heroAvatarURL)
         self.parentIndex = Self.buildParentIndex(nodes: self.nodes)
     }
 
@@ -229,6 +245,7 @@ extension ProfileDocument {
         try c.encodeIfPresent(mirroredFirstPage.backgroundBlur, forKey: .pageBackgroundBlur)
         try c.encodeIfPresent(mirroredFirstPage.backgroundVignette, forKey: .pageBackgroundVignette)
         try c.encode(mirroredFirstPage.rootChildrenIDs, forKey: .rootChildrenIDs)
+        try c.encodeIfPresent(heroAvatarURL, forKey: .heroAvatarURL)
     }
 
     nonisolated static func == (lhs: ProfileDocument, rhs: ProfileDocument) -> Bool {

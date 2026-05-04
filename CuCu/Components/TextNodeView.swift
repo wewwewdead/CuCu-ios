@@ -74,6 +74,15 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
     /// host decides whether to treat them as "no selected text".
     var onSelectionRangeChanged: ((NSRange) -> Void)?
 
+    /// Snapshot of the node's base typing attributes (font, base color,
+    /// paragraph style). Re-asserted on selection / text change so the
+    /// caret never inherits the inline `.foregroundColor` /
+    /// `.backgroundColor` of an adjacent styled span — newly typed
+    /// characters always start in the node's base style. Inline color
+    /// or highlight is only ever applied through an explicit user span,
+    /// never as a typing carry-over.
+    private var baseTypingAttributes: [NSAttributedString.Key: Any] = [:]
+
     /// Padding constraints stored as members so `apply(node:)` can
     /// drive their constants from `node.style.padding`. Initial
     /// values match the historical defaults (4pt horizontal /
@@ -208,6 +217,7 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
         if let savedSelection {
             textView.selectedRange = savedSelection
         }
+        baseTypingAttributes = attrs
         textView.typingAttributes = attrs
 
         // 3. Apply padding. `nil` falls back to the historical
@@ -297,10 +307,28 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
     // MARK: - UITextViewDelegate
 
     func textViewDidChange(_ textView: UITextView) {
+        // After every keystroke, force the next-character attributes
+        // back to the node's base style. UIKit otherwise leaves the
+        // inline color / highlight from the just-typed character on
+        // `typingAttributes`, which made the formatting "stick" on
+        // every subsequent keystroke.
+        if !baseTypingAttributes.isEmpty {
+            textView.typingAttributes = baseTypingAttributes
+        }
         onTextChanged?(textView.text)
     }
 
     func textViewDidChangeSelection(_ textView: UITextView) {
+        // When the caret is collapsed (cursor only, no selection), strip
+        // the auto-inherited attributes UIKit copies from the surrounding
+        // glyphs. This is what stops a cursor placed at the end of (or
+        // inside) a colored / highlighted span from carrying that style
+        // into the next typed character. Non-empty selections are left
+        // alone so a "type to replace" still inherits sensibly.
+        if textView.selectedRange.length == 0,
+           !baseTypingAttributes.isEmpty {
+            textView.typingAttributes = baseTypingAttributes
+        }
         onSelectionRangeChanged?(textView.selectedRange)
     }
 
@@ -392,10 +420,16 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
                let color = uiColorIfValid(hex: hex) {
                 attributed.addAttribute(.backgroundColor, value: color, range: range)
             }
-            if span.bold == true || span.italic == true {
+            // A span re-emits the font when ANY of bold / italic /
+            // fontFamily is set on it, because the resolved UIFont
+            // mixes all three. The unset axes fall back to the
+            // node-level base (`baseWeight`, `baseItalic`, `family`)
+            // so a span that only changes fontFamily keeps the
+            // surrounding bold/italic state.
+            if span.bold == true || span.italic == true || span.fontFamily != nil {
                 attributed.addAttributes(
                     fontAttributes(
-                        family: family,
+                        family: span.fontFamily ?? family,
                         size: size,
                         weight: span.bold == true ? .bold : baseWeight,
                         italic: baseItalic || span.italic == true

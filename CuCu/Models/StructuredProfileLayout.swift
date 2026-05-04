@@ -75,7 +75,7 @@ enum StructuredProfileLayout {
         switch node.type {
         case .image, .gallery, .carousel, .divider, .link:
             return .locked
-        case .container, .text, .icon:
+        case .container, .text, .icon, .note:
             break
         }
         return node.resizeBehavior ?? .freeform
@@ -223,7 +223,7 @@ enum StructuredProfileLayout {
                     let nodeWidth = min(node.frame.width, cardWidth)
                     node.frame.width = nodeWidth
                     node.frame.x = max(horizontalMargin, (pageWidth - nodeWidth) / 2)
-                case .container, .text, .divider, .link, .gallery, .carousel:
+                case .container, .text, .divider, .link, .gallery, .carousel, .note:
                     node.frame.x = horizontalMargin
                     node.frame.width = cardWidth
                 }

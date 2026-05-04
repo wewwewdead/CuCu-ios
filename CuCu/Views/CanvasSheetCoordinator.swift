@@ -57,6 +57,7 @@ final class CanvasSheetCoordinator {
 
     // Navigation hand-off after publish
     var publishedViewerUsername: String?
+    var shareProfileUsername: String?
 
     // MARK: - Page background → effects chain
 

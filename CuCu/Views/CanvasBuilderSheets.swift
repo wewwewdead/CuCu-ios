@@ -220,6 +220,18 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
                     .presentationDetents([.medium])
                     .presentationDragIndicator(.visible)
             }
+            .sheet(
+                isPresented: Binding(
+                    get: { sheets.shareProfileUsername != nil },
+                    set: { if !$0 { sheets.shareProfileUsername = nil } }
+                )
+            ) {
+                if let username = sheets.shareProfileUsername {
+                    ProfileShareSheet(username: username, document: document)
+                        .presentationDetents([.large])
+                        .presentationDragIndicator(.visible)
+                }
+            }
             .fullScreenCover(
                 isPresented: $sheets.showPreview,
                 onDismiss: {

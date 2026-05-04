@@ -138,6 +138,7 @@ struct TemplateStore {
         var linkCount = 0
         var galleryCount = 0
         var carouselCount = 0
+        var noteCount = 0
 
         for node in document.nodes.values {
             switch node.type {
@@ -149,6 +150,7 @@ struct TemplateStore {
             case .link: linkCount += 1
             case .gallery: galleryCount += 1
             case .carousel: carouselCount += 1
+            case .note: noteCount += 1
             }
         }
 
@@ -161,6 +163,7 @@ struct TemplateStore {
         if linkCount > 0 { parts.append("\(linkCount) link\(linkCount == 1 ? "" : "s")") }
         if galleryCount > 0 { parts.append("\(galleryCount) galler\(galleryCount == 1 ? "y" : "ies")") }
         if carouselCount > 0 { parts.append("\(carouselCount) carousel\(carouselCount == 1 ? "" : "s")") }
+        if noteCount > 0 { parts.append("\(noteCount) note\(noteCount == 1 ? "" : "s")") }
         return parts.isEmpty ? "Blank canvas" : parts.joined(separator: " · ")
     }
 }

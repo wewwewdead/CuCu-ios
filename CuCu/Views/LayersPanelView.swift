@@ -178,6 +178,9 @@ struct LayersPanelView: View {
             return "Gallery"
         case .carousel:
             return "Carousel"
+        case .note:
+            let title = (node.content.noteTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return title.isEmpty ? "Note" : title
         }
     }
 
@@ -211,6 +214,9 @@ struct LayersPanelView: View {
         case .carousel:
             let count = node.childrenIDs.count
             return count == 0 ? "Empty carousel" : "\(count) item\(count == 1 ? "" : "s")"
+        case .note:
+            let stamp = (node.content.noteTimestamp ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return stamp.isEmpty ? "Note" : stamp
         }
     }
 
@@ -224,6 +230,7 @@ struct LayersPanelView: View {
         case .link: return "link"
         case .gallery: return "rectangle.grid.2x2"
         case .carousel: return "rectangle.stack"
+        case .note: return "note.text"
         }
     }
 
@@ -237,6 +244,7 @@ struct LayersPanelView: View {
         case .link: return .green
         case .gallery: return .teal
         case .carousel: return .purple
+        case .note: return .indigo
         }
     }
 }

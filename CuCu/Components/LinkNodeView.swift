@@ -35,6 +35,13 @@ final class LinkNodeView: NodeRenderView {
     /// Wavy underline drawn under the title for the `.underlined`
     /// variant — gives the link a hand-drawn / artsy emphasis.
     private let underlineLayer = CAShapeLayer()
+    /// Straight underline driven by `style.textUnderlined`. Lives as
+    /// its own layer (rather than going through
+    /// `titleLabel.attributedText`) so the title keeps using plain
+    /// `.text` and `adjustsFontSizeToFitWidth` continues to shrink
+    /// long titles instead of truncating them — UILabel's auto-shrink
+    /// only runs for the `.text` path.
+    private let textUnderlineLayer = CAShapeLayer()
 
     override init(nodeID: UUID) {
         super.init(nodeID: nodeID)
@@ -42,8 +49,11 @@ final class LinkNodeView: NodeRenderView {
         addSubview(titleLabel)
         addSubview(subtitleLabel)
         layer.addSublayer(underlineLayer)
+        layer.addSublayer(textUnderlineLayer)
         underlineLayer.fillColor = UIColor.clear.cgColor
         underlineLayer.lineCap = .round
+        textUnderlineLayer.fillColor = UIColor.clear.cgColor
+        textUnderlineLayer.lineCap = .butt
         clipsToBounds = false
         layer.masksToBounds = false
     }
@@ -98,22 +108,34 @@ final class LinkNodeView: NodeRenderView {
             symbolImageView.isHidden = true
         }
 
-        // Reset variant-specific overlays.
+        // Reset variant-specific overlays. Both underline layers get
+        // their paths cleared each pass; whichever applies for this
+        // node's state gets repopulated in `layoutSubviews()` once
+        // the title's frame is known.
         underlineLayer.path = nil
+        textUnderlineLayer.path = nil
         subtitleLabel.isHidden = true
         subtitleLabel.text = nil
 
         switch variant {
         case .pill:
             backgroundColor = bgColor ?? uiColor(hex: "#FBF6E9")
+            // Pill is defined by its capsule shape, so the radius is
+            // always height/2 regardless of `style.cornerRadius` —
+            // changing radius requires switching variant (see the
+            // Variant card in the link's Style tab).
             layer.cornerRadius = bounds.height / 2
             layer.borderColor = (borderColor ?? UIColor(white: 0.1, alpha: 1)).cgColor
-            layer.borderWidth = max(CGFloat(node.style.borderWidth), 1)
+            layer.borderWidth = CGFloat(node.style.borderWidth)
         case .card:
             backgroundColor = bgColor ?? uiColor(hex: "#FFFFFF")
-            layer.cornerRadius = max(CGFloat(node.style.cornerRadius), 12)
+            // Honor the user's slider directly. Previously this clamped
+            // to a 12pt floor, which made the radius slider feel broken
+            // for any pick below 12 — looked like the input was being
+            // ignored when it was actually being silently overridden.
+            layer.cornerRadius = CGFloat(node.style.cornerRadius)
             layer.borderColor = (borderColor ?? uiColor(hex: "#1A140E")).cgColor
-            layer.borderWidth = max(CGFloat(node.style.borderWidth), 1)
+            layer.borderWidth = CGFloat(node.style.borderWidth)
             // Show the URL as a subtitle line under the title for
             // card-style links — gives the surface its "this is a real
             // destination" cue without claiming the user's full title.
@@ -134,7 +156,10 @@ final class LinkNodeView: NodeRenderView {
             underlineLayer.lineWidth = 2
         case .button:
             backgroundColor = bgColor ?? uiColor(hex: "#1A140E")
-            layer.cornerRadius = max(CGFloat(node.style.cornerRadius), 8)
+            // Slider-direct radius (was clamped to 8pt). Border still
+            // intentionally 0 — the button variant uses a hard offset
+            // shadow as its edge cue, not a stroke.
+            layer.cornerRadius = CGFloat(node.style.cornerRadius)
             layer.borderColor = UIColor.clear.cgColor
             layer.borderWidth = 0
             titleLabel.textColor = textColor == UIColor(white: 0.1, alpha: 1)
@@ -147,11 +172,35 @@ final class LinkNodeView: NodeRenderView {
             layer.shadowRadius = 0
         case .badge:
             backgroundColor = bgColor ?? uiColor(hex: "#FAD3DD")
-            layer.cornerRadius = max(CGFloat(node.style.cornerRadius), 10)
+            // Slider-direct radius and border (was clamped to 10pt /
+            // 1pt floors that swallowed below-floor picks).
+            layer.cornerRadius = CGFloat(node.style.cornerRadius)
             layer.borderColor = (borderColor ?? uiColor(hex: "#B22A4A")).cgColor
-            layer.borderWidth = max(CGFloat(node.style.borderWidth), 1)
+            layer.borderWidth = CGFloat(node.style.borderWidth)
             titleLabel.text = "[\(title)]"
         }
+
+        // `style.textUnderlined` is honored via the
+        // `textUnderlineLayer` CAShapeLayer (path computed in
+        // `layoutSubviews()`), not via NSAttributedString. The layer
+        // approach lets `titleLabel` stay on its plain `.text` /
+        // `.font` / `.textColor` path so `adjustsFontSizeToFitWidth`
+        // keeps shrinking long titles instead of truncating them —
+        // UILabel only auto-shrinks when no `attributedText` is set.
+        // We just stage stroke color / width here; the path goes in
+        // once the title's measured frame is known post-layout.
+        if node.style.textUnderlined == true {
+            let strokeColor = titleLabel.textColor ?? textColor
+            textUnderlineLayer.strokeColor = strokeColor.cgColor
+            // Match the wavy variant's 2pt weight so the two underline
+            // styles read as the same family of decoration.
+            textUnderlineLayer.lineWidth = 2
+        } else {
+            textUnderlineLayer.strokeColor = nil
+        }
+        // Force a layout pass — paths are computed there, and only
+        // `apply(node:)` knows that style data just changed.
+        setNeedsLayout()
     }
 
     override func layoutSubviews() {
@@ -196,27 +245,49 @@ final class LinkNodeView: NodeRenderView {
             )
         }
 
+        // Both underline layers position relative to the title's
+        // measured text width so the line never overhangs the glyphs.
+        // Computed once per layout and reused for the wavy + straight
+        // paths since their bounds are identical.
+        let titleHasText = !titleLabel.text.isNilOrEmpty
+        let titleTextRect = titleHasText
+            ? titleLabel.textRect(forBounds: titleLabel.bounds, limitedToNumberOfLines: 1)
+            : .zero
+        let underlineStartX = titleLabel.frame.minX
+            + (titleLabel.frame.width - titleTextRect.width) / 2
+        let underlineEndX = underlineStartX + titleTextRect.width
+        let underlineY = titleLabel.frame.maxY - 4
+
         // Wavy underline (variant=.underlined). Triangle-wave path
         // sized to the title's text width so it doesn't extend past
         // the visible glyphs.
-        if underlineLayer.strokeColor != nil, !titleLabel.text.isNilOrEmpty {
-            let textRect = titleLabel.textRect(forBounds: titleLabel.bounds, limitedToNumberOfLines: 1)
-            let baseY = titleLabel.frame.maxY - 4
+        if underlineLayer.strokeColor != nil, titleHasText {
             let p = UIBezierPath()
             let amp: CGFloat = 2.5
             let wavelength: CGFloat = 8
-            var x = titleLabel.frame.minX + (titleLabel.frame.width - textRect.width) / 2
-            let endX = x + textRect.width
-            p.move(to: CGPoint(x: x, y: baseY))
+            var x = underlineStartX
+            p.move(to: CGPoint(x: x, y: underlineY))
             var goingUp = true
-            while x < endX {
-                let nextX = min(x + wavelength / 2, endX)
-                let mid = CGPoint(x: (x + nextX) / 2, y: baseY + (goingUp ? -amp : amp))
-                p.addQuadCurve(to: CGPoint(x: nextX, y: baseY), controlPoint: mid)
+            while x < underlineEndX {
+                let nextX = min(x + wavelength / 2, underlineEndX)
+                let mid = CGPoint(x: (x + nextX) / 2, y: underlineY + (goingUp ? -amp : amp))
+                p.addQuadCurve(to: CGPoint(x: nextX, y: underlineY), controlPoint: mid)
                 x = nextX
                 goingUp.toggle()
             }
             underlineLayer.path = p.cgPath
+        }
+
+        // Straight underline (style.textUnderlined == true).
+        // Independent from the wavy variant — both can coexist if the
+        // user wants a wavy `.underlined` variant AND the per-text
+        // underline toggle on, mirroring how text nodes treat the
+        // toggle as a standalone style.
+        if textUnderlineLayer.strokeColor != nil, titleHasText {
+            let p = UIBezierPath()
+            p.move(to: CGPoint(x: underlineStartX, y: underlineY))
+            p.addLine(to: CGPoint(x: underlineEndX, y: underlineY))
+            textUnderlineLayer.path = p.cgPath
         }
     }
 }

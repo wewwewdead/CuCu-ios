@@ -20,6 +20,11 @@ enum NodeType: String, Codable, Hashable {
     /// scrollable strip. Child frames live in the carousel's scroll
     /// content coordinate space.
     case carousel
+    /// Note card. Three text regions (title, timestamp, body) inside a
+    /// container-style chrome. Body truncates with `…` in the editor;
+    /// the published profile expands the full text in a sheet (mirrors
+    /// gallery's "view gallery" published-only flow).
+    case note
 }
 
 enum CanvasNodeRole: String, Codable, Hashable {
@@ -205,8 +210,14 @@ extension CanvasNode {
         )
     }
 
-    /// Default styled link node — pill variant with a placeholder title
-    /// and an empty URL the user fills in from the inspector.
+    /// Default styled link node. Card variant (not pill) so the
+    /// inspector's Radius slider works on the freshly-added node —
+    /// `.pill` always renders as a capsule (radius = height/2) and
+    /// silently ignores `style.cornerRadius`. With cornerRadius 24
+    /// at the default 48pt height, the visual is identical to the
+    /// old pill default; users who want a true grow-with-height
+    /// capsule can switch the Variant card in the Style tab back to
+    /// Pill.
     static func defaultLink(at origin: CGPoint = CGPoint(x: 32, y: 240),
                             size: CGSize = CGSize(width: 220, height: 48)) -> CanvasNode {
         CanvasNode(
@@ -223,7 +234,7 @@ extension CanvasNode {
                 fontSize: 16,
                 textColorHex: "#1A140E",
                 textAlignment: .center,
-                linkStyleVariant: .pill
+                linkStyleVariant: .card
             ),
             content: NodeContent(text: "my link", url: "")
         )
@@ -264,6 +275,35 @@ extension CanvasNode {
                 cornerRadius: 18,
                 borderWidth: 1,
                 borderColorHex: "#1A140E"
+            )
+        )
+    }
+
+    /// Default styled note card — title row with corner expand glyph,
+    /// timestamp row with leading clock symbol, and a body block that
+    /// truncates with `…` in the editor. Sample text matches the design
+    /// reference so the very first frame conveys what a note *is*.
+    static func defaultNote(at origin: CGPoint = CGPoint(x: 24, y: 360),
+                            size: CGSize = CGSize(width: 320, height: 180)) -> CanvasNode {
+        CanvasNode(
+            type: .note,
+            frame: NodeFrame(x: Double(origin.x), y: Double(origin.y),
+                             width: Double(size.width), height: Double(size.height)),
+            style: NodeStyle(
+                backgroundColorHex: "#FFFFFF",
+                cornerRadius: 18,
+                borderWidth: 1,
+                borderColorHex: "#1A140E",
+                fontFamily: .system,
+                fontWeight: .regular,
+                fontSize: 15,
+                textColorHex: "#1A140E",
+                padding: 16
+            ),
+            content: NodeContent(
+                text: "Writing this song is seriously driving me crazy. Some days, nothing feels right – the lyrics won't come, the melody fades, and I just keep starting over and over.",
+                noteTitle: "Notes (12)",
+                noteTimestamp: "10 min. ago"
             )
         )
     }

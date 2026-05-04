@@ -15,6 +15,10 @@ struct TextStyleSpan: Codable, Hashable, Identifiable {
     var bold: Bool?
     var italic: Bool?
     var underline: Bool?
+    /// Per-span typeface override. Nil = inherit the node's
+    /// `style.fontFamily`. Stored as the raw enum so JSON round-trips
+    /// match the rest of the document.
+    var fontFamily: NodeFontFamily?
 
     init(id: UUID = UUID(),
          start: Int,
@@ -23,7 +27,8 @@ struct TextStyleSpan: Codable, Hashable, Identifiable {
          highlightColorHex: String? = nil,
          bold: Bool? = nil,
          italic: Bool? = nil,
-         underline: Bool? = nil) {
+         underline: Bool? = nil,
+         fontFamily: NodeFontFamily? = nil) {
         self.id = id
         self.start = start
         self.length = length
@@ -32,6 +37,7 @@ struct TextStyleSpan: Codable, Hashable, Identifiable {
         self.bold = bold
         self.italic = italic
         self.underline = underline
+        self.fontFamily = fontFamily
     }
 }
 
@@ -73,18 +79,32 @@ struct NodeContent: Codable, Hashable {
     /// by `.image` nodes.
     var imagePaths: [String]?
 
+    /// Title row for `.note` nodes. Free-form text so users can write
+    /// "Notes (12)", "Today's thoughts", or whatever — the count badge
+    /// in the design reference is a literal string, not a derived count.
+    var noteTitle: String?
+
+    /// Editable relative-time string for `.note` nodes (e.g. "10 min.
+    /// ago"). Plain text rather than a `Date` so users can phrase the
+    /// timestamp however they want; the renderer paints it verbatim.
+    var noteTimestamp: String?
+
     init(text: String? = nil,
          localImagePath: String? = nil,
          iconName: String? = nil,
          url: String? = nil,
          imagePaths: [String]? = nil,
-         textStyleSpans: [TextStyleSpan]? = nil) {
+         textStyleSpans: [TextStyleSpan]? = nil,
+         noteTitle: String? = nil,
+         noteTimestamp: String? = nil) {
         self.text = text
         self.localImagePath = localImagePath
         self.iconName = iconName
         self.url = url
         self.imagePaths = imagePaths
         self.textStyleSpans = textStyleSpans
+        self.noteTitle = noteTitle
+        self.noteTimestamp = noteTimestamp
     }
 }
 
@@ -96,6 +116,8 @@ extension NodeContent {
         case iconName
         case url
         case imagePaths
+        case noteTitle
+        case noteTimestamp
     }
 
     /// Custom decoder so old drafts (which don't include the four
@@ -112,6 +134,8 @@ extension NodeContent {
         self.iconName = try c.decodeIfPresent(String.self, forKey: .iconName)
         self.url = try c.decodeIfPresent(String.self, forKey: .url)
         self.imagePaths = try c.decodeIfPresent([String].self, forKey: .imagePaths)
+        self.noteTitle = try c.decodeIfPresent(String.self, forKey: .noteTitle)
+        self.noteTimestamp = try c.decodeIfPresent(String.self, forKey: .noteTimestamp)
     }
 }
 
@@ -199,9 +223,13 @@ extension NodeContent {
         var next = span
 
         if oldChangedLength == 0 {
-            if spanStart > oldChangeStart {
+            // Pure insertion. Boundaries are exclusive on both ends so
+            // typing right at `spanStart` or `spanEnd` does NOT extend
+            // the span — the new glyphs land outside it. Only insertions
+            // strictly inside the span grow its length.
+            if spanStart >= oldChangeStart {
                 next.start += delta
-            } else if spanStart <= oldChangeStart, oldChangeStart <= spanEnd {
+            } else if oldChangeStart < spanEnd {
                 next.length += delta
             }
             return next.length > 0 ? next : nil
@@ -302,6 +330,22 @@ func applyUnderline(range: NSRange, to node: inout CanvasNode) {
     )
 }
 
+/// Apply an inline font-family override to `range`. Mirrors the
+/// color / highlight / bold helpers so a selection-driven Font
+/// picker can use the same `if selection { applyFontFamily }`
+/// shape every other inline-style action uses.
+func applyFontFamily(_ family: NodeFontFamily, range: NSRange, to node: inout CanvasNode) {
+    appendTextStyleSpan(
+        TextStyleSpan(start: range.location, length: range.length, fontFamily: family),
+        replacing: .fontFamily,
+        to: &node
+    )
+}
+
+func clearFontFamily(range: NSRange, from node: inout CanvasNode) {
+    clearInlineStyle(.fontFamily, range: range, from: &node)
+}
+
 func clearHighlight(range: NSRange, from node: inout CanvasNode) {
     clearInlineStyle(.highlight, range: range, from: &node)
 }
@@ -343,12 +387,32 @@ func inlineUnderline(in node: CanvasNode, range: NSRange) -> Bool? {
     lastInlineBool(in: node, range: range, keyPath: \.underline)
 }
 
+/// Most-recently-applied inline font family covering any part of
+/// `range`. Returns nil when no span in the range carries an
+/// override — the caller (the Font picker) treats that as "use the
+/// node's `style.fontFamily`."
+func inlineFontFamily(in node: CanvasNode, range: NSRange) -> NodeFontFamily? {
+    guard let clamped = clampedRange(range, text: node.content.text ?? "") else {
+        return nil
+    }
+    return (node.content.textStyleSpans ?? [])
+        .filter { span in
+            guard let spanRange = clampedRange(span.nsRange, text: node.content.text ?? "") else {
+                return false
+            }
+            return spanRange.textStyleOverlap(with: clamped) != nil
+        }
+        .compactMap { $0.fontFamily }
+        .last
+}
+
 private enum InlineTextStyleProperty {
     case textColor
     case highlight
     case bold
     case italic
     case underline
+    case fontFamily
     case all
 }
 
@@ -373,6 +437,8 @@ private func appendTextStyleSpan(_ span: TextStyleSpan,
             spans[index].italic = nil
         case .underline:
             spans[index].underline = nil
+        case .fontFamily:
+            spans[index].fontFamily = nil
         case .all:
             spans[index].clearInlineStyles()
         }
@@ -426,6 +492,8 @@ private func clearInlineStyle(_ property: InlineTextStyleProperty,
             middle.italic = nil
         case .underline:
             middle.underline = nil
+        case .fontFamily:
+            middle.fontFamily = nil
         case .all:
             middle.clearInlineStyles()
         }
@@ -510,6 +578,7 @@ private extension TextStyleSpan {
             || bold == true
             || italic == true
             || underline == true
+            || fontFamily != nil
     }
 
     mutating func clearInlineStyles() {
@@ -518,6 +587,7 @@ private extension TextStyleSpan {
         bold = nil
         italic = nil
         underline = nil
+        fontFamily = nil
     }
 }
 

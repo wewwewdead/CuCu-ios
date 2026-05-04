@@ -65,6 +65,11 @@ struct CanvasEditorContainer: UIViewRepresentable {
     /// list so the host can present the paginated grid.
     var onOpenFullGallery: (([URL]) -> Void)? = nil
 
+    /// Called when a note card is tapped while `isInteractive` is
+    /// `false`. Receives the node id so the host can pull the title /
+    /// timestamp / body and present the expanded sheet.
+    var onOpenNote: ((UUID) -> Void)? = nil
+
     /// Fires when the user taps an empty canvas area in edit mode
     /// with nothing selected — the second tap of the two-tap-out
     /// pattern. Host clears its `editMode` state so the canvas
@@ -123,6 +128,9 @@ struct CanvasEditorContainer: UIViewRepresentable {
         view.onOpenFullGallery = { urls in
             onOpenFullGallery?(urls)
         }
+        view.onOpenNote = { id in
+            onOpenNote?(id)
+        }
         view.onRequestExitEditMode = {
             onRequestExitEditMode?()
         }
@@ -169,6 +177,9 @@ struct CanvasEditorContainer: UIViewRepresentable {
         }
         view.onOpenFullGallery = { urls in
             onOpenFullGallery?(urls)
+        }
+        view.onOpenNote = { id in
+            onOpenNote?(id)
         }
         view.onRequestExitEditMode = {
             onRequestExitEditMode?()

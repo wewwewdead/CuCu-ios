@@ -311,6 +311,9 @@ struct SelectionBottomBar: View {
         case .carousel:
             let count = node.childrenIDs.count
             return "\(count) page\(count == 1 ? "" : "s")"
+        case .note:
+            let stamp = (node.content.noteTimestamp ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return stamp.isEmpty ? "Note" : stamp
         }
     }
 
@@ -337,6 +340,7 @@ struct SelectionBottomBar: View {
         case .link:      return .link
         case .gallery:   return .gallery
         case .carousel:  return .carousel
+        case .note:      return .note
         }
     }
 
@@ -380,6 +384,7 @@ struct SelectionBottomBar: View {
         case .link:      return "link"
         case .gallery:   return "rectangle.grid.2x2"
         case .carousel:  return "rectangle.stack"
+        case .note:      return "note.text"
         }
     }
 
@@ -393,6 +398,7 @@ struct SelectionBottomBar: View {
         case .link:      return "Link"
         case .gallery:   return "Gallery"
         case .carousel:  return "Carousel"
+        case .note:      return "Note"
         }
     }
 
@@ -426,6 +432,9 @@ struct SelectionBottomBar: View {
         case .carousel:
             let count = node.childrenIDs.count
             return count == 0 ? "Empty carousel" : "\(count) item\(count == 1 ? "" : "s")"
+        case .note:
+            let title = (node.content.noteTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return title.isEmpty ? "Note" : title
         }
     }
 

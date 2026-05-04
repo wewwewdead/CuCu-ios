@@ -1,3 +1,4 @@
+import SwiftUI
 import UIKit
 
 /// Cheap value-type fingerprint used to decide whether to re-call
@@ -326,6 +327,12 @@ final class CanvasEditorView: UIView {
     private var renderViews: [UUID: NodeRenderView] = [:]
     private var appliedNodeSignatures: [UUID: NodeRenderSignature] = [:]
     private var nodePanGestures: [UUID: UIPanGestureRecognizer] = [:]
+    /// The canvas-wide tap recognizer that drives `handleTap`. Stored
+    /// so the gesture delegate can identify it and grant simultaneous
+    /// recognition with UIKit's text-editing gestures (edit menu,
+    /// selection handles), which otherwise swallow taps that land
+    /// outside an actively-editing text node.
+    private weak var canvasTap: UITapGestureRecognizer?
 
     private let overlay = SelectionOverlayView()
     private let editModeOverlay = CanvasEditModeOverlay()
@@ -410,6 +417,11 @@ final class CanvasEditorView: UIView {
         // user is in "tap a chip to edit" mode — flatten interaction
         // so the empty-canvas tap fires and chips get clean hit slots.
         applyNodeInteractionForEditMode()
+        // Notes hide their see-more pill in edit mode; the per-node
+        // dashed chrome already signals the card is editable.
+        for view in renderViews.values {
+            (view as? NoteNodeView)?.isCanvasEditMode = flag
+        }
     }
 
     /// Vertical scrolling host. Pinned to the canvas root's bounds and
@@ -685,6 +697,12 @@ final class CanvasEditorView: UIView {
     /// paginated grid (`FullGalleryView`).
     var onOpenFullGallery: (([URL]) -> Void)?
 
+    /// Called when a `.note` card is tapped while `isInteractive` is
+    /// `false`. Receives the note's id so the host can fetch its title
+    /// / timestamp / body and present an expanded sheet (the published-
+    /// profile equivalent of "see more").
+    var onOpenNote: ((UUID) -> Void)?
+
     /// Non-nil in the public viewer: render only that page so off-screen
     /// page backgrounds and node images are not mounted or fetched.
     var viewerPageIndex: Int?
@@ -756,7 +774,13 @@ final class CanvasEditorView: UIView {
         // is already in content coordinates (not viewport).
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.cancelsTouchesInView = false
+        // Delegate gives us simultaneous recognition with UIKit's text
+        // gestures so a tap on the canvas still fires `handleTap` while
+        // a UITextView owns first responder and is showing an edit menu
+        // or selection handles.
+        tap.delegate = self
         contentView.addGestureRecognizer(tap)
+        canvasTap = tap
 
         let textLongPress = UILongPressGestureRecognizer(target: self, action: #selector(handleTextNodeLongPress(_:)))
         textLongPress.minimumPressDuration = 0.35
@@ -837,7 +861,11 @@ final class CanvasEditorView: UIView {
         // the keyboard goes down (no orphaned focus on a node the user
         // already navigated away from).
         if let editingID = editingTextNodeID, editingID != selectedID {
-            (renderViews[editingID] as? TextNodeView)?.endEditing()
+            if let textView = renderViews[editingID] as? TextNodeView {
+                textView.endEditing()
+            } else if let noteView = renderViews[editingID] as? NoteNodeView {
+                noteView.endBodyEditing()
+            }
             editingTextNodeID = nil
         }
 
@@ -853,11 +881,14 @@ final class CanvasEditorView: UIView {
         var incomingDocument = document
         if let editingID = editingTextNodeID,
            editingID == selectedID,
-           let textView = renderViews[editingID] as? TextNodeView,
-           textView.isEditing,
            var editingNode = incomingDocument.nodes[editingID] {
-            editingNode.content.text = textView.liveText
-            incomingDocument.nodes[editingID] = editingNode
+            if let textView = renderViews[editingID] as? TextNodeView, textView.isEditing {
+                editingNode.content.text = textView.liveText
+                incomingDocument.nodes[editingID] = editingNode
+            } else if let noteView = renderViews[editingID] as? NoteNodeView, noteView.isBodyEditing {
+                editingNode.content.text = noteView.liveBodyText
+                incomingDocument.nodes[editingID] = editingNode
+            }
         }
 
         self.document = incomingDocument
@@ -981,6 +1012,33 @@ final class CanvasEditorView: UIView {
         }
         appliedPageCount = document.pages.count
         hasAppliedFirstDocument = true
+    }
+
+    /// Snapshot a rendered page surface without editor chrome. Used by share
+    /// export so the image comes from the same v2 canvas renderer as preview
+    /// and published profiles.
+    func snapshotRenderedPage(at pageIndex: Int, scale: CGFloat) -> UIImage? {
+        guard document.pages.indices.contains(pageIndex) else { return nil }
+        layoutIfNeeded()
+        let page = document.pages[pageIndex]
+        guard let surface = pageSurfaces[page.id] else { return nil }
+        surface.pageView.layoutIfNeeded()
+
+        let size = surface.pageView.bounds.size
+        guard size.width > 1, size.height > 1 else { return nil }
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = max(1, scale)
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
+            let drewHierarchy = surface.pageView.drawHierarchy(
+                in: CGRect(origin: .zero, size: size),
+                afterScreenUpdates: true
+            )
+            if !drewHierarchy {
+                surface.pageView.layer.render(in: context.cgContext)
+            }
+        }
     }
 
     private func visiblePageIndices(for document: ProfileDocument) -> [Int] {
@@ -1437,6 +1495,7 @@ final class CanvasEditorView: UIView {
         case .link:      return LinkNodeView.self
         case .gallery:   return GalleryNodeView.self
         case .carousel:  return CarouselNodeView.self
+        case .note:      return NoteNodeView.self
         }
     }
 
@@ -1499,6 +1558,56 @@ final class CanvasEditorView: UIView {
             return LinkNodeView(nodeID: node.id)
         case .carousel:
             return CarouselNodeView(nodeID: node.id)
+        case .note:
+            let view = NoteNodeView(nodeID: node.id)
+            // Seed with the canvas's current edit-mode state so a note
+            // freshly added inside an active edit session starts with
+            // its see-more pill suppressed instead of flashing on for
+            // one layout pass before `setEditMode` propagates the flag.
+            view.isCanvasEditMode = editMode
+            // Tap-to-expand is only meaningful in the public viewer.
+            // Inside the editor we leave `onTap` nil so the canvas's
+            // own selection / drag recognizers stay in charge.
+            if !isInteractive {
+                view.onTap = { [weak self] in
+                    self?.openNote(nodeID: node.id)
+                }
+            }
+            // The "see more" pill is wired in *both* modes: in viewer
+            // it routes to the same expand sheet as the whole-card
+            // tap; in editor it lets the user preview the full body
+            // without dropping into edit mode (useful when overflow
+            // hides the tail of a long note).
+            view.onSeeMoreTapped = { [weak self] in
+                self?.openNote(nodeID: node.id)
+            }
+            // Inline body editing (mirrors `.text`): keystrokes flow
+            // into `node.content.text`, the same field the editor
+            // panel + the published renderer read. We never persist
+            // here — that's `onBodyEditingEnded`'s job.
+            view.onBodyTextChanged = { [weak self, weak view] newText in
+                guard let self, let view else { return }
+                if var node = self.document.nodes[view.nodeID] {
+                    node.content.text = newText
+                    self.document.nodes[view.nodeID] = node
+                    self.onLiveTextChanged?(view.nodeID, newText)
+                }
+            }
+            view.onBodyEditingEnded = { [weak self, weak view] in
+                guard let self else { return }
+                if let view {
+                    UIView.animate(withDuration: 0.25,
+                                   delay: 0,
+                                   options: [.curveEaseInOut, .beginFromCurrentState]) {
+                        view.transform = .identity
+                    }
+                }
+                self.restoreEditingNodeChain()
+                self.editingTextNodeID = nil
+                self.applyOverlayForCurrentSelection()
+                self.onCommit?(self.document)
+            }
+            return view
         case .gallery:
             let view = GalleryNodeView(nodeID: node.id)
             // Wire per-tile + view-all callbacks only in viewer
@@ -1515,6 +1624,65 @@ final class CanvasEditorView: UIView {
             }
             return view
         }
+    }
+
+    /// Open the note expand sheet in every mode — editor, local
+    /// preview (`CanvasPreviewView`), and published view. We present
+    /// a `UIHostingController` locally instead of relying on per-host
+    /// SwiftUI plumbing because:
+    ///   1. `CanvasPreviewView` doesn't wire `onOpenNote`, so a callback-
+    ///      only path would silently no-op there.
+    ///   2. `ProfileCanvasBuilderView.body` is at SwiftUI's
+    ///      type-check ceiling — a sheet binding tips it over.
+    /// `PublishedProfileView` still wires `onOpenNote` for analytics
+    /// hooks, but we no longer call it: doing both would double-present.
+    private func openNote(nodeID: UUID) {
+        guard let content = document.noteContent(for: nodeID) else { return }
+        presentNoteExpandSheet(content)
+    }
+
+    private func presentNoteExpandSheet(_ content: NoteContent) {
+        guard let presenter = topMostPresenter() else { return }
+        var hostRef: UIHostingController<NoteModalView>?
+        let modal = NoteModalView(content: content) { [weak presenter, weak hostRef] in
+            // Dismiss whichever view controller currently owns the
+            // presentation. `presenter` is the controller we asked to
+            // present; `hostRef.presentingViewController` is the same
+            // path Apple recommends for self-dismissing host VCs.
+            (hostRef?.presentingViewController ?? presenter)?
+                .dismiss(animated: true)
+        }
+        let host = UIHostingController(rootView: modal)
+        host.modalPresentationStyle = .overFullScreen
+        // No UIKit-side cross-dissolve on entry — `NoteModalView`'s
+        // `onAppear` orchestrates a multi-stage reveal (backdrop fade,
+        // card lift+tilt spring, staggered title/timestamp/body).
+        // Compounding UIKit's blanket alpha fade with that choreography
+        // muddies the timing. `crossDissolve` stays on the dismiss
+        // path so closing still smooths out cleanly.
+        host.modalTransitionStyle = .crossDissolve
+        host.view.backgroundColor = .clear
+        hostRef = host
+        presenter.present(host, animated: false)
+    }
+
+    /// Walk responder chain to the deepest currently-visible view
+    /// controller so the modal lands on top of any panel/sheet the
+    /// editor host has already presented.
+    private func topMostPresenter() -> UIViewController? {
+        var responder: UIResponder? = self
+        while let r = responder {
+            if let vc = r as? UIViewController {
+                var top = vc
+                while let next = top.presentedViewController { top = next }
+                return top
+            }
+            responder = r.next
+        }
+        guard let root = window?.rootViewController else { return nil }
+        var top = root
+        while let next = top.presentedViewController { top = next }
+        return top
     }
 
     /// Build the gallery's URL list and forward to the host's
@@ -1628,6 +1796,11 @@ final class CanvasEditorView: UIView {
             var ancestor: UIView? = landingView
             while let view = ancestor {
                 if view is NodeEditChipView { return }
+                // The note's "see more" pill consumes its own tap (opens
+                // the expand modal). Without this bail, the canvas
+                // would also fire a selection / enter-edit on the same
+                // touch, racing the modal's presentation.
+                if view is NoteSeeMoreButton { return }
                 ancestor = view.superview
             }
         }
@@ -1671,6 +1844,19 @@ final class CanvasEditorView: UIView {
             editingTextNodeID = hit
             bringEditingNodeChainToFront(view: textView)
             textView.beginEditing(at: contentView.convert(point, to: textView))
+            return
+        }
+
+        // Already-selected note: second tap drops into body editing,
+        // mirroring the `.text` flow above. Title / timestamp stay
+        // panel-edited; only the body is the inline-edit target.
+        if let hit, hit == selectedID,
+           document.nodes[hit]?.type == .note,
+           let noteView = renderViews[hit] as? NoteNodeView,
+           !noteView.isBodyEditing {
+            editingTextNodeID = hit
+            bringEditingNodeChainToFront(view: noteView)
+            noteView.beginBodyEditing(at: contentView.convert(point, to: noteView))
             return
         }
 
@@ -1791,7 +1977,13 @@ final class CanvasEditorView: UIView {
         guard let editingID = editingTextNodeID, editingID != keepEditingID else { return }
         if let view = renderViews[editingID] as? TextNodeView {
             view.endEditing()
+        } else if let note = renderViews[editingID] as? NoteNodeView {
+            note.endBodyEditing()
         }
+        // Defensive: clear any keyboard-lift offset on the chrome so a
+        // forced-end (selection switch, page change) doesn't leave the
+        // dashed outline floating above its node.
+        editModeOverlay.setNodeChromeTranslation(0, forNode: editingID)
         editingTextNodeID = nil
     }
 
@@ -1855,6 +2047,10 @@ final class CanvasEditorView: UIView {
             nodePanGestures[currentID]?.isEnabled = false
             overlay.isHidden = true
         }
+        // Spotlight: keep only the active node's chrome visible while
+        // inline editing. Other nodes' hashlines / chips would
+        // otherwise stack on top of the keyboard-lifted editing card.
+        editModeOverlay.setInlineEditingFocus(currentID)
     }
 
     private func selectionOverlayResizeMode(for id: UUID) -> SelectionOverlayView.ResizeMode {
@@ -1882,19 +2078,35 @@ final class CanvasEditorView: UIView {
             }
         }
 
-        guard let hit = hitTestNode(at: point),
-              document.nodes[hit]?.type == .text,
-              let textView = renderViews[hit] as? TextNodeView else { return }
+        guard let hit = hitTestNode(at: point) else { return }
 
-        endActiveTextEditingIfNeeded(except: hit)
-        if selectedID != hit {
-            selectedID = hit
-            onSelectionChanged?(hit)
+        if document.nodes[hit]?.type == .text,
+           let textView = renderViews[hit] as? TextNodeView {
+            endActiveTextEditingIfNeeded(except: hit)
+            if selectedID != hit {
+                selectedID = hit
+                onSelectionChanged?(hit)
+            }
+            updateEditingPageForCurrentState()
+            editingTextNodeID = hit
+            bringEditingNodeChainToFront(view: textView)
+            textView.beginEditing(at: contentView.convert(point, to: textView), selectingWord: true)
+            return
         }
-        updateEditingPageForCurrentState()
-        editingTextNodeID = hit
-        bringEditingNodeChainToFront(view: textView)
-        textView.beginEditing(at: contentView.convert(point, to: textView), selectingWord: true)
+
+        if document.nodes[hit]?.type == .note,
+           let noteView = renderViews[hit] as? NoteNodeView {
+            endActiveTextEditingIfNeeded(except: hit)
+            if selectedID != hit {
+                selectedID = hit
+                onSelectionChanged?(hit)
+            }
+            updateEditingPageForCurrentState()
+            editingTextNodeID = hit
+            bringEditingNodeChainToFront(view: noteView)
+            noteView.beginBodyEditing(at: contentView.convert(point, to: noteView))
+            return
+        }
     }
 
     // MARK: - Gestures: drag-to-move
@@ -1903,6 +2115,9 @@ final class CanvasEditorView: UIView {
         // Read-only viewer: skip every editor gesture. Only two
         // node-type-specific tap recognizers ride along:
         //   - `.link` → opens the destination URL via `onOpenURL`
+        //   - `.icon` with a non-empty `content.url` → same opener as
+        //     a link node, so creators can use any SF Symbol as a
+        //     custom social / outbound link button
         //   - `.container` named "journal card" (case-insensitive)
         //     → opens the journal modal via `onOpenJournal`
         // Every other node type stays inert in viewer mode, which
@@ -1915,6 +2130,17 @@ final class CanvasEditorView: UIView {
                 tap.numberOfTapsRequired = 1
                 view.addGestureRecognizer(tap)
                 view.isUserInteractionEnabled = true
+            case .icon:
+                // Only attach the recognizer when the icon actually
+                // carries a URL — otherwise viewer mode shouldn't
+                // treat icons as tappable at all.
+                let url = node.content.url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !url.isEmpty {
+                    let tap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
+                    tap.numberOfTapsRequired = 1
+                    view.addGestureRecognizer(tap)
+                    view.isUserInteractionEnabled = true
+                }
             case .container:
                 let trimmedName = node.name?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 if trimmedName == "journal card" {
@@ -1973,11 +2199,13 @@ final class CanvasEditorView: UIView {
     /// node's content, normalises it (adds `https://` when scheme is
     /// missing — users typing "example.com" expect the tap to work),
     /// and hands it to the host via `onOpenURL`. No haptic here: the
-    /// host's URL opener triggers system feedback on its own.
+    /// host's URL opener triggers system feedback on its own. Shared
+    /// across `.link` and `.icon` nodes — both use `content.url` for
+    /// the destination.
     @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
         guard let view = gesture.view as? NodeRenderView,
               let node = document.nodes[view.nodeID],
-              node.type == .link,
+              node.type == .link || node.type == .icon,
               let raw = node.content.url else { return }
         guard let url = Self.resolveLinkURL(raw) else { return }
         onOpenURL?(url)
@@ -2805,6 +3033,12 @@ final class CanvasEditorView: UIView {
 
         UIView.animate(withDuration: duration, delay: 0, options: options) {
             textView.transform = targetLift > 0 ? CGAffineTransform(translationX: 0, y: -targetLift) : .identity
+            // Drag the dashed outline + chip along with the node so the
+            // edit-mode chrome doesn't appear to detach from the lifted
+            // element. Sibling overlays in pageView coords; same shift
+            // amount, opposite sign of the y offset (-targetLift since
+            // we're moving up).
+            self.editModeOverlay.setNodeChromeTranslation(-targetLift, forNode: editingID)
             self.applyOverlayForCurrentSelection()
         }
     }
@@ -2950,7 +3184,16 @@ final class CanvasEditorView: UIView {
             // in both modes. Treat them as locked even when edit mode
             // re-enables interaction on user-added top-level nodes.
             let systemOwned = document.nodes[id]?.role?.isSystemOwned == true
-            view.isUserInteractionEnabled = editMode && !systemOwned
+            // Notes carry an internal "see more" UIControl that needs
+            // touches in *every* mode (live, edit, viewer) — disabling
+            // the parent here would propagate down via UIKit hit-test
+            // and silently kill the pill, exactly like the gallery
+            // chip bug the comment above warns about. Keep the note
+            // view interactive so its UIControls work; tap-outside
+            // semantics still hold because the canvas's contentView
+            // tap recognizer has `cancelsTouchesInView = false`.
+            let isNote = document.nodes[id]?.type == .note
+            view.isUserInteractionEnabled = (editMode || isNote) && !systemOwned
             nodePanGestures[id]?.isEnabled = editMode && !systemOwned && id != editingTextNodeID
         }
     }
@@ -2983,6 +3226,19 @@ extension CanvasEditorView: UIGestureRecognizerDelegate, UIScrollViewDelegate {
     /// Without these rules UIKit's default arbitration between competing
     /// pans on the same touch is non-deterministic, and either the
     /// ancestor or the descendant would win unpredictably.
+    /// Allow the canvas-wide tap recognizer to coexist with UIKit's
+    /// text-editing gestures. Without this, a tap outside an actively-
+    /// editing text node (with a non-empty selection or visible edit
+    /// menu) gets absorbed by UIKit's window-level recognizers and
+    /// `handleTap` never runs — so the user's tap-to-exit doesn't take.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === canvasTap || other === canvasTap {
+            return true
+        }
+        return false
+    }
+
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else {
             return true

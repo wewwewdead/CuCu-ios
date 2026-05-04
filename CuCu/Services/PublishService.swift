@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 #if canImport(Supabase)
 import Supabase
 #endif
@@ -149,16 +150,28 @@ nonisolated struct PublishService {
         var assetRows: [PublishedAssetRow] = []
 
         for upload in uploads {
-            // Storage path: user_<userId>/profile_<pid>/<basename>.
-            // Basename is the last component of the local relative path
-            // (`draft_<UUID>/image_<UUID>.jpg` → `image_<UUID>.jpg`),
-            // which is already deterministic per-node, so re-publishes
-            // overwrite the same object cleanly via `upsert: true`.
+            // Storage path: user_<userId>/profile_<pid>/<stem>_<hash8>.<ext>.
+            // The basename's stem is deterministic per-node
+            // (`draft_<UUID>/image_<UUID>.jpg` → `image_<UUID>`); the hash
+            // suffix is the first 8 hex chars of SHA-256 over the bytes
+            // we're about to upload. Same bytes → same path → CDN reuse;
+            // different bytes → new path → cache bust without manual purge.
+            // This is what makes the `immutable` cache header below safe.
+            guard let localURL = LocalCanvasAssetStore.resolveURL(upload.localPath) else {
+                throw PublishError.missingAsset(localPath: upload.localPath)
+            }
+            let bytes: Data
+            do {
+                bytes = try await readFileData(at: localURL)
+            } catch {
+                throw PublishError.missingAsset(localPath: upload.localPath)
+            }
             let basename = (upload.localPath as NSString).lastPathComponent
-            let storagePath = "user_\(canonicalUserId)/profile_\(canonicalProfileId)/\(basename)"
+            let hashedBasename = Self.contentHashedBasename(basename, bytes: bytes)
+            let storagePath = "user_\(canonicalUserId)/profile_\(canonicalProfileId)/\(hashedBasename)"
             let publicURL = try await uploadAsset(
                 client: client,
-                relativeLocalPath: upload.localPath,
+                bytes: bytes,
                 storagePath: storagePath
             )
             pathMap[upload.localPath] = publicURL
@@ -173,9 +186,16 @@ nonisolated struct PublishService {
         }
 
         // 4-5. Transform document (pure copy; local document untouched).
-        let publishedDocument = PublishedDocumentTransformer.transform(
+        var publishedDocument = PublishedDocumentTransformer.transform(
             document, replacing: pathMap
         )
+        // Lift the hero avatar's resolved public URL into a top-level
+        // key on `design_json` so the explore feed can extract it via
+        // `design_json->>heroAvatarURL` without paying for the whole
+        // scene graph per banner row. Only present after the publish
+        // pipeline rewrote the local path to a Supabase URL — local-
+        // only paths nil out (`heroAvatarPublicURL` filters those).
+        publishedDocument.heroAvatarURL = heroAvatarPublicURL(in: publishedDocument)
 
         // 6. Upsert profile row. UUIDs sent to Postgres in lowercase so
         //    the row's `user_id` column matches `auth.uid()` exactly,
@@ -209,8 +229,28 @@ nonisolated struct PublishService {
             throw mapDatabaseError(error)
         }
 
-        // 6b. Replace any prior asset rows for this profile.
+        // 6b. Replace any prior asset rows for this profile, and sweep any
+        //      storage objects that those rows pointed at but the new rows
+        //      don't. Required because hashed basenames mean a re-published
+        //      profile uploads a *new* object instead of overwriting the
+        //      old one — without this sweep, every edit would leak storage.
         if !assetRows.isEmpty {
+            let newPaths = Set(assetRows.map { $0.storage_path })
+            var orphanedPaths: [String] = []
+            do {
+                let oldRows: [StoredAssetPath] = try await client
+                    .from("profile_assets")
+                    .select("storage_path")
+                    .eq("profile_id", value: canonicalProfileId)
+                    .execute()
+                    .value
+                orphanedPaths = oldRows
+                    .map { $0.storage_path }
+                    .filter { !newPaths.contains($0) }
+            } catch {
+                // Couldn't read old rows; skip the sweep but keep going.
+            }
+
             do {
                 try await client.from("profile_assets")
                     .delete()
@@ -223,12 +263,18 @@ nonisolated struct PublishService {
                 // Asset row write failures are non-fatal — the publish itself
                 // succeeded; the rows are mostly bookkeeping for now.
             }
+
+            if !orphanedPaths.isEmpty {
+                _ = try? await client.storage
+                    .from("profile-assets")
+                    .remove(paths: orphanedPaths)
+            }
         }
 
         return PublishedProfileResult(
             profileId: canonicalProfileId,
             username: username,
-            publicPath: "/@\(username)"
+            publicPath: ProfileShareLink.path(username: username)
         )
         #else
         throw PublishError.notConfigured(reason: .packageNotAdded)
@@ -307,30 +353,33 @@ nonisolated struct PublishService {
     }
 
     #if canImport(Supabase)
-    /// Reads bytes for `relativeLocalPath` (resolved through
-    /// `LocalCanvasAssetStore`), uploads to `storagePath` in the
-    /// `profile-assets` bucket, and returns the public URL. Throws
-    /// `.missingAsset` if the local file is gone, `.uploadFailed` on any
-    /// network/storage failure.
+    /// Uploads `bytes` to `storagePath` in the `profile-assets` bucket and
+    /// returns the public URL. Bytes are read once by the caller so the
+    /// SHA-256 used to build `storagePath` is computed over the exact same
+    /// buffer we upload. Throws `.uploadFailed` on any network/storage
+    /// failure.
     private func uploadAsset(
         client: SupabaseClient,
-        relativeLocalPath: String,
+        bytes: Data,
         storagePath: String
     ) async throws -> String {
-        guard let localURL = LocalCanvasAssetStore.resolveURL(relativeLocalPath),
-              let bytes = try? await readFileData(at: localURL) else {
-            throw PublishError.missingAsset(localPath: relativeLocalPath)
-        }
         do {
             // supabase-swift exposes `upload(_:data:options:)` (path is the
             // unlabeled first argument; `path:file:options:` is deprecated).
-            // `upsert: true` makes re-publishes overwrite cleanly.
+            // `upsert: true` is harmless under content-hashed paths (same
+            // bytes → same path → idempotent rewrite). `cacheControl` is
+            // set to one year + `immutable` because the path itself busts
+            // when bytes change, so the CDN can hold this object forever.
             _ = try await client.storage
                 .from("profile-assets")
                 .upload(
                     storagePath,
                     data: bytes,
-                    options: FileOptions(contentType: "image/jpeg", upsert: true)
+                    options: FileOptions(
+                        cacheControl: "31536000, immutable",
+                        contentType: "image/jpeg",
+                        upsert: true
+                    )
                 )
         } catch {
             // Storage RLS rejections come back as a generic error string
@@ -376,6 +425,21 @@ nonisolated struct PublishService {
         }.value
     }
     #endif
+
+    /// Build a content-addressed basename from the local file's basename and
+    /// the bytes we're about to upload. Format: `<stem>_<hash8>.<ext>`,
+    /// where `<hash8>` is the first 8 hex chars of SHA-256 over `bytes`.
+    /// Eight chars (32 bits) is plenty for cache-busting at our scale —
+    /// collision risk is bounded by assets per profile, not globally, and
+    /// a within-profile collision still resolves to the same bytes.
+    nonisolated static func contentHashedBasename(_ basename: String, bytes: Data) -> String {
+        let digest = SHA256.hash(data: bytes)
+        let hash8 = digest.prefix(4).map { String(format: "%02x", $0) }.joined()
+        let ns = basename as NSString
+        let stem = ns.deletingPathExtension
+        let ext = ns.pathExtension
+        return ext.isEmpty ? "\(stem)_\(hash8)" : "\(stem)_\(hash8).\(ext)"
+    }
 }
 
 // MARK: - Wire payloads (snake_case keys to match Postgres columns)
@@ -394,6 +458,25 @@ private nonisolated struct PublishedProfileRowEncodable: Encodable {
     let published_at: String
 }
 
+/// Find the hero's `.profileAvatar` node and return its resolved
+/// public URL. After `PublishedDocumentTransformer` runs, the
+/// `content.localImagePath` field carries the Supabase URL the
+/// asset was uploaded to. Returns `nil` when no avatar node exists,
+/// the field is empty, or the path didn't get rewritten (still a
+/// local file URI) — the banner falls through to the initial-letter
+/// chip in those cases.
+private func heroAvatarPublicURL(in document: ProfileDocument) -> String? {
+    let avatar = document.nodes.values.first { $0.role == .profileAvatar }
+    guard let path = avatar?.content.localImagePath?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+          !path.isEmpty else { return nil }
+    let lower = path.lowercased()
+    guard lower.hasPrefix("http://") || lower.hasPrefix("https://") else {
+        return nil
+    }
+    return path
+}
+
 private nonisolated struct PublishedAssetRow: Encodable {
     let profile_id: String
     let user_id: String
@@ -401,4 +484,11 @@ private nonisolated struct PublishedAssetRow: Encodable {
     let storage_path: String
     let public_url: String?
     let asset_type: String
+}
+
+/// Narrow projection used only for the orphan-sweep on republish — we just
+/// need the storage paths the prior publish wrote so we can diff them
+/// against the new ones and remove the leftovers.
+private nonisolated struct StoredAssetPath: Decodable {
+    let storage_path: String
 }

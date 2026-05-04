@@ -206,6 +206,94 @@ nonisolated struct PublishedProfileService {
         #endif
     }
 
+    // MARK: - Banner enrichment
+
+    /// One profile's page-background fragment, extracted out of
+    /// `design_json` server-side via PostgREST's JSONB `->>` operator.
+    /// Used by the explore feed's banner cards so each row can render
+    /// against the user's own canvas background without paying for
+    /// the rest of the scene graph.
+    nonisolated struct BackgroundFragment: Sendable, Equatable {
+        let profileId: String
+        let backgroundImageURL: String?
+        let backgroundHex: String?
+        /// Hero avatar URL pulled from the published document's
+        /// top-level `heroAvatarURL` key (denormalized at publish
+        /// time). Lets the explore-feed banner render the user's
+        /// actual avatar without paying for the full scene graph.
+        let heroAvatarURL: String?
+    }
+
+    private struct BackgroundFragmentRow: Decodable, Sendable {
+        let id: String?
+        let profile_id: String?
+        let background_image_url: String?
+        let background_hex: String?
+        let hero_avatar_url: String?
+    }
+
+    /// Fetch the page-background URL + hex for a batch of published
+    /// profiles, using a JSONB projection so the server only sends
+    /// the two text fields we need (instead of the whole `design_json`
+    /// payload, which can be megabytes per row).
+    ///
+    /// `pageBackgroundImagePath` is rewritten to a public URL by
+    /// `PublishedDocumentTransformer.transform(_:replacing:)` during
+    /// publish, so the value extracted here is directly loadable by
+    /// `CachedRemoteImage`. Same goes for the hex tone — it sits at
+    /// the top of the encoded `ProfileDocument` (mirrored from the
+    /// first page) for backward compatibility.
+    ///
+    /// Failures are surfaced rather than swallowed so the caller (the
+    /// explore feed) can decide whether to log + continue with the
+    /// fallback gradient or retry on the next refresh.
+    func fetchBackgrounds(for ids: [String]) async throws -> [String: BackgroundFragment] {
+        guard !ids.isEmpty else { return [:] }
+        #if canImport(Supabase)
+        guard let client = SupabaseClientProvider.shared else {
+            throw PublishedProfileError.notConfigured(reason: .missingCredentials)
+        }
+        // PostgREST select with JSONB extraction. `->>` returns the
+        // value as text — perfect for a URL or a "#RRGGBB" hex.
+        // Aliasing (`alias:column->>key`) renames the column on the
+        // wire so our Decodable shape can stay tidy.
+        let select = "profile_id:id," +
+            "background_image_url:design_json->>pageBackgroundImagePath," +
+            "background_hex:design_json->>pageBackgroundHex," +
+            "hero_avatar_url:design_json->>heroAvatarURL"
+        do {
+            let rows: [BackgroundFragmentRow] = try await client
+                .from("profiles")
+                .select(select)
+                .in("id", values: ids)
+                .eq("is_published", value: true)
+                .execute()
+                .value
+            var out: [String: BackgroundFragment] = [:]
+            for row in rows {
+                let id = row.profile_id ?? row.id ?? ""
+                guard !id.isEmpty else { continue }
+                out[id] = BackgroundFragment(
+                    profileId: id,
+                    backgroundImageURL: row.background_image_url,
+                    backgroundHex: row.background_hex,
+                    heroAvatarURL: row.hero_avatar_url
+                )
+            }
+            return out
+        } catch let decodeErr as DecodingError {
+            throw PublishedProfileError.decode(String(describing: decodeErr))
+        } catch {
+            if SupabaseErrorMapper.isNetwork(error) {
+                throw PublishedProfileError.network
+            }
+            throw PublishedProfileError.unknown(SupabaseErrorMapper.detail(error))
+        }
+        #else
+        throw PublishedProfileError.notConfigured(reason: .packageNotAdded)
+        #endif
+    }
+
     /// Fetch the published profile feed ranked by the SQL view's MVP hot
     /// score: votes in the last 24h carry the most weight, then votes in the
     /// last 7d, then total votes.

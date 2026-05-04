@@ -30,6 +30,8 @@ struct PublishSheet: View {
 
     @State private var publishVM = PublishViewModel()
     @State private var username: String = ""
+    @State private var showShareSheet = false
+    @State private var copiedLinkMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -68,6 +70,24 @@ struct PublishSheet: View {
         }
         .onAppear {
             username = draft.publishedUsername ?? username
+        }
+        .sheet(isPresented: $showShareSheet) {
+            if case .success(let result) = publishVM.status {
+                ProfileShareSheet(username: result.username, document: document)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            }
+        }
+        .alert(
+            "Link copied",
+            isPresented: Binding(
+                get: { copiedLinkMessage != nil },
+                set: { if !$0 { copiedLinkMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { copiedLinkMessage = nil }
+        } message: {
+            Text(copiedLinkMessage ?? "")
         }
     }
 
@@ -172,7 +192,7 @@ struct PublishSheet: View {
             VStack(spacing: 6) {
                 Text("Published!")
                     .font(.title3.weight(.semibold))
-                Text(result.publicPath)
+                Text(ProfileShareLink.linkString(username: result.username))
                     .font(.body.monospaced())
                     .foregroundStyle(.secondary)
             }
@@ -189,7 +209,16 @@ struct PublishSheet: View {
                 .buttonStyle(.borderedProminent)
 
                 Button {
-                    copyToClipboard(result.publicPath)
+                    showShareSheet = true
+                } label: {
+                    Label("Share Profile", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    copyToClipboard(ProfileShareLink.linkString(username: result.username))
                 } label: {
                     Label("Copy path", systemImage: "doc.on.doc")
                         .frame(maxWidth: .infinity)
@@ -284,6 +313,8 @@ struct PublishSheet: View {
     private func copyToClipboard(_ text: String) {
         #if os(iOS) || os(visionOS)
         UIPasteboard.general.string = text
+        CucuHaptics.success()
+        copiedLinkMessage = text
         #endif
     }
 }

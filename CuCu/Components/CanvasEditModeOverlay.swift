@@ -33,6 +33,14 @@ final class CanvasEditModeOverlay {
 
     private var pages: [UUID: PageOverlay] = [:]
 
+    /// When non-nil, only this node's chrome stays visible; every other
+    /// pair fades out. Set by the canvas host while a text or note node
+    /// is in inline editing — keeps other elements' hashlines from
+    /// layering on top of the lifted editing card. Stored on the
+    /// overlay (not just applied once) so per-keystroke `apply(...)`
+    /// re-runs honor the focus instead of re-revealing other chrome.
+    private var inlineEditingNodeID: UUID?
+
     /// Wired to `CanvasEditorView.onSelectionChanged` so chip taps drop the
     /// host into "node selected, inspector open" without rebuilding the
     /// gesture path.
@@ -53,6 +61,58 @@ final class CanvasEditModeOverlay {
     func purgeAll() {
         for id in Array(pages.keys) {
             purge(pageID: id)
+        }
+    }
+
+    /// Lift one node's chrome (dashed outline + chip) along with its
+    /// node view when the keyboard pushes the editing node up. The
+    /// chrome lives as a sibling of the node view inside the page
+    /// view, so without a matching translation it stays anchored to
+    /// the document-stored frame and the dashes drift away from the
+    /// content. Pass `.zero` to restore.
+    ///
+    /// `pageView` is unused at the public boundary — we walk every
+    /// page record because the editing node could be on any page in
+    /// a multi-page draft, and the host already knows which node id
+    /// is editing. Cheap walk: bounded by visible-page count.
+    func setNodeChromeTranslation(_ translation: CGFloat, forNode id: UUID) {
+        let xform: CGAffineTransform = abs(translation) > 0.001
+            ? CGAffineTransform(translationX: 0, y: translation)
+            : .identity
+        for page in pages.values {
+            guard let pair = page.pairs[id] else { continue }
+            pair.outline.transform = xform
+            pair.chip.transform = xform
+        }
+    }
+
+    /// Spotlight mode for inline text/note editing. When `editingID` is
+    /// non-nil, fades out every other node's dashed outline + chip so
+    /// the only visible chrome belongs to the active card — without
+    /// this, other elements' hashlines layer on top of the lifted
+    /// editing node when `apply(...)` re-runs (per-keystroke document
+    /// pushes call `bringSubviewToFront` on every pair). Pass `nil`
+    /// to restore everyone.
+    ///
+    /// Stored, not just applied once: subsequent `apply(...)` calls
+    /// read the stored value and keep non-focused pairs hidden until
+    /// editing ends.
+    func setInlineEditingFocus(_ editingID: UUID?) {
+        let previous = inlineEditingNodeID
+        inlineEditingNodeID = editingID
+        guard previous != editingID else { return }
+        for page in pages.values {
+            for (id, pair) in page.pairs {
+                let visible = (editingID == nil) || (id == editingID)
+                let target: CGFloat = visible ? 1 : 0
+                if pair.outline.alpha == target && pair.chip.alpha == target { continue }
+                UIView.animate(withDuration: 0.18,
+                               delay: 0,
+                               options: [.curveEaseOut, .allowUserInteraction]) {
+                    pair.outline.alpha = target
+                    pair.chip.alpha = target
+                }
+            }
         }
     }
 
@@ -148,7 +208,12 @@ final class CanvasEditModeOverlay {
             // Live-mode exit collapses simultaneously — no cascade.
             let delay = editMode ? cappedDelay : 0
             _ = progress
-            setPair(pair: pair, visible: editMode, delay: delay)
+            // Inline-edit focus suppresses every pair except the
+            // editing node's. Without this filter, per-keystroke
+            // `apply(...)` re-runs would re-reveal every other node's
+            // dashed outline on top of the lifted editing card.
+            let focused = inlineEditingNodeID == nil || inlineEditingNodeID == id
+            setPair(pair: pair, visible: editMode && focused, delay: delay)
             // Keep chips on top of outlines, and outlines on top of nodes
             // (the page's regular subview order draws nodes between the
             // background and the inset stroke).
@@ -388,6 +453,7 @@ struct CanvasEditChipModel {
         case .link:      return "Link"
         case .gallery:   return "Gallery"
         case .carousel:  return "Carousel"
+        case .note:      return "Note"
         }
     }
 }

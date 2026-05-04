@@ -36,8 +36,14 @@ struct ProfileCanvasBuilderView: View {
     /// centered title pill if the chrome stays at iPad-sized icons.
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
-    @State private var document: ProfileDocument = .blank
+    @State private var document: ProfileDocument
     @State private var selectedID: UUID?
+    /// True when `init` had to seed `structuredProfileBlank` (empty /
+    /// corrupted JSON) or normalize moved nodes around. The seeded
+    /// version is persisted in `.onAppear` once the model context is
+    /// available so subsequent launches go straight to the .document
+    /// path with stable UUIDs.
+    @State private var didSeedOnInit: Bool
     /// Toggle that arms the canvas's "tap a chip to edit" mode. Driven
     /// by the floating Edit/Done capsule in the top-left of the canvas;
     /// turning it off automatically clears `selectedID` so the inspector
@@ -45,8 +51,8 @@ struct ProfileCanvasBuilderView: View {
     @State private var editMode: Bool = false
     @State private var editingPageIndex: Int = 0
     @State private var pendingDeletePageIndex: Int?
-    @State private var legacyDraft: Bool = false
-    @State private var titleDraft: String = ""
+    @State private var legacyDraft: Bool
+    @State private var titleDraft: String
     @State private var titleSaveTask: Task<Void, Never>?
     @State private var sheets = CanvasSheetCoordinator()
     @State private var keyboardHeight: CGFloat = 0
@@ -113,6 +119,52 @@ struct ProfileCanvasBuilderView: View {
         store ?? DraftStore(context: context)
     }
 
+    /// Decode the draft's saved JSON synchronously so the first frame
+    /// of the canvas already reflects either the user's existing
+    /// content or the seeded structured-profile hero. Without this,
+    /// `document` would land on `.blank` until `loadDraft()` runs in
+    /// `.onAppear` — a window long enough for `CanvasEmptyStateView`
+    /// to flash on top of where the hero is about to seed in. First-
+    /// time users in particular saw "Design your internet identity"
+    /// CTAs instead of the default hero. The persistence side-effect
+    /// (saving a freshly-seeded doc back to the draft) is deferred to
+    /// `loadDraft()` because the model context isn't available here.
+    init(draft: ProfileDraft) {
+        self.draft = draft
+
+        let initialDoc: ProfileDocument
+        var initialLegacy = false
+        var seeded = false
+        switch CanvasDocumentCodec.decode(draft.designJSON) {
+        case .document(let doc):
+            var loaded = doc
+            if StructuredProfileLayout.isEmptyCanvas(loaded) {
+                loaded = .structuredProfileBlank
+                seeded = true
+            } else {
+                let original = loaded
+                StructuredProfileLayout.normalize(&loaded)
+                if loaded != original { seeded = true }
+            }
+            initialDoc = loaded
+        case .legacy:
+            // `legacyView` replaces the canvas, but we still seed a
+            // structured doc so the canvas branch (briefly mounted
+            // during the legacy banner transition) doesn't flash
+            // empty CTAs.
+            initialDoc = .structuredProfileBlank
+            initialLegacy = true
+        case .empty:
+            initialDoc = .structuredProfileBlank
+            seeded = true
+        }
+
+        self._document = State(initialValue: initialDoc)
+        self._legacyDraft = State(initialValue: initialLegacy)
+        self._titleDraft = State(initialValue: draft.title)
+        self._didSeedOnInit = State(initialValue: seeded)
+    }
+
     private var mutator: CanvasMutator {
         CanvasMutator(
             document: snapshottingDocumentBinding,
@@ -142,6 +194,7 @@ struct ProfileCanvasBuilderView: View {
         }
         redoStack.removeAll()
     }
+
 
     /// Pop the most recent snapshot, push the current state onto redo,
     /// and replace the live document. Persists immediately via the
@@ -340,35 +393,36 @@ struct ProfileCanvasBuilderView: View {
                             return
                         }
                         selectedTextRangeByNodeID = [nodeID: range]
-                    }
+                    },
                 )
                 .overlay(alignment: .topLeading) {
-                    Group {
-                        if editMode {
-                            editModeLeftChrome
-                        } else {
-                            EditCanvasToggleButton(editMode: editMode) {
-                                toggleEditMode()
-                            }
+                    // Non-edit-mode entry button only. The edit-mode
+                    // chrome (× / undo / redo) is hoisted to the
+                    // outermost overlay below so it sits above the
+                    // bottom inspector panel and stays tappable while
+                    // a node is selected.
+                    if !editMode {
+                        EditCanvasToggleButton(editMode: editMode) {
+                            toggleEditMode()
                         }
+                        .padding(.leading, 14)
+                        .padding(.top, 12)
+                        .allowsHitTesting(!canvasIsEmpty)
+                        .opacity(canvasIsEmpty ? 0 : 1)
                     }
-                    .padding(.leading, 14)
-                    .padding(.top, 12)
-                    .allowsHitTesting(!canvasIsEmpty)
-                    .opacity(canvasIsEmpty ? 0 : 1)
                 }
                 .overlay(alignment: .topTrailing) {
-                    Group {
-                        if editMode {
-                            editModeDoneButton
-                        } else {
-                            CanvasModeStatusLabel(editMode: editMode)
-                                .allowsHitTesting(false)
-                        }
+                    // Live status label only. The edit-mode "Done"
+                    // button is hoisted to the outermost overlay
+                    // alongside the leading × so the exit affordances
+                    // stay on top of the inspector panel.
+                    if !editMode {
+                        CanvasModeStatusLabel(editMode: editMode)
+                            .allowsHitTesting(false)
+                            .padding(.trailing, 14)
+                            .padding(.top, 14)
+                            .opacity(canvasIsEmpty ? 0 : 1)
                     }
-                    .padding(.trailing, 14)
-                    .padding(.top, 14)
-                    .opacity(canvasIsEmpty ? 0 : 1)
                 }
                 .overlay(alignment: .top) {
                     // Title chip lives on the canvas instead of in
@@ -454,6 +508,29 @@ struct ProfileCanvasBuilderView: View {
                         .equatable()
                     }
                 }
+            }
+        }
+        // Edit-mode exit chrome lives on top of the bottom inspector
+        // panel so the × always wins the hit test, no matter how the
+        // panel grows or animates. The two-tap-out canvas behaviour
+        // ("tap empty → clear node, tap empty → exit edit mode") is
+        // unaffected — that lives in `onRequestExitEditMode` on the
+        // canvas itself.
+        .overlay(alignment: .topLeading) {
+            if !legacyDraft, editMode {
+                editModeLeftChrome
+                    .padding(.leading, 14)
+                    .padding(.top, 12)
+                    .allowsHitTesting(!canvasIsEmpty)
+                    .opacity(canvasIsEmpty ? 0 : 1)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if !legacyDraft, editMode {
+                editModeDoneButton
+                    .padding(.trailing, 14)
+                    .padding(.top, 14)
+                    .opacity(canvasIsEmpty ? 0 : 1)
             }
         }
         // Opt the entire view tree out of SwiftUI's automatic
@@ -656,6 +733,7 @@ struct ProfileCanvasBuilderView: View {
                     .font(.system(size: iconSize, weight: .light))
                     .foregroundStyle(Color.cucuInk)
                     .frame(width: frameSide, height: frameSide)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Exit edit mode")
@@ -667,6 +745,7 @@ struct ProfileCanvasBuilderView: View {
                     .font(.system(size: iconSize, weight: .light))
                     .foregroundStyle(Color.cucuInk.opacity(canUndo ? 1 : 0.28))
                     .frame(width: frameSide, height: frameSide)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(!canUndo)
@@ -679,11 +758,20 @@ struct ProfileCanvasBuilderView: View {
                     .font(.system(size: iconSize, weight: .light))
                     .foregroundStyle(Color.cucuInk.opacity(canRedo ? 1 : 0.28))
                     .frame(width: frameSide, height: frameSide)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(!canRedo)
             .accessibilityLabel("Redo")
         }
+        // Absorb hits in the gaps between buttons too — without this,
+        // a tap landing in the rowSpacing falls through to the UIKit
+        // canvas's tap recognizer, which then either deselects the
+        // current node or trips the two-tap exit. Color.clear is
+        // hit-testable in SwiftUI, so the background covers the full
+        // chrome rect (buttons + gaps) and blocks fall-through. The
+        // chrome itself stays visually identical.
+        .background(Color.clear.contentShape(Rectangle()))
     }
 
     /// Trailing "Done" button shown in edit mode in place of the
@@ -698,6 +786,7 @@ struct ProfileCanvasBuilderView: View {
                 .foregroundStyle(Color.cucuInk)
                 .frame(height: 30)
                 .padding(.horizontal, 4)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Done editing")
@@ -851,6 +940,7 @@ struct ProfileCanvasBuilderView: View {
         RichTextSelectionToolbar(
             textColorHex: richTextColorBinding(nodeID: nodeID, range: range),
             highlightColorHex: richTextHighlightBinding(nodeID: nodeID, range: range),
+            fontFamily: richTextFontFamilyBinding(nodeID: nodeID, range: range),
             boldActive: inlineBoolActive(nodeID: nodeID, range: range, reader: inlineBold),
             italicActive: inlineBoolActive(nodeID: nodeID, range: range, reader: inlineItalic),
             underlineActive: inlineBoolActive(nodeID: nodeID, range: range, reader: inlineUnderline),
@@ -904,6 +994,28 @@ struct ProfileCanvasBuilderView: View {
             set: { newValue in
                 mutateRichTextSpan(nodeID: nodeID, range: range) { node, normalized in
                     applyHighlight(hex: newValue, range: normalized, to: &node)
+                }
+            }
+        )
+    }
+
+    /// Resolves the family for the floating toolbar's font tile.
+    /// Reads inline-span override first, falls back to the node's
+    /// `style.fontFamily`, then `.system`. Writes apply only to the
+    /// selected range — the user's selection is the whole point of
+    /// the floating toolbar.
+    private func richTextFontFamilyBinding(nodeID: UUID, range: NSRange) -> Binding<NodeFontFamily> {
+        Binding(
+            get: {
+                guard let node = document.nodes[nodeID] else { return .system }
+                let normalized = normalizedRange(selection: range, text: node.content.text ?? "")
+                return inlineFontFamily(in: node, range: normalized)
+                    ?? node.style.fontFamily
+                    ?? .system
+            },
+            set: { newValue in
+                mutateRichTextSpan(nodeID: nodeID, range: range) { node, normalized in
+                    applyFontFamily(newValue, range: normalized, to: &node)
                 }
             }
         )
@@ -1027,6 +1139,9 @@ struct ProfileCanvasBuilderView: View {
                     Button("View Published", systemImage: "eye") {
                         sheets.publishedViewerUsername = published
                     }
+                    Button("Share Published", systemImage: "square.and.arrow.up") {
+                        sheets.shareProfileUsername = published
+                    }
                     // Cloud-only delete is gated on a signed-in
                     // session — the wipe authenticates against
                     // Supabase, so showing the action without an
@@ -1092,34 +1207,15 @@ struct ProfileCanvasBuilderView: View {
     // MARK: - Loading
 
     private func loadDraft() {
-        titleDraft = draft.title
-        switch CanvasDocumentCodec.decode(draft.designJSON) {
-        case .document(let doc):
-            var loaded = doc
-            if StructuredProfileLayout.isEmptyCanvas(loaded) {
-                loaded = .structuredProfileBlank
-                resolvedStore.updateDocument(draft, document: loaded)
-            } else {
-                let original = loaded
-                StructuredProfileLayout.normalize(&loaded)
-                if loaded != original {
-                    resolvedStore.updateDocument(draft, document: loaded)
-                }
-            }
-            document = loaded
-            editingPageIndex = 0
-            legacyDraft = false
-        case .legacy:
-            // Don't overwrite. Show banner; user opts in to blank canvas.
-            legacyDraft = true
-        case .empty:
-            // Brand-new or wiped — seed a structured profile doc and persist
-            // so subsequent launches go straight to .document.
-            document = .structuredProfileBlank
-            editingPageIndex = 0
-            legacyDraft = false
-            resolvedStore.updateDocument(draft, document: document)
-        }
+        // `init` decoded the draft's JSON synchronously and populated
+        // `document` / `legacyDraft` / `titleDraft` so the first frame
+        // is already correct. The only thing left is to flush a
+        // freshly-seeded doc back to disk now that we have the model
+        // context — subsequent launches then go straight to the
+        // .document path with stable UUIDs.
+        guard didSeedOnInit else { return }
+        didSeedOnInit = false
+        resolvedStore.updateDocument(draft, document: document)
     }
 
     private func persistedTitle(from value: String) -> String {
@@ -1373,6 +1469,10 @@ struct ProfileCanvasBuilderView: View {
 private struct RichTextSelectionToolbar: View {
     @Binding var textColorHex: String
     @Binding var highlightColorHex: String
+    /// Currently-effective font family for the selection (inline span
+    /// override > node style). Writes route through `applyFontFamily`
+    /// for the selected range only.
+    @Binding var fontFamily: NodeFontFamily
 
     let boldActive: Bool
     let italicActive: Bool
@@ -1394,10 +1494,14 @@ private struct RichTextSelectionToolbar: View {
     /// popover contents during dismissal and the embedded `ColorPicker`
     /// would briefly re-trigger its UIKit presentation.
     @State private var showingCustomColorPicker: Bool = false
+    /// Sheet presentation flag for the modal `FontPickerSheet` that
+    /// the font button opens.
+    @State private var showingFontPicker: Bool = false
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
+                fontFamilyControl
                 colorControl(
                     title: "Text Color",
                     systemImage: "textformat",
@@ -1446,6 +1550,44 @@ private struct RichTextSelectionToolbar: View {
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
         }
+        // Modal SF-Symbol-grid font picker. Same `FontPickerSheet`
+        // the bottom inspector opens, so the two paths stay in lockstep
+        // — pick a face here, the panel reflects it; pick it there,
+        // this control reflects it.
+        .sheet(isPresented: $showingFontPicker) {
+            FontPickerSheet(
+                selection: $fontFamily,
+                onCommit: {}
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+    }
+
+    /// Floating-toolbar tile that opens the modal font picker for the
+    /// active text selection. Glyph rendered in the currently-effective
+    /// family so the user sees the current pick at a glance.
+    private var fontFamilyControl: some View {
+        Button {
+            showingFontPicker = true
+        } label: {
+            HStack(spacing: 5) {
+                Text("Aa")
+                    .font(fontFamily.swiftUIFont(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.cucuInk.opacity(0.55))
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 32)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.cucuInk.opacity(0.06))
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Font family")
     }
 
     /// Pencil.tip button mirroring the `colorControl` chrome but

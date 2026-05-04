@@ -69,6 +69,12 @@ struct NodeEditingPanelView: View {
     /// Multi-select picker selection for the gallery-add flow on the
     /// first tab of a gallery node.
     @State private var galleryAppendSelection: [PhotosPickerItem] = []
+    /// Drives the SF Symbol picker sheet on the icon tab. Nil means
+    /// "no sheet"; setting it to a node ID presents `IconPickerSheet`
+    /// for that node. Mirrors the per-node-keyed `.sheet(item:)`
+    /// pattern used by `PropertyInspectorView` so picking a different
+    /// node mid-flow tears the sheet down cleanly.
+    @State private var iconPickerNodeID: UUID?
     @State private var pickerLoading = false
     @State private var pickerError: String?
     @State private var commitTask: Task<Void, Never>?
@@ -136,12 +142,35 @@ struct NodeEditingPanelView: View {
                 .onChange(of: galleryAppendSelection) { _, items in
                     loadGalleryAppend(items)
                 }
+                // SF Symbol grid for the icon tab. Per-node-keyed so
+                // selecting a different icon node mid-flow tears down
+                // and re-presents the sheet cleanly. The picker writes
+                // through `bindingIconName`, then `onCommit` persists.
+                .sheet(item: Binding(
+                    get: { iconPickerNodeID.map { IconPickerTarget(nodeID: $0) } },
+                    set: { iconPickerNodeID = $0?.nodeID }
+                )) { target in
+                    IconPickerSheet(
+                        selection: bindingIconName(target.nodeID),
+                        onCommit: { commitNow() }
+                    )
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                }
                 .onDisappear {
                     commitTask?.cancel()
                     onCommit(document)
                 }
             }
         }
+    }
+
+    /// Identifiable wrapper so `.sheet(item:)` can present the icon
+    /// picker keyed off the target node ID. Same pattern as the full
+    /// `PropertyInspectorView`.
+    private struct IconPickerTarget: Identifiable, Equatable {
+        let nodeID: UUID
+        var id: UUID { nodeID }
     }
 
     /// Tab labels for the new dark-capsule TabBar. The first label
@@ -245,11 +274,14 @@ struct NodeEditingPanelView: View {
             //   • image    → Replace photo
             //   • gallery  → Add photos
             //   • carousel → Add item (routes through `onAddElement`)
+            //   • icon     → Pick SF Symbol (the icon's only "content")
             // Everything else keeps the regular text controls.
             switch node.type {
             case .image:    imageTab(for: node)
             case .gallery:  galleryTab(for: node)
             case .carousel: carouselTab(for: node)
+            case .icon:     iconTab(for: node)
+            case .note:     noteTab(for: node)
             default:        textTab(for: node)
             }
         case .style:
@@ -270,6 +302,8 @@ struct NodeEditingPanelView: View {
             case .image:    return "Image"
             case .gallery:  return "Photos"
             case .carousel: return "Items"
+            case .icon:     return "Icon"
+            case .note:     return "Note"
             default:        return "Text"
             }
         case .style:
@@ -286,6 +320,17 @@ struct NodeEditingPanelView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     textContentCard(textID)
+                    // Link nodes need a URL field on the same tab as
+                    // their visible title — without it the bottom
+                    // panel offered no way to set the destination at
+                    // all (the full inspector had it, but most users
+                    // never opened that). Reuses the same
+                    // `content.url` field the published viewer's tap
+                    // handler reads, so saving here makes the link
+                    // tappable in the published profile.
+                    if textNode.type == .link {
+                        linkURLCard(textID)
+                    }
                     fontFamilyCard(textID)
                     fontWeightCard(textID)
                     sliderCard(
@@ -321,6 +366,20 @@ struct NodeEditingPanelView: View {
                     : "This element does not expose text controls.",
                 systemImage: "textformat"
             )
+        }
+    }
+
+    private func linkURLCard(_ id: UUID) -> some View {
+        cardShell(title: "URL", width: 240) {
+            TextField("https://", text: bindingLinkURL(id))
+                .font(.cucuMono(13, weight: .medium))
+                .foregroundStyle(Color.cucuInk)
+                .textFieldStyle(.plain)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
+                .submitLabel(.done)
+                .onSubmit { commitNow() }
         }
     }
 
@@ -411,6 +470,126 @@ struct NodeEditingPanelView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// First-tab content for icon nodes. The icon's only content is
+    /// the SF Symbol name, so the tab is a single tile that opens the
+    /// shared `IconPickerSheet`. Without this the tab fell through to
+    /// `textTab`, which rendered an empty-state because icons have no
+    /// editable text — so users had no way to change the symbol from
+    /// the bottom panel.
+    @ViewBuilder
+    private func iconTab(for node: CanvasNode) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                iconGlyphCard(node)
+                // Optional outbound URL. When set, the icon becomes
+                // tappable in the published viewer (see the `.icon`
+                // case in `CanvasEditorView.attachPanGesture`). Empty
+                // = inert icon, same behavior as before this card
+                // existed.
+                iconLinkCard(node)
+            }
+            .padding(.horizontal, 1)
+        }
+        .frame(height: 96)
+    }
+
+    private func iconLinkCard(_ node: CanvasNode) -> some View {
+        cardShell(title: "Link", width: 240) {
+            TextField("https://", text: bindingIconURL(node.id))
+                .font(.cucuMono(13, weight: .medium))
+                .foregroundStyle(Color.cucuInk)
+                .textFieldStyle(.plain)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
+                .submitLabel(.done)
+                .onSubmit { commitNow() }
+        }
+    }
+
+    private func iconGlyphCard(_ node: CanvasNode) -> some View {
+        let binding = bindingIconName(node.id)
+        let nodeID = node.id
+        return cardShell(title: "Icon", width: 200) {
+            Button {
+                iconPickerNodeID = nodeID
+            } label: {
+                HStack(spacing: 9) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.cucuCardSoft)
+                        Image(systemName: binding.wrappedValue)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Color.cucuInk)
+                    }
+                    .frame(width: 34, height: 34)
+                    Text(IconCatalog.label(for: binding.wrappedValue))
+                        .font(.cucuSerif(14, weight: .semibold))
+                        .foregroundStyle(Color.cucuInk)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.cucuInkFaded)
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// First-tab content for note nodes. Three text fields cover the
+    /// editable surface: Title (the headline + count badge), Time (the
+    /// editable relative-time string), and Body (the multi-line note
+    /// text). Body uses the same `bindingText` plumbing the regular
+    /// text node uses, so the existing reconcileTextStyleSpans guard
+    /// is benign for notes (textStyleSpans is never set on notes).
+    @ViewBuilder
+    private func noteTab(for node: CanvasNode) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                noteTitleCard(node.id)
+                noteTimestampCard(node.id)
+                noteBodyCard(node.id)
+            }
+            .padding(.horizontal, 1)
+        }
+        .frame(height: 96)
+    }
+
+    private func noteTitleCard(_ id: UUID) -> some View {
+        cardShell(title: "Title", width: 220) {
+            TextField("Notes (12)", text: bindingNoteTitle(id))
+                .font(.cucuSerif(15, weight: .semibold))
+                .foregroundStyle(Color.cucuInk)
+                .textFieldStyle(.plain)
+                .submitLabel(.done)
+                .onSubmit { commitNow() }
+        }
+    }
+
+    private func noteTimestampCard(_ id: UUID) -> some View {
+        cardShell(title: "Time", width: 180) {
+            TextField("10 min. ago", text: bindingNoteTimestamp(id))
+                .font(.cucuMono(13, weight: .medium))
+                .foregroundStyle(Color.cucuInk)
+                .textFieldStyle(.plain)
+                .submitLabel(.done)
+                .onSubmit { commitNow() }
+        }
+    }
+
+    private func noteBodyCard(_ id: UUID) -> some View {
+        cardShell(title: "Body", width: 280) {
+            TextField("Write your note", text: bindingText(id), axis: .vertical)
+                .font(.cucuSerif(14, weight: .regular))
+                .foregroundStyle(Color.cucuInk)
+                .lineLimit(2...3)
+                .textFieldStyle(.plain)
+                .submitLabel(.done)
+                .onSubmit { commitNow() }
         }
     }
 
@@ -633,7 +812,25 @@ struct NodeEditingPanelView: View {
                         step: 0.5,
                         valueText: String(format: "%.1f", document.nodes[node.id]?.style.borderWidth ?? 0)
                     )
+                    // No-op when clipShape is `.circle` — the renderer
+                    // overrides cornerRadius to min(w,h)/2 in that mode
+                    // (see `NodeRenderView`), same pattern as the link
+                    // `.pill` variant.
+                    sliderCard(
+                        title: "Radius",
+                        value: bindingStyleDouble(node.id, key: \.cornerRadius, defaultValue: 8),
+                        range: 0...40,
+                        step: 1,
+                        valueText: "\(Int(document.nodes[node.id]?.style.cornerRadius ?? 8))"
+                    )
                 case .link:
+                    // Variant picker first so the user can move off
+                    // `.pill` (which always renders as a capsule and
+                    // ignores the radius slider — that's the variant's
+                    // defining property). Card / Button / Badge respect
+                    // the slider directly; Underlined is a wavy text
+                    // treatment with no fill / border / radius.
+                    linkVariantCard(node.id)
                     colorCard(
                         title: "Text",
                         hex: bindingTextColor(node.id, defaultHex: "#1A140E")
@@ -646,8 +843,36 @@ struct NodeEditingPanelView: View {
                         title: "Border",
                         hex: bindingStyleHex(node.id, key: \.borderColorHex, defaultHex: "#1A140E")
                     )
+                    // Stroke width and corner radius mirror the
+                    // container / image style tabs so the link surface
+                    // can be tuned the same way every other framed
+                    // primitive can. The `.pill` variant overrides
+                    // cornerRadius to height/2 in the renderer, so the
+                    // slider only takes effect on card / button /
+                    // badge variants — by design.
+                    sliderCard(
+                        title: "Border W",
+                        value: bindingStyleDouble(node.id, key: \.borderWidth, defaultValue: 0),
+                        range: 0...8,
+                        step: 0.5,
+                        valueText: String(format: "%.1f", document.nodes[node.id]?.style.borderWidth ?? 0)
+                    )
+                    sliderCard(
+                        title: "Radius",
+                        value: bindingLinkCornerRadius(node.id),
+                        range: 0...40,
+                        step: 1,
+                        valueText: "\(Int(document.nodes[node.id]?.style.cornerRadius ?? 0))"
+                    )
                 case .gallery:
                     galleryLayoutCard(node.id)
+                    // Per-photo Fit/Fill mirrors the image inspector.
+                    // Gallery's renderer defaults a missing value to
+                    // `.fit` (see `GalleryNodeView.cachedImageFit`),
+                    // so the picker uses the same default — otherwise
+                    // it'd misreport the rendered state on a fresh
+                    // gallery as "Fill".
+                    galleryImageFitCard(node.id)
                     // Gallery card background — flows through the same
                     // `backgroundColorHex` field every other node uses,
                     // so the gallery's render path picks it up via
@@ -671,12 +896,79 @@ struct NodeEditingPanelView: View {
                         title: "Border",
                         hex: bindingStyleHex(node.id, key: \.borderColorHex, defaultHex: "#E5E5EA")
                     )
+                    // Border has no width by default — without this
+                    // slider, picking a Border color was a no-op
+                    // because `borderWidth` stayed at 0 and the stroke
+                    // never rendered.
+                    sliderCard(
+                        title: "Border W",
+                        value: bindingStyleDouble(node.id, key: \.borderWidth, defaultValue: 0),
+                        range: 0...8,
+                        step: 0.5,
+                        valueText: String(format: "%.1f", document.nodes[node.id]?.style.borderWidth ?? 0)
+                    )
                     sliderCard(
                         title: "Radius",
                         value: bindingStyleDouble(node.id, key: \.cornerRadius, defaultValue: 12),
                         range: 0...40,
                         step: 1,
                         valueText: "\(Int(document.nodes[node.id]?.style.cornerRadius ?? 12))"
+                    )
+                case .note:
+                    // Notes are container-shaped: same Fill / Border /
+                    // Radius family every other framed primitive uses.
+                    // Text controls (font family / size / color) are
+                    // included so the typography of all three rows
+                    // (title, timestamp, body) — which derive from the
+                    // node's base font — can be tuned in one place.
+                    colorCard(
+                        title: "Fill",
+                        hex: bindingStyleHex(node.id, key: \.backgroundColorHex, defaultHex: "#FFFFFF"),
+                        supportsAlpha: true
+                    )
+                    colorCard(
+                        title: "Text",
+                        hex: bindingTextColor(node.id, defaultHex: "#1A140E")
+                    )
+                    fontFamilyCard(node.id)
+                    sliderCard(
+                        title: "Size",
+                        value: bindingStyleDouble(node.id, key: \.fontSize, defaultValue: 15),
+                        range: 10...28,
+                        step: 1,
+                        valueText: "\(Int(document.nodes[node.id]?.style.fontSize ?? 15))"
+                    )
+                    sliderCard(
+                        title: "Opacity",
+                        value: bindingNodeDouble(node.id, key: \.opacity, defaultValue: 1),
+                        range: 0...1,
+                        step: 0.01,
+                        valueText: "\(Int((document.nodes[node.id]?.opacity ?? 1) * 100))%"
+                    )
+                    colorCard(
+                        title: "Border",
+                        hex: bindingStyleHex(node.id, key: \.borderColorHex, defaultHex: "#1A140E")
+                    )
+                    sliderCard(
+                        title: "Border W",
+                        value: bindingStyleDouble(node.id, key: \.borderWidth, defaultValue: 1),
+                        range: 0...8,
+                        step: 0.5,
+                        valueText: String(format: "%.1f", document.nodes[node.id]?.style.borderWidth ?? 1)
+                    )
+                    sliderCard(
+                        title: "Radius",
+                        value: bindingStyleDouble(node.id, key: \.cornerRadius, defaultValue: 18),
+                        range: 0...40,
+                        step: 1,
+                        valueText: "\(Int(document.nodes[node.id]?.style.cornerRadius ?? 18))"
+                    )
+                    sliderCard(
+                        title: "Padding",
+                        value: bindingOptionalStyleDouble(node.id, key: \.padding, defaultValue: 16),
+                        range: 0...32,
+                        step: 1,
+                        valueText: "\(Int(document.nodes[node.id]?.style.padding ?? 16))"
                     )
                 }
             }
@@ -904,12 +1196,36 @@ struct NodeEditingPanelView: View {
         )
     }
 
+    /// Variant picker for link nodes. Without it, the radius slider
+    /// looks broken on a fresh link because the default `.pill`
+    /// variant always paints a capsule.
+    private func linkVariantCard(_ id: UUID) -> some View {
+        menuCard(
+            title: "Variant",
+            width: 170,
+            value: bindingLinkVariant(id),
+            options: NodeLinkStyleVariant.allCases.map { ($0, $0.label) }
+        )
+    }
+
     private func imageFitCard(_ id: UUID) -> some View {
         menuCard(
             title: "Fit",
             width: 140,
             value: bindingImageFit(id),
             options: [(.fill, "Fill"), (.fit, "Fit")]
+        )
+    }
+
+    /// Gallery variant: defaults to `.fit` to match
+    /// `GalleryNodeView.cachedImageFit` so a freshly-added gallery
+    /// reports the same value the renderer is actually showing.
+    private func galleryImageFitCard(_ id: UUID) -> some View {
+        menuCard(
+            title: "Fit",
+            width: 140,
+            value: bindingGalleryImageFit(id),
+            options: [(.fit, "Fit"), (.fill, "Fill")]
         )
     }
 
@@ -1083,6 +1399,30 @@ struct NodeEditingPanelView: View {
         )
     }
 
+    private func bindingNoteTitle(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: { document.nodes[id]?.content.noteTitle ?? "" },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.content.noteTitle = newValue
+                document.nodes[id] = node
+                scheduleCommit()
+            }
+        )
+    }
+
+    private func bindingNoteTimestamp(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: { document.nodes[id]?.content.noteTimestamp ?? "" },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.content.noteTimestamp = newValue
+                document.nodes[id] = node
+                scheduleCommit()
+            }
+        )
+    }
+
     private func bindingStyleHex(_ id: UUID,
                                  key: WritableKeyPath<NodeStyle, String?>,
                                  defaultHex: String) -> Binding<String> {
@@ -1236,9 +1576,103 @@ struct NodeEditingPanelView: View {
         )
     }
 
+    private func bindingIconName(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: { document.nodes[id]?.content.iconName ?? "star.fill" },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.content.iconName = newValue
+                document.nodes[id] = node
+            }
+        )
+    }
+
+    /// Outbound URL for icon nodes. Reuses the same `content.url`
+    /// field link nodes use, so the published viewer's tap handler
+    /// can stay type-agnostic. Debounced commit so each keystroke
+    /// doesn't flood SwiftData; commits on Done / blur via the
+    /// surrounding `commitTask` machinery.
+    private func bindingIconURL(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: { document.nodes[id]?.content.url ?? "" },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.content.url = newValue
+                document.nodes[id] = node
+                scheduleCommit()
+            }
+        )
+    }
+
+    /// URL field for link nodes. Same field as `bindingIconURL` (both
+    /// write `content.url`); kept as a separate helper for clarity at
+    /// call sites and so a future link-only validation rule can be
+    /// added without affecting icons.
+    private func bindingLinkURL(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: { document.nodes[id]?.content.url ?? "" },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.content.url = newValue
+                document.nodes[id] = node
+                scheduleCommit()
+            }
+        )
+    }
+
+    private func bindingLinkVariant(_ id: UUID) -> Binding<NodeLinkStyleVariant> {
+        Binding(
+            get: { document.nodes[id]?.style.linkStyleVariant ?? .pill },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.style.linkStyleVariant = newValue
+                document.nodes[id] = node
+            }
+        )
+    }
+
+    /// Slider binding for a link's corner radius. The `.pill` and
+    /// `.underlined` variants don't read `cornerRadius` (pill uses
+    /// height/2, underlined paints no fill / border), so moving the
+    /// slider on those variants would *appear* broken — the model
+    /// updates and the selection overlay redraws, but the visible
+    /// element keeps its old corners. Auto-promote those variants to
+    /// `.card` on the same write so the user's intent ("I want this
+    /// corner radius") actually lands. Card / button / badge already
+    /// honor cornerRadius, so they pass through untouched.
+    private func bindingLinkCornerRadius(_ id: UUID) -> Binding<Double> {
+        Binding(
+            get: { document.nodes[id]?.style.cornerRadius ?? 0 },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.style.cornerRadius = newValue
+                let variant = node.style.linkStyleVariant ?? .pill
+                if variant == .pill || variant == .underlined {
+                    node.style.linkStyleVariant = .card
+                }
+                document.nodes[id] = node
+            }
+        )
+    }
+
     private func bindingImageFit(_ id: UUID) -> Binding<NodeImageFit> {
         Binding(
             get: { document.nodes[id]?.style.imageFit ?? .fill },
+            set: { newValue in
+                guard var node = document.nodes[id] else { return }
+                node.style.imageFit = newValue
+                document.nodes[id] = node
+            }
+        )
+    }
+
+    /// Same field as `bindingImageFit`, but the read-side default is
+    /// `.fit` to match the gallery renderer (`GalleryNodeView`).
+    /// Without this the picker would show "Fill" on a fresh gallery
+    /// even though the photos were drawn `.fit`.
+    private func bindingGalleryImageFit(_ id: UUID) -> Binding<NodeImageFit> {
+        Binding(
+            get: { document.nodes[id]?.style.imageFit ?? .fit },
             set: { newValue in
                 guard var node = document.nodes[id] else { return }
                 node.style.imageFit = newValue
@@ -1543,6 +1977,7 @@ struct NodeEditingPanelView: View {
         case .link: return .link
         case .gallery: return .gallery
         case .carousel: return .carousel
+        case .note: return .note
         }
     }
 
@@ -1556,6 +1991,7 @@ struct NodeEditingPanelView: View {
         case .link: return "link"
         case .gallery: return "rectangle.grid.2x2"
         case .carousel: return "rectangle.stack"
+        case .note: return "note.text"
         }
     }
 
@@ -1575,6 +2011,7 @@ struct NodeEditingPanelView: View {
         case .link: return "Link"
         case .gallery: return "Gallery"
         case .carousel: return "Carousel"
+        case .note: return "Note"
         }
     }
 

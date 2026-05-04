@@ -131,6 +131,7 @@ struct CollapsedSelectionBar: View {
         case .link:      return .link
         case .gallery:   return .gallery
         case .carousel:  return .carousel
+        case .note:      return .note
         }
     }
 
@@ -144,6 +145,7 @@ struct CollapsedSelectionBar: View {
         case .link:      return "link"
         case .gallery:   return "rectangle.grid.2x2"
         case .carousel:  return "rectangle.stack"
+        case .note:      return "note.text"
         }
     }
 
@@ -157,6 +159,7 @@ struct CollapsedSelectionBar: View {
         case .link:      return "Link"
         case .gallery:   return "Gallery"
         case .carousel:  return "Carousel"
+        case .note:      return "Note"
         }
     }
 
