@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// HSV color picker for the redesigned text inspector. Matches the
 /// `inspector-text.jsx` layout: a saturation/value square, a vertical
@@ -59,10 +62,25 @@ struct HSVColorPicker: View {
             .frame(height: stripHeight)
 
             HStack(spacing: 10) {
-                Image(systemName: "eyedropper")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.cucuInk)
-                    .frame(width: 28, height: 32)
+                // System color picker — exposes iOS's full picker UI
+                // including the on-screen eyedropper ("Pick Color From
+                // Screen" on iOS 17+). Round-trips through the
+                // existing `hex` + `alpha` bindings via
+                // `combinedColorBinding`. Same direct pattern the
+                // background and border swatch rows in TextInspectorV2
+                // already use — a real visible swatch is the only way
+                // SwiftUI's `ColorPicker` reliably receives the tap.
+                // (Earlier attempts to mask it under an `.opacity(0.02)`
+                // layer for an eyedropper-glyph affordance silently
+                // dropped the hit gesture on iOS 17+.)
+                ColorPicker(
+                    "Pick from screen",
+                    selection: combinedColorBinding,
+                    supportsOpacity: true
+                )
+                .labelsHidden()
+                .frame(width: 28, height: 32)
+                .accessibilityLabel("Pick color from screen")
 
                 hexField
                 opacityField
@@ -284,6 +302,39 @@ struct HSVColorPicker: View {
 
     private var currentColor: Color {
         HSVColorPicker.color(h: hue, s: saturation, v: value, a: alpha)
+    }
+
+    /// Bridges the system `ColorPicker` (which speaks `Color`) into
+    /// our existing `hex` + `alpha` bindings. Reads the current
+    /// composed color out; on write, splits the new color back into
+    /// a 6-digit hex (RGB only — alpha lives on its own binding so
+    /// the document write path stays consistent with the swatch
+    /// rows above) plus a 0…1 alpha value.
+    private var combinedColorBinding: Binding<Color> {
+        Binding(
+            get: { currentColor },
+            set: { newColor in
+                let ui = UIColor(newColor)
+                var r: CGFloat = 0
+                var g: CGFloat = 0
+                var b: CGFloat = 0
+                var a: CGFloat = 0
+                ui.getRed(&r, green: &g, blue: &b, alpha: &a)
+                let newHex = HSVColorPicker.rgbHex(
+                    r: Double(r),
+                    g: Double(g),
+                    b: Double(b)
+                )
+                if newHex != hex {
+                    hex = newHex
+                }
+                let newAlpha = Double(a)
+                if abs(newAlpha - alpha) > 0.001 {
+                    alpha = newAlpha
+                }
+                syncStateFromHex()
+            }
+        )
     }
 
     private var opaqueBaseColor: Color {

@@ -9,6 +9,7 @@ import PhotosUI
 /// to disk on Save — Cancel walks away with no side-effects.
 struct ThemeEditorView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var chrome = AppChromeStore.shared
 
     @State private var theme: ProfileTheme
     @State private var pickerItem: PhotosPickerItem?
@@ -83,19 +84,20 @@ struct ThemeEditorView: View {
                     CucuSectionLabel(text: "Layout")
                 }
             }
-            .cucuFormBackdrop()
-            .cucuSheetTitle("Theme")
-            #if os(iOS) || os(visionOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
+            .scrollContentBackground(.hidden)
+            .background(chrome.theme.pageColor.ignoresSafeArea())
+            .tint(chrome.theme.inkPrimary)
+            .cucuRefinedNav("Theme")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .font(.cucuSerif(16, weight: .semibold))
+                        .font(.cucuSans(15, weight: .regular))
+                        .foregroundStyle(chrome.theme.inkPrimary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { commit() }
-                        .font(.cucuSerif(16, weight: .bold))
+                        .font(.cucuSans(15, weight: .semibold))
+                        .foregroundStyle(chrome.theme.inkPrimary)
                         .disabled(isLoading)
                 }
             }

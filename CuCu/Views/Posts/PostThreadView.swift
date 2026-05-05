@@ -22,30 +22,25 @@ struct PostThreadView: View {
     let onRootDeleted: ((Post) -> Void)?
 
     @State private var vm = PostThreadViewModel()
+    /// Process-wide app-chrome theme. Reading `chrome.theme` re-renders
+    /// the page on every `setTheme` because `AppChromeStore` is
+    /// `@Observable`. The thread inherits whatever stock the user
+    /// picked from the feed/explore picker — there is no per-page
+    /// override, by design (the choice is "what is the room painted
+    /// in," not "what is *this* page").
+    @State private var chrome = AppChromeStore.shared
     @State private var replyTarget: Post? = nil
     /// Phase 7 — report sheet target.
     @State private var reportTarget: Post? = nil
     /// Phase 7 — block confirmation dialog target.
     @State private var blockTarget: Post? = nil
     @State private var toastMessage: String? = nil
-    /// Author-username → hero-avatar URL map. Filled lazily as
-    /// rows scroll into view: each row's `.onAppear` registers
-    /// its author's handle through `requestAvatarLazy`, which
-    /// debounces into a batched PostgREST lookup. Authors who
-    /// haven't published a profile (or published without a hero
-    /// avatar) are simply absent from the dictionary; the row
-    /// keeps its letter monogram fallback and the puck shows
-    /// the rose person glyph. Keyed lowercased to match the SQL
-    /// normalization.
-    @State private var avatarOverrides: [String: String] = [:]
-    /// Usernames that have appeared on screen since the last
-    /// debounce tick fired, minus those already cached. Drains
-    /// into a single batch fetch; see `requestAvatarLazy`.
-    @State private var pendingAvatarUsernames: Set<String> = []
-    /// Leading-edge gate so a stream of `.onAppear`s during
-    /// scroll only spawns one debounce task at a time. The task
-    /// flips this back off after the batch fetch resolves.
-    @State private var avatarBatchInFlight: Bool = false
+    /// Process-wide avatar dictionary shared with `PostFeedView` —
+    /// jumping into a thread for an author the feed already resolved
+    /// reads from the same cache instead of re-fetching. The store
+    /// owns the debounce + completed-set bookkeeping; views read
+    /// `overrides` and call `requestLazy`.
+    private var avatarStore: AvatarOverrideStore { AvatarOverrideStore.shared }
     /// Drives the anticipation scale-up on the row about to be
     /// deleted. The thread view animates one row at a time, so a
     /// single optional id is enough.
@@ -81,17 +76,12 @@ struct PostThreadView: View {
 
     var body: some View {
         ZStack {
-            Color.cucuPaper.ignoresSafeArea()
+            CucuRefinedPageBackdrop()
             VStack(spacing: 0) {
                 content
             }
         }
-        .cucuSheetTitle("Thread")
-        #if os(iOS) || os(visionOS)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(Color.cucuPaper, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
-        #endif
+        .cucuRefinedNav("Thread")
         .safeAreaInset(edge: .bottom) {
             // Bottom bar always targets the root post — per the
             // spec, this is the "Reply to thread" affordance,
@@ -153,7 +143,27 @@ struct PostThreadView: View {
         .navigationDestination(item: $profileDestination) { route in
             PublishedProfileView(username: route.username)
         }
-        .task { await vm.load(rootId: rootId) }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .cucuProfileAvatarDidChange)
+        ) { notification in
+            guard let username = CucuProfileEvents.avatarUsername(from: notification) else {
+                return
+            }
+            Task { await avatarStore.refresh(username: username) }
+        }
+        .task(
+            id: PostThreadLoadKey(
+                rootId: rootId,
+                viewerId: auth.currentUser?.id.lowercased()
+            )
+        ) {
+            // Don't reset the shared avatar store on viewer change
+            // here — the feed underneath this thread is mounted on
+            // the same store and its own viewer-change task already
+            // owns the wipe. Resetting again would erase entries the
+            // feed just paid for.
+            await vm.reloadForViewerChange(rootId: rootId)
+        }
     }
 
     private func handleReportOutcome(_ outcome: ReportPostSheet.Outcome) {
@@ -198,17 +208,13 @@ struct PostThreadView: View {
         }
     }
 
-    /// First-load surface — the editorial masthead with placeholder
-    /// spec/subtitle copy, the 1pt hairline rule, then a stack of
-    /// pulsing skeleton cards in the same indented geometry the
-    /// real thread will paint into. Reflows are minimal because
-    /// the structure is already rendered when the data lands.
+    /// First-load surface — pulsing skeleton cards in the same
+    /// indented geometry the real thread will paint into. Reflows
+    /// are minimal because the structure is already rendered when
+    /// the data lands.
     private var loadingScrollContent: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                masthead
-                    .padding(.horizontal, 20)
-                    .padding(.top, 4)
                 skeletonColumn
                     .padding(.top, 14)
             }
@@ -245,16 +251,14 @@ struct PostThreadView: View {
         }
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                masthead
-                    .padding(.horizontal, 20)
-                    .padding(.top, 4)
+                Color.clear.frame(height: 8)
                 ForEach(items) { item in
                     renderItem(item, in: thread)
                         .transition(.cucuPostPop)
                         .zIndex(isPopping(item) ? 1 : 0)
                     if shouldDrawDivider(after: item) {
                         Rectangle()
-                            .fill(Color.cucuInkRule)
+                            .fill(chrome.theme.rule)
                             .frame(height: 1)
                             .padding(.leading, dividerLeading(for: item))
                     }
@@ -304,7 +308,7 @@ struct PostThreadView: View {
             style: .full,
             viewerHasLiked: vm.viewerLikedIds.contains(post.id),
             isOwnPost: post.authorId == auth.currentUser?.id.lowercased(),
-            avatarURL: avatarOverrides[post.authorUsername.lowercased()],
+            avatarURL: avatarStore.avatarURL(for: post.authorUsername),
             onTap: {},
             onLike: { vm.toggleLike(postId: post.id) },
             onReply: { replyTarget = post },
@@ -321,8 +325,33 @@ struct PostThreadView: View {
 
         return Group {
             if isRoot {
+                // Themed lifted-card surface for the thread root.
+                // Mirrors the geometry of the editor's `.cucuCard`
+                // (corner 16, inner rule, lifted shadow) but reads
+                // its surface and stroke from the chrome so the
+                // root flips dark-on-dark cleanly rather than
+                // staying cream against a coal backdrop.
                 row
-                    .cucuCard(corner: 16, innerRule: true, elevation: .lifted)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(chrome.theme.cardColor)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(chrome.theme.cardStroke, lineWidth: 1)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(chrome.theme.cardInkPrimary.opacity(0.10), lineWidth: 1)
+                            .padding(5)
+                            .allowsHitTesting(false)
+                    )
+                    .shadow(
+                        color: Color.black.opacity(chrome.theme.isDark ? 0.45 : 0.28),
+                        radius: 22,
+                        x: 0,
+                        y: 10
+                    )
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
             } else {
@@ -330,7 +359,7 @@ struct PostThreadView: View {
                     .padding(.leading, CGFloat(depth) * indentStep)
                     .overlay(alignment: .leading) {
                         Rectangle()
-                            .fill(Color.cucuInkRule)
+                            .fill(chrome.theme.rule)
                             .frame(width: 1)
                             .padding(.leading, CGFloat(depth) * indentStep + 8)
                     }
@@ -338,7 +367,7 @@ struct PostThreadView: View {
         }
         .scaleEffect(poppingPostId == post.id ? 1.06 : 1.0, anchor: .center)
         .animation(.spring(response: 0.22, dampingFraction: 0.55), value: poppingPostId)
-        .onAppear { requestAvatarLazy(for: post.authorUsername) }
+        .onAppear { avatarStore.requestLazy(for: post.authorUsername) }
     }
 
     /// True when this render item corresponds to the row currently
@@ -522,10 +551,10 @@ struct PostThreadView: View {
         HStack(spacing: 8) {
             ProgressView()
                 .controlSize(.small)
-                .tint(Color.cucuInkSoft)
-            Text("Loading replies…")
-                .font(.cucuEditorial(12, italic: true))
-                .foregroundStyle(Color.cucuInkSoft)
+                .tint(chrome.theme.inkMuted)
+            Text("Loading replies")
+                .font(.cucuSans(13, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
             Spacer(minLength: 0)
         }
         .padding(.vertical, 8)
@@ -552,14 +581,11 @@ struct PostThreadView: View {
 
     // MARK: - Bottom bar
 
-    /// "Phantom input" bottom bar — the tappable area is shaped
-    /// and painted exactly like the editor inside the compose
-    /// sheet (bone fill, ink stroke, 22pt corner) so the bar
-    /// reads as the start of writing rather than a generic CTA.
-    /// Italic Fraunces placeholder borrows the editor's voice;
-    /// the moss-painted send glyph on the trailing edge marks
-    /// the affirmative action without committing to a real
-    /// submit button at the page edge.
+    /// Refined "phantom input" bottom bar. Drops the bone-and-moss
+    /// editor mimicry in favour of a quiet ink-against-page recess
+    /// that matches the Explore search field — same surface family
+    /// as every other input on the social chrome. The send glyph
+    /// inverts polarity by theme so it stays legible on coal.
     private func replyToThreadBar(root: Post) -> some View {
         Button {
             CucuHaptics.soft()
@@ -568,26 +594,21 @@ struct PostThreadView: View {
             HStack(spacing: 10) {
                 Image(systemName: "pencil.line")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.cucuInkFaded)
-                Text("Reply to @\(root.authorUsername)…")
-                    .font(.cucuEditorial(15, italic: true))
-                    .foregroundStyle(Color.cucuInkSoft)
+                    .foregroundStyle(chrome.theme.inkFaded)
+                Text("Reply to @\(root.authorUsername)")
+                    .font(.cucuSans(15, weight: .regular))
+                    .foregroundStyle(chrome.theme.inkFaded)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 4)
                 Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 20, weight: .regular))
-                    .foregroundStyle(Color.cucuMoss)
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(chrome.theme.inkPrimary)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.vertical, 11)
             .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Color.cucuBone)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(Color.cucuInk.opacity(0.28), lineWidth: 1)
+                Capsule().fill(replyBarFill)
             )
             .padding(.horizontal, 14)
             .padding(.top, 10)
@@ -595,9 +616,9 @@ struct PostThreadView: View {
             .frame(maxWidth: .infinity)
             .background(
                 ZStack(alignment: .top) {
-                    Color.cucuPaper
+                    chrome.theme.pageColor
                     Rectangle()
-                        .fill(Color.cucuInkRule)
+                        .fill(chrome.theme.rule)
                         .frame(height: 1)
                 }
             )
@@ -606,17 +627,26 @@ struct PostThreadView: View {
         .accessibilityLabel("Reply to @\(root.authorUsername)")
     }
 
+    /// Subtle ink-against-page recess used by the reply input
+    /// pill. Mirrors the search field on Explore so the two
+    /// inputs read as the same surface family across surfaces.
+    private var replyBarFill: Color {
+        chrome.theme.isDark
+            ? Color.white.opacity(0.08)
+            : Color.black.opacity(0.05)
+    }
+
     // MARK: - Error state
 
     private var unavailableState: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 8) {
             Spacer(minLength: 60)
             Text("Post unavailable")
-                .font(.cucuSerif(22, weight: .bold))
-                .foregroundStyle(Color.cucuInk)
+                .font(.cucuSans(18, weight: .bold))
+                .foregroundStyle(chrome.theme.inkPrimary)
             Text("This thread is no longer available.")
-                .font(.cucuEditorial(13, italic: true))
-                .foregroundStyle(Color.cucuInkSoft)
+                .font(.cucuSans(14, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
             Spacer(minLength: 60)
@@ -625,123 +655,26 @@ struct PostThreadView: View {
         .frame(minHeight: 360)
     }
 
-    /// Editorial error treatment — matches the feed's fleuron-led
-    /// surface (❦ marker, serif headline, italic detail, retry
-    /// chip) instead of the SF Symbols warning glyph. Reads as a
-    /// printed correction notice rather than a system alert.
     private func errorState(_ message: String) -> some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 12) {
             Spacer(minLength: 60)
-            Text("❦")
-                .font(.cucuSerif(36, weight: .regular))
-                .foregroundStyle(Color.cucuInkFaded)
             Text("Couldn't load this thread")
-                .font(.cucuSerif(22, weight: .bold))
-                .foregroundStyle(Color.cucuInk)
+                .font(.cucuSans(18, weight: .bold))
+                .foregroundStyle(chrome.theme.inkPrimary)
             Text(message)
-                .font(.cucuEditorial(13, italic: true))
-                .foregroundStyle(Color.cucuInkSoft)
+                .font(.cucuSans(14, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
-            CucuChip("Try again", systemImage: "arrow.clockwise") {
+            CucuRefinedPillButton("Try again") {
                 Task { await vm.load(rootId: rootId) }
             }
-            .padding(.top, 4)
+            .padding(.top, 6)
+            .padding(.horizontal, 32)
             Spacer(minLength: 60)
         }
         .frame(maxWidth: .infinity)
         .frame(minHeight: 360)
-    }
-
-    // MARK: - Masthead
-    //
-    // Borrows the feed's title-row idiom: 34pt serif display title
-    // on the leading edge, a 38pt avatar puck on the trailing
-    // edge that surfaces the thread starter's hero avatar (rather
-    // than the viewer's, which is what the feed's puck shows).
-    // Underneath, a tracked mono spec line — the root author's
-    // handle — and a Fraunces-italic subtitle, closed off with a
-    // 1pt ink hairline. The whole block scrolls with the content
-    // so it reads as the thread's opening spread.
-
-    private var masthead: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            titleRow
-            Text(specLine)
-                .font(.cucuMono(10, weight: .medium))
-                .tracking(2.4)
-                .foregroundStyle(Color.cucuInkFaded)
-                .padding(.top, 2)
-            Text(mastheadSubtitle)
-                .font(.cucuEditorial(14, italic: true))
-                .foregroundStyle(Color.cucuInkSoft)
-                .padding(.bottom, 12)
-            Rectangle()
-                .fill(Color.cucuInkRule)
-                .frame(height: 1)
-        }
-        .padding(.top, 12)
-        .padding(.bottom, 4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var titleRow: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text("Thread")
-                .font(.cucuSerif(34, weight: .bold))
-                .foregroundStyle(Color.cucuInk)
-                .accessibilityAddTraits(.isHeader)
-            Spacer(minLength: 0)
-            mastheadAvatarPuck
-        }
-    }
-
-    @ViewBuilder
-    private var mastheadAvatarPuck: some View {
-        let rootUsername = vm.thread?.root?.authorUsername.lowercased() ?? ""
-        if !rootUsername.isEmpty,
-           let urlString = avatarOverrides[rootUsername],
-           !urlString.isEmpty,
-           let url = URL(string: urlString) {
-            CachedRemoteImage(url: url, contentMode: .fill) {
-                avatarPuckFallback
-            }
-            .frame(width: 38, height: 38)
-            .clipShape(Circle())
-            .overlay(
-                Circle().strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 1)
-            )
-        } else {
-            avatarPuckFallback
-        }
-    }
-
-    private var avatarPuckFallback: some View {
-        Circle()
-            .fill(Color.cucuRose)
-            .overlay(
-                Image(systemName: "person.fill")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.cucuBurgundy)
-            )
-            .frame(width: 38, height: 38)
-            .overlay(
-                Circle().strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 1)
-            )
-    }
-
-    private var specLine: String {
-        if let root = vm.thread?.root {
-            return "@\(root.authorUsername)".uppercased()
-        }
-        return "LOADING THE CONVERSATION"
-    }
-
-    private var mastheadSubtitle: String {
-        if vm.thread != nil {
-            return "A conversation, root to leaves."
-        }
-        return "Just a moment — fetching replies."
     }
 
     // MARK: - Skeleton
@@ -767,58 +700,23 @@ struct PostThreadView: View {
 
     // MARK: - End-of-thread colophon
 
-    /// Closing flourish at the bottom of every fully-loaded
-    /// thread — same fleuron-bracketed marker the feed uses, just
-    /// reading "thread" instead of "feed". Reads as a printed
-    /// colophon rather than a hard stop.
+    /// Quiet end-of-thread marker matching the feed's refined idiom.
     private var endOfThread: some View {
-        Text("✦  end of the thread  ✦")
-            .font(.cucuSerif(12, weight: .regular))
-            .foregroundStyle(Color.cucuInkFaded)
+        Text("End of thread")
+            .font(.cucuSans(13, weight: .regular))
+            .foregroundStyle(chrome.theme.inkFaded)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 28)
     }
 
-    // MARK: - Lazy avatar enrichment
-
-    /// Per-row entry point. Each post row calls this from its
-    /// `.onAppear`; we accumulate misses for a 200ms window then
-    /// drain the set in a single batched PostgREST call. Cache
-    /// hits short-circuit at the top so a row that's been seen
-    /// before (or scrolled past and back) costs nothing.
-    ///
-    /// The leading-edge gate (`avatarBatchInFlight`) ensures a
-    /// scroll burst that fires dozens of `.onAppear`s only
-    /// spawns one debounce task — every later request just adds
-    /// to the pending set. After the fetch resolves, the gate
-    /// drops and any *new* requests start a fresh window.
-    private func requestAvatarLazy(for username: String) {
-        let key = username.lowercased()
-        guard !key.isEmpty, avatarOverrides[key] == nil else { return }
-        pendingAvatarUsernames.insert(key)
-        guard !avatarBatchInFlight else { return }
-        avatarBatchInFlight = true
-        Task {
-            // Debounce window — collect more usernames during
-            // this sleep so a momentum scroll batches into one
-            // round-trip.
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            let snapshot = pendingAvatarUsernames.subtracting(Set(avatarOverrides.keys))
-            pendingAvatarUsernames.removeAll()
-            avatarBatchInFlight = false
-            guard !snapshot.isEmpty else { return }
-            do {
-                let map = try await PublishedProfileService()
-                    .fetchAvatars(forUsernames: Array(snapshot))
-                avatarOverrides.merge(map) { _, new in new }
-            } catch {
-                // Silent — letter monogram / rose puck cover it.
-            }
-        }
-    }
 }
 
 // MARK: - Author route
+
+private struct PostThreadLoadKey: Hashable {
+    let rootId: String
+    let viewerId: String?
+}
 
 /// Push target for the "tap a row's profile" intent. Mirrors the
 /// type used in `PostFeedView` — kept fileprivate per surface so

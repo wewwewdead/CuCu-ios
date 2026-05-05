@@ -24,6 +24,7 @@ struct PageBackgroundSheet: View {
     var onEditEffects: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var chrome = AppChromeStore.shared
     @State private var pickerSelection: PhotosPickerItem?
     @State private var pickerLoading = false
     @State private var pickerError: String?
@@ -121,13 +122,15 @@ struct PageBackgroundSheet: View {
                 }
 
             }
-            .cucuFormBackdrop()
-            .cucuSheetTitle("Page Settings")
-            .navigationBarTitleDisplayMode(.inline)
+            .scrollContentBackground(.hidden)
+            .background(chrome.theme.pageColor.ignoresSafeArea())
+            .tint(chrome.theme.inkPrimary)
+            .cucuRefinedNav("Page settings")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
-                        .font(.cucuSerif(16, weight: .bold))
+                        .font(.cucuSans(15, weight: .semibold))
+                        .foregroundStyle(chrome.theme.inkPrimary)
                 }
             }
             .onChange(of: pickerSelection) { _, newItem in

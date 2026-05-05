@@ -46,6 +46,7 @@ final class PostFeedViewModel {
     private let service = PostService()
     private let likeService = PostLikeService()
     private var likeOperationTokens = OptimisticMutationTokens()
+    private var viewerGeneration = UUID()
 
     init(feedSource: FeedSource = .global) {
         self.feedSource = feedSource
@@ -62,13 +63,19 @@ final class PostFeedViewModel {
 
     func initialLoad() async {
         if posts.isEmpty { status = .loading }
+        let generation = viewerGeneration
+        likeOperationTokens.invalidateAll()
         do {
             let next = try await fetchPage(before: nil)
+            guard !Task.isCancelled, generation == viewerGeneration else { return }
+            let liked = await fetchLikedIds(for: next.map(\.id))
+            guard !Task.isCancelled, generation == viewerGeneration else { return }
             posts = next
-            likeOperationTokens.invalidateAll()
+            viewerLikedIds = liked
             canLoadMore = next.count >= PostService.feedPageSize
             status = next.isEmpty ? .empty : .loaded
-            await hydrateLikes(for: next.map(\.id))
+        } catch is CancellationError {
+            return
         } catch let err as PostError {
             status = .error(err.errorDescription ?? "Couldn't load the feed.")
         } catch {
@@ -80,8 +87,23 @@ final class PostFeedViewModel {
     /// top — clears the existing column so a deleted post in the
     /// middle of the feed doesn't linger between cursor pages.
     func refresh() async {
+        viewerGeneration = UUID()
         canLoadMore = true
         isLoadingMore = false
+        await initialLoad()
+    }
+
+    /// Account/session boundary reload. Clears viewer-scoped state
+    /// before fetching so stale optimistic callbacks and liked ids
+    /// from the previous account cannot bleed into the new snapshot.
+    func reloadForViewerChange() async {
+        viewerGeneration = UUID()
+        posts = []
+        viewerLikedIds = []
+        likeOperationTokens.invalidateAll()
+        canLoadMore = true
+        isLoadingMore = false
+        status = .loading
         await initialLoad()
     }
 
@@ -91,19 +113,23 @@ final class PostFeedViewModel {
     func loadMore() async {
         guard canLoadMore, !isLoadingMore else { return }
         guard let cursor = posts.last?.createdAt else { return }
+        let generation = viewerGeneration
         isLoadingMore = true
         defer { isLoadingMore = false }
 
         do {
             let next = try await fetchPage(before: cursor)
+            guard !Task.isCancelled, generation == viewerGeneration else { return }
             // Defensive duplicate filter — if two posts share a
             // sub-millisecond `created_at`, the cursor query can
             // re-include the boundary row.
             let existing = Set(posts.map(\.id))
             let fresh = next.filter { !existing.contains($0.id) }
+            let liked = await fetchLikedIds(for: fresh.map(\.id))
+            guard !Task.isCancelled, generation == viewerGeneration else { return }
             posts.append(contentsOf: fresh)
+            viewerLikedIds.formUnion(liked)
             canLoadMore = next.count >= PostService.feedPageSize
-            await hydrateLikes(for: fresh.map(\.id))
         } catch {
             // Don't crash the feed on a pagination error; just
             // stop trying. Pull-to-refresh retries the lot.
@@ -200,12 +226,16 @@ final class PostFeedViewModel {
         Task { [weak self, wasLiked, snapshot, token] in
             guard let self else { return }
             do {
-                if wasLiked {
-                    try await self.likeService.unlike(postId: postId)
-                } else {
-                    try await self.likeService.like(postId: postId)
+                let result = try await self.likeService.toggle(postId: postId)
+                guard self.likeOperationTokens.finish(token, for: postId) else { return }
+                if let nowIdx = self.posts.firstIndex(where: { $0.id == result.postId }) {
+                    self.posts[nowIdx].likeCount = result.likeCount
                 }
-                self.likeOperationTokens.finish(token, for: postId)
+                if result.viewerHasLiked {
+                    self.viewerLikedIds.insert(result.postId)
+                } else {
+                    self.viewerLikedIds.remove(result.postId)
+                }
             } catch {
                 guard self.likeOperationTokens.finish(token, for: postId) else { return }
                 // Roll back. Re-find the row (its index may have
@@ -234,11 +264,8 @@ final class PostFeedViewModel {
 
     // MARK: - Helpers
 
-    private func hydrateLikes(for ids: [String]) async {
-        guard !ids.isEmpty else { return }
-        let liked = await likeService.fetchLikeState(postIds: ids)
-        // Merge rather than replace so a `loadMore` page doesn't
-        // wipe like state from earlier pages.
-        viewerLikedIds.formUnion(liked)
+    private func fetchLikedIds(for ids: [String]) async -> Set<String> {
+        guard !ids.isEmpty else { return [] }
+        return await likeService.fetchLikeState(postIds: ids)
     }
 }

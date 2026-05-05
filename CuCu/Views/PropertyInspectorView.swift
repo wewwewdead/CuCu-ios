@@ -199,12 +199,11 @@ struct PropertyInspectorView: View {
             HStack(spacing: 12) {
                 iconBadge(for: node)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(typeLabel(for: node).uppercased())
-                        .font(.cucuMono(9, weight: .semibold))
-                        .tracking(2)
+                    Text(typeLabel(for: node))
+                        .font(.cucuSans(12, weight: .regular))
                         .foregroundStyle(Color.cucuInkFaded)
                     Text(displayName(for: node))
-                        .font(.cucuEditorial(20, weight: .bold, italic: true))
+                        .font(.cucuSans(20, weight: .bold))
                         .foregroundStyle(Color.cucuInk)
                         .lineLimit(1)
                 }

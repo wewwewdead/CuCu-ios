@@ -28,6 +28,6 @@ struct CreativeProfileApp: App {
                 .environment(authViewModel)
                 .environment(postFlightCoordinator)
         }
-        .modelContainer(for: [ProfileDraft.self, ProfileTemplate.self])
+        .modelContainer(for: [ProfileDraft.self])
     }
 }

@@ -21,6 +21,13 @@ extension Notification.Name {
     static let cucuPostOptimisticallyDeleted = Notification.Name(
         "CuCu.PostOptimisticallyDeleted"
     )
+
+    /// Posted after a successful profile publish that may have
+    /// changed the profile hero/avatar. `userInfo["username"]`
+    /// carries the lowercased username (String).
+    static let cucuProfileAvatarDidChange = Notification.Name(
+        "CuCu.ProfileAvatarDidChange"
+    )
 }
 
 enum CucuPostEvents {
@@ -41,5 +48,29 @@ enum CucuPostEvents {
     /// safely `guard let` to no-op on bad input rather than trap.
     static func deletedPostId(from notification: Notification) -> String? {
         notification.userInfo?["postId"] as? String
+    }
+}
+
+enum CucuProfileEvents {
+    static func broadcastAvatarChange(username: String) {
+        let canonical = username
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !canonical.isEmpty else { return }
+        NotificationCenter.default.post(
+            name: .cucuProfileAvatarDidChange,
+            object: nil,
+            userInfo: ["username": canonical]
+        )
+    }
+
+    static func avatarUsername(from notification: Notification) -> String? {
+        guard let username = notification.userInfo?["username"] as? String else {
+            return nil
+        }
+        let canonical = username
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return canonical.isEmpty ? nil : canonical
     }
 }

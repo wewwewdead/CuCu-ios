@@ -18,6 +18,7 @@ struct BackgroundEffectsSheet: View {
     var onCommit: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var chrome = AppChromeStore.shared
 
     var body: some View {
         NavigationStack {
@@ -61,13 +62,15 @@ struct BackgroundEffectsSheet: View {
                         .foregroundStyle(Color.cucuInkFaded)
                 }
             }
-            .cucuFormBackdrop()
-            .cucuSheetTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
+            .scrollContentBackground(.hidden)
+            .background(chrome.theme.pageColor.ignoresSafeArea())
+            .tint(chrome.theme.inkPrimary)
+            .cucuRefinedNav(title)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
-                        .font(.cucuSerif(16, weight: .bold))
+                        .font(.cucuSans(15, weight: .semibold))
+                        .foregroundStyle(chrome.theme.inkPrimary)
                 }
             }
         }

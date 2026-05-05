@@ -88,9 +88,11 @@ struct PreviewBannerCard: View {
             // (from `fetchBackgrounds`'s `heroAvatarURL` enrichment) →
             // long-term column path (`cardMetadata.avatarImageURL`) →
             // initial-letter chip.
+            // 44pt circle — render server-side at retina pixels so a
+            // megapixel hero portrait doesn't cross the wire just to
+            // sit in a banner thumbnail.
             if let urlString = resolvedAvatarImageURL,
-               !urlString.isEmpty,
-               let url = URL(string: urlString) {
+               let url = CucuImageTransform.resized(urlString, square: 44) {
                 CachedRemoteImage(url: url, contentMode: .fill) {
                     avatarFallback
                 }
@@ -140,40 +142,36 @@ struct PreviewBannerCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 0.8)
+                    .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.8)
             )
-            .shadow(color: Color.cucuInk.opacity(0.10), radius: 6, x: 0, y: 3)
     }
 
-    /// "You" badge — paper-toned capsule on the banner's top-leading
-    /// edge that flags the signed-in user's own card. Sits inside the
-    /// banner's clip shape (so the rounded corner trims it) and uses
-    /// the cucu accent palette so it reads as identity, not a status
-    /// chip — the rose+burgundy pairing matches the title-row puck.
+    /// "You" badge — refined cream-on-ink tag on the banner's
+    /// top-leading edge. Drops the editorial mono-tracked label +
+    /// rose chip in favour of a quiet bold sans label on a pure ink
+    /// pill. Reads as identity (you are this card) without competing
+    /// with the user's own banner art for attention.
     private var ownBadge: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "sparkle")
-                .font(.system(size: 9, weight: .bold))
-            Text("YOU")
-                .font(.cucuMono(10, weight: .semibold))
-                .tracking(1.2)
-        }
-        .foregroundStyle(Color.cucuBurgundy)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Capsule().fill(Color.cucuRose))
-        .overlay(Capsule().strokeBorder(Color.cucuRoseStroke, lineWidth: 1))
-        .padding(10)
-        .accessibilityLabel("Your profile")
+        Text("You")
+            .font(.cucuSans(11, weight: .bold))
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.black.opacity(0.72)))
+            .padding(10)
+            .accessibilityLabel("Your profile")
     }
 
     // MARK: - Background layer
 
     @ViewBuilder
     private var backgroundLayer: some View {
+        // Banner is full-width × 112pt — request server-side at the
+        // typical iPad/iPhone column width so the renderer hands back
+        // bytes proportional to the pixels actually painted, not the
+        // multi-megapixel original.
         if let urlString = resolvedBackgroundImageURL,
-           let url = URL(string: urlString),
-           !urlString.isEmpty {
+           let url = CucuImageTransform.resized(urlString, width: 600, height: 112) {
             CachedRemoteImage(url: url, contentMode: .fill) {
                 hexOrGradientBackground
             }

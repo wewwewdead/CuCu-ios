@@ -8,6 +8,7 @@ import SwiftUI
 /// the returned styling onto the existing children before assigning back.
 struct ContainerSettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var chrome = AppChromeStore.shared
 
     @State private var data: ContainerBlockData
     let onSave: (ContainerBlockData) -> Void
@@ -89,22 +90,23 @@ struct ContainerSettingsView: View {
                     CucuSectionLabel(text: "Background")
                 }
             }
-            .cucuFormBackdrop()
-            .cucuSheetTitle("Container")
-            #if os(iOS) || os(visionOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
+            .scrollContentBackground(.hidden)
+            .background(chrome.theme.pageColor.ignoresSafeArea())
+            .tint(chrome.theme.inkPrimary)
+            .cucuRefinedNav("Container")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .font(.cucuSerif(16, weight: .semibold))
+                        .font(.cucuSans(15, weight: .regular))
+                        .foregroundStyle(chrome.theme.inkPrimary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         onSave(data)
                         dismiss()
                     }
-                    .font(.cucuSerif(16, weight: .bold))
+                    .font(.cucuSans(15, weight: .semibold))
+                    .foregroundStyle(chrome.theme.inkPrimary)
                 }
             }
         }

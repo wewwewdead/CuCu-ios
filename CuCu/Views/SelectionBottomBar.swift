@@ -89,18 +89,13 @@ struct SelectionBottomBar: View {
             action()
         } label: {
             Text(label)
-                .font(.cucuSerif(14, weight: isCurrent ? .bold : .regular))
+                .font(.cucuSans(14, weight: isCurrent ? .bold : .regular))
                 .foregroundStyle(isCurrent ? Color.cucuInk : Color.cucuInkFaded)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
                 .background(
                     Capsule()
-                        .fill(isCurrent ? Color.cucuMossSoft : Color.clear)
-                )
-                .overlay(
-                    Capsule()
-                        .strokeBorder(isCurrent ? Color.cucuInk.opacity(0.55) : Color.clear,
-                                      lineWidth: 1)
+                        .fill(isCurrent ? Color.black.opacity(0.06) : Color.clear)
                 )
                 .contentShape(Capsule())
         }

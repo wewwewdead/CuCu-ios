@@ -16,6 +16,7 @@ struct IconPickerSheet: View {
     let onCommit: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var chrome = AppChromeStore.shared
     @State private var query: String = ""
 
     /// 5-column grid on iPhone reads as a comfortable browse — wide
@@ -37,33 +38,31 @@ struct IconPickerSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                if filtered.isEmpty {
-                    emptyState
-                        .padding(.top, 60)
-                } else {
-                    LazyVGrid(columns: columns, spacing: 14) {
-                        ForEach(filtered, id: \.self) { name in
-                            tile(for: name)
+            ZStack {
+                CucuRefinedPageBackdrop()
+                ScrollView {
+                    if filtered.isEmpty {
+                        emptyState
+                            .padding(.top, 60)
+                    } else {
+                        LazyVGrid(columns: columns, spacing: 14) {
+                            ForEach(filtered, id: \.self) { name in
+                                tile(for: name)
+                            }
                         }
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 18)
                     }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 18)
                 }
+                .scrollDismissesKeyboard(.interactively)
             }
-            .background(Color.cucuPaper.ignoresSafeArea())
-            .scrollDismissesKeyboard(.interactively)
-            .cucuSheetTitle("Icon")
-            #if os(iOS) || os(visionOS)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.cucuPaper, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            #endif
-            .tint(Color.cucuInk)
+            .cucuRefinedNav("Icon")
+            .tint(chrome.theme.inkPrimary)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
-                        .font(.cucuSerif(16, weight: .bold))
+                        .font(.cucuSans(15, weight: .semibold))
+                        .foregroundStyle(chrome.theme.inkPrimary)
                 }
             }
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
@@ -83,26 +82,31 @@ struct IconPickerSheet: View {
         } label: {
             VStack(spacing: 4) {
                 glyph(for: name)
-                    .foregroundStyle(isSelected ? Color.cucuBurgundy : Color.cucuInk)
+                    .foregroundStyle(isSelected ? chrome.theme.pageColor : chrome.theme.inkPrimary)
                     .frame(width: 50, height: 50)
                     .background(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(isSelected ? Color.cucuRose : Color.cucuCard)
+                            .fill(isSelected ? chrome.theme.inkPrimary : tileFill)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(isSelected ? Color.cucuBurgundy : Color.cucuInk.opacity(0.20),
-                                          lineWidth: isSelected ? 1.5 : 1)
+                            .strokeBorder(isSelected ? Color.clear : chrome.theme.rule, lineWidth: 1)
                     )
                 Text(IconCatalog.label(for: name))
                     .font(.cucuSans(10, weight: .medium))
-                    .foregroundStyle(Color.cucuInkSoft)
+                    .foregroundStyle(chrome.theme.inkFaded)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                     .frame(maxWidth: .infinity)
             }
         }
         .buttonStyle(.plain)
+    }
+
+    private var tileFill: Color {
+        chrome.theme.isDark
+            ? Color.white.opacity(0.06)
+            : Color.black.opacity(0.04)
     }
 
     /// Mirrors `IconNodeView`'s three-way fork so the picker preview
@@ -134,12 +138,9 @@ struct IconPickerSheet: View {
 
     private var emptyState: some View {
         VStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 28, weight: .light))
-                .foregroundStyle(Color.cucuInkFaded)
             Text("No icons match \"\(query)\"")
-                .font(.cucuSans(13, weight: .medium))
-                .foregroundStyle(Color.cucuInkFaded)
+                .font(.cucuSans(14, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
         }
         .frame(maxWidth: .infinity)
     }

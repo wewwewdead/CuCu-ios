@@ -34,6 +34,7 @@ final class PostThreadViewModel {
     private let likeService = PostLikeService()
     private var likeOperationTokens = OptimisticMutationTokens()
     private var deleteOperationTokens = OptimisticMutationTokens()
+    private var viewerGeneration = UUID()
 
     // MARK: - Initial load
 
@@ -45,11 +46,15 @@ final class PostThreadViewModel {
     /// loading on cellular.
     func load(rootId: String) async {
         if thread == nil { status = .loading }
+        let generation = viewerGeneration
+        likeOperationTokens.invalidateAll()
+        deleteOperationTokens.invalidateAll()
         do {
             async let rootTask = service.fetchPost(id: rootId)
             async let firstPageTask = service.fetchDirectReplies(parentId: rootId)
             let root = try await rootTask
             let firstPage = try await firstPageTask
+            guard !Task.isCancelled, generation == viewerGeneration else { return }
 
             var posts: [String: Post] = [root.id: root]
             for child in firstPage { posts[child.id] = child }
@@ -73,6 +78,9 @@ final class PostThreadViewModel {
                 children[child.id] = []
             }
 
+            let liked = await fetchLikedIds(for: Array(posts.keys))
+            guard !Task.isCancelled, generation == viewerGeneration else { return }
+
             thread = PostThread(
                 rootId: root.id,
                 posts: posts,
@@ -82,16 +90,29 @@ final class PostThreadViewModel {
                 hasMoreByParent: hasMore,
                 loadingByParent: []
             )
-            likeOperationTokens.invalidateAll()
-            deleteOperationTokens.invalidateAll()
+            viewerLikedIds = liked
             status = .loaded
-
-            await hydrateLikes(for: Array(posts.keys))
+        } catch is CancellationError {
+            return
         } catch let err as PostError {
             status = .error(err.errorDescription ?? "Couldn't load this thread.")
         } catch {
             status = .error(error.localizedDescription)
         }
+    }
+
+    /// Account/session boundary reload. Clears viewer-scoped state
+    /// and pending rollback tokens before fetching the canonical
+    /// thread for the new viewer.
+    func reloadForViewerChange(rootId: String) async {
+        viewerGeneration = UUID()
+        thread = nil
+        viewerLikedIds = []
+        likeOperationTokens.invalidateAll()
+        deleteOperationTokens.invalidateAll()
+        lastDeleteError = nil
+        status = .loading
+        await load(rootId: rootId)
     }
 
     // MARK: - Lazy expansion
@@ -104,6 +125,7 @@ final class PostThreadViewModel {
         guard var current = thread else { return }
         guard !current.expandedIds.contains(postId) else { return }
         guard !current.loadingByParent.contains(postId) else { return }
+        let generation = viewerGeneration
 
         current.loadingByParent.insert(postId)
         thread = current
@@ -111,6 +133,7 @@ final class PostThreadViewModel {
         do {
             let page = try await service.fetchDirectReplies(parentId: postId)
             try Task.checkCancellation()
+            guard generation == viewerGeneration else { return }
 
             guard var updated = thread else { return }
             for child in page { updated.posts[child.id] = child }
@@ -124,9 +147,11 @@ final class PostThreadViewModel {
             updated.hasMoreByParent[postId] = page.count >= PostService.directRepliesPageSize
             updated.expandedIds.insert(postId)
             updated.loadingByParent.remove(postId)
-            thread = updated
 
-            await hydrateLikes(for: page.map(\.id))
+            let liked = await fetchLikedIds(for: page.map(\.id))
+            guard !Task.isCancelled, generation == viewerGeneration else { return }
+            thread = updated
+            viewerLikedIds.formUnion(liked)
         } catch {
             // Couldn't expand — drop the loading flag so the
             // user can tap "View N replies" again. Surfacing
@@ -162,6 +187,7 @@ final class PostThreadViewModel {
         guard var current = thread else { return }
         guard !current.loadingByParent.contains(parentId) else { return }
         guard let cursor = current.nextCursorByParent[parentId] else { return }
+        let generation = viewerGeneration
 
         current.loadingByParent.insert(parentId)
         thread = current
@@ -172,6 +198,7 @@ final class PostThreadViewModel {
                 after: cursor
             )
             try Task.checkCancellation()
+            guard generation == viewerGeneration else { return }
 
             guard var updated = thread else { return }
             // Defensive duplicate filter — same trick the feed
@@ -189,9 +216,11 @@ final class PostThreadViewModel {
             }
             updated.hasMoreByParent[parentId] = page.count >= PostService.directRepliesPageSize
             updated.loadingByParent.remove(parentId)
-            thread = updated
 
-            await hydrateLikes(for: fresh.map(\.id))
+            let liked = await fetchLikedIds(for: fresh.map(\.id))
+            guard !Task.isCancelled, generation == viewerGeneration else { return }
+            thread = updated
+            viewerLikedIds.formUnion(liked)
         } catch {
             if var updated = thread {
                 updated.loadingByParent.remove(parentId)
@@ -214,32 +243,43 @@ final class PostThreadViewModel {
         guard var current = thread else { return }
         guard let post = current.posts[postId] else { return }
         let wasLiked = viewerLikedIds.contains(postId)
-        let snapshot = current
+        let snapshot = post
         let token = likeOperationTokens.begin(for: postId)
 
         var updated = post
+        var nextLikedIds = viewerLikedIds
         if wasLiked {
             updated.likeCount = max(0, updated.likeCount - 1)
-            viewerLikedIds.remove(postId)
+            nextLikedIds.remove(postId)
         } else {
             updated.likeCount += 1
-            viewerLikedIds.insert(postId)
+            nextLikedIds.insert(postId)
         }
         current.posts[postId] = updated
         thread = current
+        viewerLikedIds = nextLikedIds
 
         Task { [weak self, wasLiked, snapshot, token] in
             guard let self else { return }
             do {
-                if wasLiked {
-                    try await self.likeService.unlike(postId: postId)
-                } else {
-                    try await self.likeService.like(postId: postId)
+                let result = try await self.likeService.toggle(postId: postId)
+                guard self.likeOperationTokens.finish(token, for: postId) else { return }
+                if var current = self.thread, var post = current.posts[result.postId] {
+                    post.likeCount = result.likeCount
+                    current.posts[result.postId] = post
+                    self.thread = current
                 }
-                self.likeOperationTokens.finish(token, for: postId)
+                if result.viewerHasLiked {
+                    self.viewerLikedIds.insert(result.postId)
+                } else {
+                    self.viewerLikedIds.remove(result.postId)
+                }
             } catch {
                 guard self.likeOperationTokens.finish(token, for: postId) else { return }
-                self.thread = snapshot
+                if var current = self.thread {
+                    current.posts[postId] = snapshot
+                    self.thread = current
+                }
                 if wasLiked { self.viewerLikedIds.insert(postId) }
                 else { self.viewerLikedIds.remove(postId) }
             }
@@ -500,9 +540,8 @@ final class PostThreadViewModel {
 
     // MARK: - Helpers
 
-    private func hydrateLikes(for ids: [String]) async {
-        guard !ids.isEmpty else { return }
-        let liked = await likeService.fetchLikeState(postIds: ids)
-        viewerLikedIds.formUnion(liked)
+    private func fetchLikedIds(for ids: [String]) async -> Set<String> {
+        guard !ids.isEmpty else { return [] }
+        return await likeService.fetchLikeState(postIds: ids)
     }
 }

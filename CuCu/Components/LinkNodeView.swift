@@ -303,17 +303,6 @@ private extension Optional where Wrapped == String {
     }
 }
 
-private extension NodeFontWeight {
-    var uiFontWeight: UIFont.Weight {
-        switch self {
-        case .regular: return .regular
-        case .medium: return .medium
-        case .semibold: return .semibold
-        case .bold: return .bold
-        }
-    }
-}
-
 private extension NodeTextAlignment {
     var uiAlignment: NSTextAlignment {
         switch self {

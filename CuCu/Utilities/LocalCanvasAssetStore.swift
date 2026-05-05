@@ -8,8 +8,6 @@ import UIKit
 ///     profile-canvas-assets/
 ///       draft_<draftUUID>/
 ///         image_<nodeUUID>.jpg
-///       template_<templateUUID>/
-///         image_<nodeUUID>.jpg
 ///
 /// The scene-graph JSON only ever stores the relative path
 /// (e.g. `draft_X/image_Y.jpg`). Binary bytes never enter the JSON. Filenames
@@ -59,14 +57,6 @@ enum LocalCanvasAssetStore {
 
     static func draftFolder(draftID: UUID, create: Bool = false) -> URL {
         let folder = rootURL.appendingPathComponent("draft_\(draftID.uuidString)", isDirectory: true)
-        if create {
-            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        }
-        return folder
-    }
-
-    static func templateFolder(templateID: UUID, create: Bool = false) -> URL {
-        let folder = rootURL.appendingPathComponent("template_\(templateID.uuidString)", isDirectory: true)
         if create {
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
@@ -194,23 +184,6 @@ enum LocalCanvasAssetStore {
         )
     }
 
-    /// Copy an existing image-node asset into a template-owned folder.
-    /// Templates store relative paths under `template_<UUID>/...`, so they
-    /// keep working even if the original draft is later edited or deleted.
-    @discardableResult
-    static func copyImage(
-        from relativePath: String,
-        templateID: UUID,
-        nodeID: UUID
-    ) throws -> String {
-        try copyExistingAsset(
-            from: relativePath,
-            toFolder: templateFolder(templateID: templateID, create: true),
-            relativeFolderName: "template_\(templateID.uuidString)",
-            filename: "image_\(nodeID.uuidString).jpg"
-        )
-    }
-
     @discardableResult
     static func copyPageBackground(
         from relativePath: String,
@@ -226,20 +199,6 @@ enum LocalCanvasAssetStore {
     }
 
     @discardableResult
-    static func copyPageBackground(
-        from relativePath: String,
-        templateID: UUID,
-        pageID: UUID? = nil
-    ) throws -> String {
-        try copyExistingAsset(
-            from: relativePath,
-            toFolder: templateFolder(templateID: templateID, create: true),
-            relativeFolderName: "template_\(templateID.uuidString)",
-            filename: pageBackgroundFilename(pageID: pageID)
-        )
-    }
-
-    @discardableResult
     static func copyContainerBackground(
         from relativePath: String,
         draftID: UUID,
@@ -249,20 +208,6 @@ enum LocalCanvasAssetStore {
             from: relativePath,
             toFolder: draftFolder(draftID: draftID, create: true),
             relativeFolderName: "draft_\(draftID.uuidString)",
-            filename: "container_\(nodeID.uuidString).jpg"
-        )
-    }
-
-    @discardableResult
-    static func copyContainerBackground(
-        from relativePath: String,
-        templateID: UUID,
-        nodeID: UUID
-    ) throws -> String {
-        try copyExistingAsset(
-            from: relativePath,
-            toFolder: templateFolder(templateID: templateID, create: true),
-            relativeFolderName: "template_\(templateID.uuidString)",
             filename: "container_\(nodeID.uuidString).jpg"
         )
     }
@@ -356,11 +301,5 @@ enum LocalCanvasAssetStore {
         let folder = draftFolder(draftID: draftID, create: false)
         try? FileManager.default.removeItem(at: folder)
         LocalImageCache.shared.removeAll(under: "draft_\(draftID.uuidString)/")
-    }
-
-    static func deleteTemplateAssets(templateID: UUID) {
-        let folder = templateFolder(templateID: templateID, create: false)
-        try? FileManager.default.removeItem(at: folder)
-        LocalImageCache.shared.removeAll(under: "template_\(templateID.uuidString)/")
     }
 }

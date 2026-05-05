@@ -41,11 +41,12 @@ struct PublishedProfilesListView: View {
     @State private var isLoadingMore: Bool = false
     @State private var dismissed: Set<String> = []
     /// Lazy banner enrichment — JSONB-extracted from `design_json`
-    /// after the lightweight summary lands. Keyed by `profile.id`.
-    /// Until the row's enrichment arrives, the card's seed gradient
-    /// covers the gap; once it lands, SwiftUI re-renders only that
-    /// card because we feed the override through the view-tree.
-    @State private var backgroundOverrides: [String: PublishedProfileService.BackgroundFragment] = [:]
+    /// after the lightweight summary lands. Backed by the process-wide
+    /// `ProfileBackgroundStore` so explore-list remounts (tab swap,
+    /// drill-and-back) read fragments the previous mount already
+    /// paid for. Reading the singleton directly means SwiftUI's
+    /// `@Observable` tracking re-renders cards as fragments land.
+    private var backgroundStore: ProfileBackgroundStore { ProfileBackgroundStore.shared }
     /// Debounce token for the search field — re-fired on every
     /// keystroke and cancelled before re-arming so 'amelia' only
     /// hits the network once.
@@ -57,6 +58,14 @@ struct PublishedProfilesListView: View {
     /// tab after publishing from Build, so their new card lands on
     /// screen without requiring a manual pull-to-refresh.
     @State private var hasInitiallyLoaded: Bool = false
+    /// Hero avatar URL of the signed-in user, surfaced inside
+    /// `ownProfilePuck`. Mirrors the pattern in `PostFeedView`: fetched
+    /// from the published profile's `design_json` so the puck shows the
+    /// user's actual hero avatar instead of the rose fallback. Refreshed
+    /// on first load, tab re-entry, account swap, and the
+    /// `cucuProfileAvatarDidChange` broadcast that `PublishSheet` fires
+    /// after a successful publish.
+    @State private var ownAvatarURL: String?
     /// Username the user just tapped on a feed card. Drives a
     /// programmatic push via `.navigationDestination(item:)` —
     /// `NavigationLink { … } label: { card }` was failing to fire on
@@ -67,6 +76,19 @@ struct PublishedProfilesListView: View {
     /// gesture is owned by SwiftUI's standard Button, and the push
     /// happens reactively when the binding flips.
     @State private var pushTarget: ProfileNavTarget?
+    /// Process-wide app-chrome theme. Drives the page bg, navigation
+    /// chrome, and on-page text colour so a tap on the picker tile
+    /// re-paints the explore page in lock-step with the feed.
+    @State private var chrome = AppChromeStore.shared
+    /// Drives the paper-stock picker sheet. Hosted here (and on the
+    /// feed) so users have an entry point from each social tab — no
+    /// need to drill into a settings page.
+    @State private var showThemePicker: Bool = false
+    /// Profile summary the long-press sneak-peek overlay is currently
+    /// showing. `nil` while no peek is up — the overlay is only
+    /// rendered when this is non-nil. Set in the per-row long-press
+    /// gesture, cleared by the overlay's dismiss / open callbacks.
+    @State private var peekTarget: PublishedProfileSummary?
 
     /// Hashable + Identifiable wrapper around a username so
     /// `.navigationDestination(item:)` can drive the push. Plain
@@ -133,21 +155,45 @@ struct PublishedProfilesListView: View {
 
     var body: some View {
         ZStack {
-            Color.cucuPaper.ignoresSafeArea()
+            chrome.theme.pageColor
+                .ignoresSafeArea()
+                .animation(.easeInOut(duration: 0.32), value: chrome.theme.id)
             content
         }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .principal) { EmptyView() } }
-        .toolbarBackground(Color.cucuPaper, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
-        .tint(Color.cucuInk)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    showThemePicker = true
+                } label: {
+                    Image(systemName: "circle.lefthalf.filled.righthalf.striped.horizontal")
+                        .foregroundStyle(chrome.theme.inkPrimary)
+                }
+                .accessibilityLabel("Change theme")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                ownProfilePuck
+            }
+        }
+        .cucuRefinedNav("Finds")
+        .tint(chrome.theme.inkPrimary)
+        .sheet(isPresented: $showThemePicker) {
+            AppChromeThemeSheet()
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         .onChange(of: query) { _, newValue in
             scheduleSearch(rawQuery: newValue)
         }
         .onChange(of: feedMode) { _, _ in
             Task { await initialLoad() }
         }
-        .refreshable { await initialLoad() }
+        .refreshable {
+            // User-initiated refresh bypasses the 60s snapshot cache
+            // so the wire result is canonical regardless of the
+            // last automatic load.
+            await ExploreListCache.shared.invalidateAll()
+            await initialLoad()
+        }
         .task {
             // First-paint load. Guarded so subsequent `.task` fires
             // (e.g. from a SwiftData refresh, view-tree churn) don't
@@ -156,6 +202,7 @@ struct PublishedProfilesListView: View {
             if !hasInitiallyLoaded {
                 await initialLoad()
                 await loadTopPicks()
+                await loadOwnAvatar()
                 hasInitiallyLoaded = true
             }
         }
@@ -170,6 +217,7 @@ struct PublishedProfilesListView: View {
                 Task {
                     await initialLoad()
                     await loadTopPicks()
+                    await loadOwnAvatar()
                 }
             }
         }
@@ -178,10 +226,24 @@ struct PublishedProfilesListView: View {
         // user's card lands on the page without requiring a manual
         // pull-to-refresh.
         .onChange(of: auth.currentUser?.id) { _, _ in
+            ownAvatarURL = nil
             Task {
                 await initialLoad()
                 await loadTopPicks()
+                await loadOwnAvatar()
             }
+        }
+        // Hero avatar broadcast — `PublishSheet` fires this after a
+        // successful publish. Refresh the puck so the user sees their
+        // new avatar without leaving the tab.
+        .onReceive(
+            NotificationCenter.default.publisher(for: .cucuProfileAvatarDidChange)
+        ) { notification in
+            guard let username = CucuProfileEvents.avatarUsername(from: notification),
+                  username == canonicalSelfUsername else {
+                return
+            }
+            Task { await refreshOwnAvatar() }
         }
         .onDisappear {
             searchTask?.cancel()
@@ -193,6 +255,40 @@ struct PublishedProfilesListView: View {
         .navigationDestination(item: $pushTarget) { target in
             PublishedProfileView(username: target.username)
         }
+        // Long-press sneak peek. Sits above the scroll view + the
+        // toolbar so the sticker can dim the entire surface without
+        // having to thread a ZStack down into every layout slot.
+        // The overlay self-handles its entrance/dismiss animation;
+        // we only mount/unmount when `peekTarget` flips.
+        .overlay {
+            if let target = peekTarget {
+                ProfilePeekOverlay(
+                    profile: target,
+                    backgroundImageURL: backgroundStore.fragment(for: target.id)?.backgroundImageURL,
+                    backgroundHex: backgroundStore.fragment(for: target.id)?.backgroundHex,
+                    avatarImageURL: backgroundStore.fragment(for: target.id)?.heroAvatarURL,
+                    isOwn: isOwn(profile: target),
+                    onOpen: {
+                        // Stage: clear the peek first (lets its own
+                        // dismiss animation finish), then push.
+                        // Pushing while the overlay is still mounted
+                        // would put the new view *under* the dimmed
+                        // backdrop on devices with slow nav-stack
+                        // commits.
+                        let username = target.username
+                        peekTarget = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            pushTarget = ProfileNavTarget(username: username)
+                        }
+                    },
+                    onDismiss: {
+                        peekTarget = nil
+                    }
+                )
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: peekTarget?.id)
     }
 
     // MARK: - Top-level layout
@@ -242,11 +338,9 @@ struct PublishedProfilesListView: View {
     private func scrollableShell<Inner: View>(@ViewBuilder content: () -> Inner) -> some View {
         ScrollView {
             LazyVStack(spacing: 18, pinnedViews: []) {
-                titleRow
-                    .padding(.horizontal, 20)
-                    .padding(.top, 4)
                 searchField
                     .padding(.horizontal, 20)
+                    .padding(.top, 8)
                 topThisWeekRegion
                 categoryRow
                 modeSegment
@@ -289,7 +383,7 @@ struct PublishedProfilesListView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Top This Week")
                 .font(.cucuSerif(20, weight: .bold))
-                .foregroundStyle(Color.cucuInk)
+                .foregroundStyle(chrome.theme.inkPrimary)
                 .padding(.horizontal, 20)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
@@ -303,18 +397,7 @@ struct PublishedProfilesListView: View {
         }
     }
 
-    // MARK: - Title
-
-    private var titleRow: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text("Finds")
-                .font(.cucuSerif(34, weight: .bold))
-                .foregroundStyle(Color.cucuInk)
-                .accessibilityAddTraits(.isHeader)
-            Spacer(minLength: 0)
-            ownProfilePuck
-        }
-    }
+    // MARK: - Avatar puck (trailing toolbar)
 
     /// Trailing avatar puck that doubles as a one-tap route to the
     /// signed-in user's own published profile. Without this, finding
@@ -340,7 +423,24 @@ struct PublishedProfilesListView: View {
         }
     }
 
+    @ViewBuilder
     private var puckChrome: some View {
+        if let urlString = ownAvatarURL,
+           let url = CucuImageTransform.resized(urlString, square: 38) {
+            CachedRemoteImage(url: url, contentMode: .fill) {
+                puckFallback
+            }
+            .frame(width: 38, height: 38)
+            .clipShape(Circle())
+            .overlay(
+                Circle().strokeBorder(chrome.theme.inkPrimary.opacity(0.22), lineWidth: 1)
+            )
+        } else {
+            puckFallback
+        }
+    }
+
+    private var puckFallback: some View {
         Circle()
             .fill(Color.cucuRose)
             .overlay(
@@ -350,7 +450,7 @@ struct PublishedProfilesListView: View {
             )
             .frame(width: 38, height: 38)
             .overlay(
-                Circle().strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 1)
+                Circle().strokeBorder(chrome.theme.inkPrimary.opacity(0.22), lineWidth: 1)
             )
     }
 
@@ -378,14 +478,19 @@ struct PublishedProfilesListView: View {
 
     // MARK: - Search
 
+    /// Refined search field. Drops the cream `cucuCardSoft` fill in
+    /// favour of a quiet step over the page (one notch of the chrome's
+    /// ink against the page), so the field reads as a recess in the
+    /// paper rather than a separate surface. Theme-aware: dark themes
+    /// get a faint highlight; light themes get a faint shadow.
     private var searchField: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Color.cucuInkFaded)
+                .foregroundStyle(chrome.theme.inkFaded)
             TextField("Browse Profiles", text: $query)
                 .font(.cucuSans(15, weight: .regular))
-                .foregroundStyle(Color.cucuInk)
+                .foregroundStyle(chrome.theme.inkPrimary)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .submitLabel(.search)
@@ -395,7 +500,7 @@ struct PublishedProfilesListView: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 16, weight: .regular))
-                        .foregroundStyle(Color.cucuInkFaded)
+                        .foregroundStyle(chrome.theme.inkFaded)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
@@ -404,20 +509,26 @@ struct PublishedProfilesListView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
         .background(
-            Capsule().fill(Color.cucuCardSoft)
+            Capsule().fill(searchFill)
         )
-        .overlay(
-            Capsule().strokeBorder(Color.cucuInk.opacity(0.12), lineWidth: 1)
-        )
+    }
+
+    /// Subtle ink-against-page recess. Matches the refined pill
+    /// button's fill so the search and the primary action read as
+    /// the same surface family.
+    private var searchFill: Color {
+        chrome.theme.isDark
+            ? Color.white.opacity(0.08)
+            : Color.black.opacity(0.05)
     }
 
     // MARK: - Top This Week
 
     private var topThisWeekSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Top This Week")
-                .font(.cucuSerif(20, weight: .bold))
-                .foregroundStyle(Color.cucuInk)
+            Text("Top this week")
+                .font(.cucuSans(15, weight: .bold))
+                .foregroundStyle(chrome.theme.inkPrimary)
                 .padding(.horizontal, 20)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
@@ -427,8 +538,8 @@ struct PublishedProfilesListView: View {
                         } label: {
                             TopPickTile(
                                 profile: pick,
-                                backgroundImageURLOverride: backgroundOverrides[pick.id]?.backgroundImageURL,
-                                backgroundHexOverride: backgroundOverrides[pick.id]?.backgroundHex
+                                backgroundImageURLOverride: backgroundStore.fragment(for: pick.id)?.backgroundImageURL,
+                                backgroundHexOverride: backgroundStore.fragment(for: pick.id)?.backgroundHex
                             )
                             .contentShape(Rectangle())
                         }
@@ -442,36 +553,31 @@ struct PublishedProfilesListView: View {
 
     // MARK: - Categories
 
+    /// Refined category strip. Drops the trailing chevron-down
+    /// circle (the horizontal scroll already implies "more past the
+    /// edge"). Active label rides in the chrome's primary ink with
+    /// a 2pt underline; inactive labels stay in faded ink. Cleaner
+    /// rhythm than the previous bold-vs-semibold weight swap.
     private var categoryRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .center, spacing: 18) {
+            HStack(alignment: .center, spacing: 22) {
                 ForEach(ExploreCategory.allCases) { cat in
                     Button {
                         category = cat
                     } label: {
                         VStack(spacing: 6) {
                             Text(cat.rawValue)
-                                .font(.cucuSerif(15, weight: cat == category ? .bold : .semibold))
-                                .foregroundStyle(cat == category ? Color.cucuInk : Color.cucuInkFaded)
+                                .font(.cucuSans(15, weight: cat == category ? .bold : .regular))
+                                .foregroundStyle(cat == category ? chrome.theme.inkPrimary : chrome.theme.inkFaded)
                             Rectangle()
-                                .fill(cat == category ? Color.cucuInk : Color.clear)
+                                .fill(cat == category ? chrome.theme.inkPrimary : Color.clear)
                                 .frame(height: 2)
-                                .frame(width: cat == category ? 28 : 0)
+                                .frame(width: cat == category ? 24 : 0)
                                 .animation(.spring(response: 0.25, dampingFraction: 0.85), value: category)
                         }
                     }
                     .buttonStyle(.plain)
                 }
-                // Trailing chevron — visual cue that more categories
-                // exist past the right edge, even though horizontal
-                // scroll would already imply it.
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.cucuInkFaded)
-                    .padding(8)
-                    .overlay(
-                        Circle().strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 1)
-                    )
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 2)
@@ -480,30 +586,29 @@ struct PublishedProfilesListView: View {
 
     // MARK: - Mode segment
 
+    /// Refined mode segment — three underline tabs matching the
+    /// category strip's idiom. Active label rides in the chrome's
+    /// primary ink with a 2pt underline; inactive in faded ink.
+    /// Drops the cream-pill / ink-pill swap that fought the refined
+    /// chrome's flat aesthetic.
     private var modeSegment: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 22) {
             ForEach(FeedMode.allCases) { mode in
                 Button {
                     feedMode = mode
                 } label: {
-                    Text(mode.rawValue)
-                        .font(.cucuSans(14, weight: .semibold))
-                        .foregroundStyle(mode == feedMode ? Color.white : Color.cucuInk)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
-                        .background(
-                            Capsule().fill(mode == feedMode
-                                           ? Color.cucuInk
-                                           : Color.cucuCardSoft)
-                        )
-                        .overlay(
-                            Capsule().strokeBorder(
-                                mode == feedMode ? Color.clear : Color.cucuInk.opacity(0.12),
-                                lineWidth: 1
-                            )
-                        )
+                    VStack(spacing: 6) {
+                        Text(mode.rawValue)
+                            .font(.cucuSans(15, weight: mode == feedMode ? .bold : .regular))
+                            .foregroundStyle(mode == feedMode ? chrome.theme.inkPrimary : chrome.theme.inkFaded)
+                        Rectangle()
+                            .fill(mode == feedMode ? chrome.theme.inkPrimary : Color.clear)
+                            .frame(height: 2)
+                            .frame(width: mode == feedMode ? 24 : 0)
+                            .animation(.spring(response: 0.25, dampingFraction: 0.85), value: feedMode)
+                    }
                 }
-                .buttonStyle(CucuPressableButtonStyle())
+                .buttonStyle(.plain)
             }
             Spacer(minLength: 0)
         }
@@ -531,18 +636,46 @@ struct PublishedProfilesListView: View {
                     // Button, which is rock-solid.
                     ZStack(alignment: .topTrailing) {
                         Button {
+                            // The long-press recognizer below races
+                            // with this tap. When a long-press wins,
+                            // it sets `peekTarget` and the user
+                            // expects the tap *not* to also push —
+                            // guard accordingly so a held card opens
+                            // the peek without immediately also
+                            // navigating.
+                            guard peekTarget == nil else { return }
                             pushTarget = ProfileNavTarget(username: profile.username)
                         } label: {
                             PreviewBannerCard(
                                 profile: profile,
-                                backgroundImageURLOverride: backgroundOverrides[profile.id]?.backgroundImageURL,
-                                backgroundHexOverride: backgroundOverrides[profile.id]?.backgroundHex,
-                                avatarImageURLOverride: backgroundOverrides[profile.id]?.heroAvatarURL,
+                                backgroundImageURLOverride: backgroundStore.fragment(for: profile.id)?.backgroundImageURL,
+                                backgroundHexOverride: backgroundStore.fragment(for: profile.id)?.backgroundHex,
+                                avatarImageURLOverride: backgroundStore.fragment(for: profile.id)?.heroAvatarURL,
                                 isOwn: isOwn(profile: profile)
                             )
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(CucuPressableButtonStyle())
+                        // Hold-to-peek. Wired as a `simultaneousGesture`
+                        // because SwiftUI's `Button` owns its own tap
+                        // recognizer and a plain `.onLongPressGesture`
+                        // modifier never gets the press — the Button
+                        // consumes it first. With `simultaneousGesture`
+                        // both recognizers run; if the user holds long
+                        // enough the long-press fires the peek, if
+                        // they release early the Button's tap fires
+                        // the push (gated by the `peekTarget == nil`
+                        // check above so a hold doesn't double-fire).
+                        // 0.32s gives the user time to realize a press
+                        // is in flight without making the gesture
+                        // feel sluggish.
+                        .simultaneousGesture(
+                            LongPressGesture(minimumDuration: 0.32, maximumDistance: 16)
+                                .onEnded { _ in
+                                    CucuHaptics.soft()
+                                    peekTarget = profile
+                                }
+                        )
 
                         Button {
                             dismiss(profile)
@@ -563,17 +696,17 @@ struct PublishedProfilesListView: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                            .tint(Color.cucuInkSoft)
+                            .tint(chrome.theme.inkMuted)
                         Text("loading more…")
                             .font(.cucuSans(13, weight: .regular))
-                            .foregroundStyle(Color.cucuInkFaded)
+                            .foregroundStyle(chrome.theme.inkFaded)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 24)
                 } else if !canLoadMore && !visibleProfiles.isEmpty {
-                    Text("✦  end of the feed  ✦")
-                        .font(.cucuSerif(12, weight: .regular))
-                        .foregroundStyle(Color.cucuInkFaded)
+                    Text("End of feed")
+                        .font(.cucuSans(13, weight: .regular))
+                        .foregroundStyle(chrome.theme.inkFaded)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 28)
                 }
@@ -601,47 +734,41 @@ struct PublishedProfilesListView: View {
         .accessibilityHidden(false)
     }
 
+    /// Refined empty state — drops the ✦ glyph and the
+    /// Lexend-bold-with-italic-subtitle stack in favour of a quiet
+    /// title-and-subtitle pair sized to match the section labels
+    /// elsewhere on the page.
     private func emptyState(title: String, subtitle: String) -> some View {
-        VStack(spacing: 14) {
-            Text("✦")
-                .font(.cucuSerif(40, weight: .regular))
-                .foregroundStyle(Color.cucuInkFaded)
+        VStack(spacing: 8) {
             Text(title)
-                .font(.cucuSerif(18, weight: .bold))
-                .foregroundStyle(Color.cucuInk)
+                .font(.cucuSans(17, weight: .bold))
+                .foregroundStyle(chrome.theme.inkPrimary)
             Text(subtitle)
                 .font(.cucuSans(14, weight: .regular))
-                .foregroundStyle(Color.cucuInkSoft)
+                .foregroundStyle(chrome.theme.inkFaded)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
         }
         .frame(maxWidth: .infinity, minHeight: 240)
     }
 
+    /// Refined error state — drops the cherry triangle in favour of
+    /// a flat title + message + refined pill button. Reads as a
+    /// recoverable hiccup rather than a system alert.
     private func errorState(_ message: String) -> some View {
-        VStack(spacing: 14) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 32))
-                .foregroundStyle(Color.cucuCherry)
+        VStack(spacing: 12) {
             Text("Couldn't load the feed")
-                .font(.cucuSerif(17, weight: .bold))
-                .foregroundStyle(Color.cucuInk)
+                .font(.cucuSans(17, weight: .bold))
+                .foregroundStyle(chrome.theme.inkPrimary)
             Text(message)
-                .font(.cucuSans(13, weight: .regular))
-                .foregroundStyle(Color.cucuInkSoft)
+                .font(.cucuSans(14, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-            Button {
+            CucuRefinedPillButton("Try again") {
                 Task { await initialLoad() }
-            } label: {
-                Text("Try again")
-                    .font(.cucuSans(15, weight: .semibold))
-                    .foregroundStyle(Color.cucuCard)
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 10)
-                    .background(Capsule().fill(Color.cucuInk))
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 32)
             .padding(.top, 6)
         }
         .frame(maxWidth: .infinity, minHeight: 240)
@@ -685,8 +812,8 @@ struct PublishedProfilesListView: View {
             let next: [PublishedProfileSummary]
             switch feedMode {
             case .suggested:
-                next = try await PublishedProfileService().fetchHottest()
-                canLoadMore = false
+                next = try await PublishedProfileService().fetchHottest(offset: 0)
+                canLoadMore = next.count >= PublishedProfileService.listPageSize
             case .recents:
                 next = try await PublishedProfileService().fetchLatest()
                 canLoadMore = next.count >= PublishedProfileService.listPageSize
@@ -721,52 +848,104 @@ struct PublishedProfilesListView: View {
         }
     }
 
-    /// Lazy banner enrichment. Asks Postgres for just the page
-    /// background fields out of `design_json` (via JSONB `->>`),
-    /// keyed by id. Failures are silent — the card already has a
-    /// seed-gradient fallback, so a network blip on the enrichment
-    /// pass is invisible to the user. Runs after the lightweight
-    /// summary lands so the feed paints immediately and banners
-    /// fill in as the override resolves.
-    private func enrichBackgrounds(for batch: [PublishedProfileSummary]) async {
-        // Drop ids we already have — re-asking the same row on every
-        // refresh would waste a roundtrip when the row hasn't changed
-        // since first load.
-        let needed = batch.map(\.id).filter { backgroundOverrides[$0] == nil }
-        guard !needed.isEmpty else { return }
+    /// First-paint avatar lookup for the masthead puck. Skips the
+    /// fetch if we already have a cached URL — the broadcast hook
+    /// owns invalidation when the user republishes with a new hero
+    /// avatar.
+    private func loadOwnAvatar() async {
+        let key = canonicalSelfUsername
+        guard !key.isEmpty, ownAvatarURL == nil else { return }
         do {
-            let fragments = try await PublishedProfileService().fetchBackgrounds(for: needed)
-            // Merge rather than replace so a Latest re-fetch doesn't
-            // drop already-resolved Hottest overrides (and vice
-            // versa). The dictionary's keyed by profile.id, so a
-            // refresh of the same row is a no-op.
-            backgroundOverrides.merge(fragments) { _, new in new }
+            let map = try await PublishedProfileService()
+                .fetchAvatars(forUsernames: [key])
+            if let url = map[key], !url.isEmpty {
+                ownAvatarURL = url
+            }
         } catch {
-            // Silent — the seed gradient is the fallback.
+            // Silent — the rose puck fallback covers the gap.
         }
     }
 
-    /// Triggered by the last visible row appearing. Bails when search
-    /// is active (those results aren't paginated by the service) or
-    /// when the previous page didn't fill the requested limit (no
-    /// more rows are available).
+    /// Force-refresh after a publish broadcast. Drops the stale URL
+    /// before the network call so the puck flips back to the
+    /// fallback during the brief in-flight window rather than
+    /// continuing to render the previous avatar.
+    private func refreshOwnAvatar() async {
+        let key = canonicalSelfUsername
+        guard !key.isEmpty else {
+            ownAvatarURL = nil
+            return
+        }
+        ownAvatarURL = nil
+        do {
+            let map = try await PublishedProfileService()
+                .fetchAvatars(forUsernames: [key])
+            if let url = map[key], !url.isEmpty {
+                ownAvatarURL = url
+            }
+        } catch {
+            // Silent — fallback is correct until the next refresh lands.
+        }
+    }
+
+    /// Thin wrapper that delegates to `ProfileBackgroundStore.shared`.
+    /// Kept here for the call-site readability — the four existing
+    /// `enrichBackgrounds(for:)` invocations in this file describe
+    /// *when* enrichment fires (post-fetch, post-pagination, post-
+    /// search) and the indirection makes that explicit. The store
+    /// itself dedupes ids that are already cached.
+    private func enrichBackgrounds(for batch: [PublishedProfileSummary]) async {
+        await backgroundStore.enrich(profiles: batch)
+    }
+
+    /// Triggered by the last visible row appearing. Bails on the
+    /// Online placeholder (no data path) or when the previous page
+    /// didn't fill the requested limit. Recents uses cursor-based
+    /// pagination; Suggested + active search use offset pagination
+    /// against `.range(from:to:)` server-side.
     private func maybeLoadMore(triggeredBy profile: PublishedProfileSummary) {
-        guard query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        guard feedMode == .recents else { return }
+        let isSearch = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !isSearch && feedMode == .online { return }
         guard canLoadMore, !isLoadingMore else { return }
         guard let last = profiles.last, last.id == profile.id else { return }
         Task { await loadMore() }
     }
 
     private func loadMore() async {
-        guard let cursor = profiles.last?.sortDate else { return }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isSearch = !trimmed.isEmpty
+        // Snapshot mode + count up-front so a mid-flight feedMode /
+        // query swap can't blend pages from two different sources.
+        let mode = feedMode
+        let offset = profiles.count
         isLoadingMore = true
         defer { isLoadingMore = false }
         do {
-            let next = try await PublishedProfileService().fetchLatest(before: cursor)
-            // Filter duplicates defensively — if two profiles share an
-            // identical `published_at` timestamp, the cursor query
-            // can re-include the boundary row.
+            let next: [PublishedProfileSummary]
+            if isSearch {
+                next = try await PublishedProfileService().search(query: trimmed, offset: offset)
+            } else {
+                switch mode {
+                case .suggested:
+                    next = try await PublishedProfileService().fetchHottest(offset: offset)
+                case .recents:
+                    guard let cursor = profiles.last?.sortDate else { return }
+                    next = try await PublishedProfileService().fetchLatest(before: cursor)
+                case .online:
+                    return
+                }
+            }
+            // Bail if the user changed modes / typed a new query while
+            // this page was in flight — appending stale rows would
+            // corrupt the visible feed.
+            guard mode == feedMode,
+                  isSearch == !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return
+            }
+            // Filter duplicates defensively. Cursor pagination can
+            // re-include the boundary row when timestamps tie; offset
+            // pagination on Hottest can re-include rows whose
+            // `hot_score` shifted between page fetches.
             let existing = Set(profiles.map(\.id))
             let fresh = next.filter { !existing.contains($0.id) }
             profiles.append(contentsOf: fresh)
@@ -803,9 +982,9 @@ struct PublishedProfilesListView: View {
     private func runSearch(_ trimmed: String) async {
         status = .loading
         do {
-            let results = try await PublishedProfileService().search(query: trimmed)
+            let results = try await PublishedProfileService().search(query: trimmed, offset: 0)
             profiles = results
-            canLoadMore = false
+            canLoadMore = results.count >= PublishedProfileService.listPageSize
             isLoadingMore = false
             status = results.isEmpty ? .emptySearch : .loaded
             await enrichBackgrounds(for: results)
@@ -910,9 +1089,11 @@ private struct TopPickTile: View {
 
     @ViewBuilder
     private var backgroundLayer: some View {
+        // Tile is 196×96; render through Supabase's image transform
+        // so a megapixel hero photo doesn't get pulled down just to
+        // be downsampled into a thumbnail-size carousel cell.
         if let urlString = resolvedBackgroundImageURL,
-           let url = URL(string: urlString),
-           !urlString.isEmpty {
+           let url = CucuImageTransform.resized(urlString, width: 196, height: 96) {
             CachedRemoteImage(url: url, contentMode: .fill) {
                 seedGradient
             }

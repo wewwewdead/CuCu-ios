@@ -46,14 +46,12 @@ enum ProfileResetError: Error, LocalizedError, Equatable {
 /// every delete an RLS violation against a path that "looks right" in
 /// uppercase.
 ///
-/// **Pagination.** `storage.list(path:)` defaults to a 100-item page,
-/// which used to be enough for typical profiles. Default templates
-/// ship galleries with multiple tiles plus icons, avatar, container
-/// bgs, etc., so a busy profile can plausibly cross that boundary —
-/// the wipe loops `list` + `remove` until the folder reads empty so
-/// no orphaned objects survive a reset regardless of asset count.
-/// A safety cap on iterations protects against unexpected loops if a
-/// remove call ever silently fails to delete its targets.
+/// **Pagination.** `storage.list(path:)` defaults to a 100-item page.
+/// A busy profile (galleries, icons, avatar, container backgrounds)
+/// can cross that boundary, so the wipe loops `list` + `remove` until
+/// the folder reads empty. A safety cap on iterations protects against
+/// unexpected loops if a remove call ever silently fails to delete its
+/// targets.
 @MainActor
 struct ProfileResetService {
     let user: AppUser

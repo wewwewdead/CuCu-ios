@@ -71,6 +71,7 @@ struct AddNodeSheet: View {
     var onPickSection: (CanvasSectionPreset) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var chrome = AppChromeStore.shared
     @State private var pickerSelection: PhotosPickerItem?
     @State private var avatarSelection: PhotosPickerItem?
     @State private var gallerySelection: [PhotosPickerItem] = []
@@ -79,71 +80,64 @@ struct AddNodeSheet: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                destinationHeader
+            ZStack {
+                CucuRefinedPageBackdrop()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        destinationHeader
 
-                if destination == .structuredPage {
-                    // Cards section sits at the top because Section Card
-                    // is the structured profile's primary editing unit.
-                    // Below it, the user gets the same primitives the
-                    // non-structured page offers — Basic, Social /
-                    // Profile, Decor — so anything (avatar, link,
-                    // gallery, carousel, icon, divider, plain text /
-                    // image) can be dropped directly onto the page
-                    // without first nesting into a Section Card.
-                    Section {
-                        Button {
-                            onPickType(.container)
-                            dismiss()
-                        } label: {
-                            rowLabel(symbol: "rectangle.inset.filled", title: "Section Card",
-                                     subtitle: "A fitted profile card below your header.")
+                        if destination == .structuredPage {
+                            // Cards section sits at the top because Section Card
+                            // is the structured profile's primary editing unit.
+                            sectionGroup(label: "Cards") {
+                                refinedRow(symbol: "rectangle.inset.filled",
+                                           title: "Section Card",
+                                           subtitle: "A fitted profile card below your header.") {
+                                    onPickType(.container)
+                                    dismiss()
+                                }
+                            }
                         }
-                    } header: {
-                        CucuSectionLabel(text: "Cards")
-                    }
 
-                    basicSection
-                    socialSection
-                    decorSection
-                } else {
-                    basicSection
-                    socialSection
-                    decorSection
-                }
+                        basicGroup
+                        socialGroup
+                        decorGroup
 
-                if let pickerError {
-                    Text(pickerError)
-                        .font(.cucuSans(12, weight: .medium))
-                        .foregroundStyle(Color.cucuCherry)
-                }
+                        if let pickerError {
+                            Text(pickerError)
+                                .font(.cucuSans(13, weight: .regular))
+                                .foregroundStyle(destructiveInk)
+                                .padding(.horizontal, 4)
+                        }
 
-                // — Pre-built section templates — drop-in groups —
-                Section {
-                    ForEach(availablePresets) { preset in
-                        Button {
-                            onPickSection(preset)
-                            dismiss()
-                        } label: {
-                            rowLabel(
-                                symbol: preset.symbol,
-                                title: preset.title,
-                                subtitle: preset.subtitle
-                            )
+                        sectionGroup(label: "Sections") {
+                            ForEach(Array(availablePresets.enumerated()), id: \.element.id) { index, preset in
+                                refinedRow(
+                                    symbol: preset.symbol,
+                                    title: preset.title,
+                                    subtitle: preset.subtitle
+                                ) {
+                                    onPickSection(preset)
+                                    dismiss()
+                                }
+                                if index < availablePresets.count - 1 {
+                                    rowDivider
+                                }
+                            }
                         }
                     }
-                } header: {
-                    CucuSectionLabel(text: "Sections")
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 32)
                 }
             }
-            .listStyle(.insetGrouped)
-            .cucuFormBackdrop()
-            .cucuSheetTitle("Add Element")
-            .navigationBarTitleDisplayMode(.inline)
+            .tint(chrome.theme.inkPrimary)
+            .cucuRefinedNav("Add Element")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .font(.cucuSerif(16, weight: .semibold))
+                        .font(.cucuSans(15, weight: .regular))
+                        .foregroundStyle(chrome.theme.inkPrimary)
                 }
             }
             .onChange(of: gallerySelection) { _, newItems in
@@ -227,72 +221,55 @@ struct AddNodeSheet: View {
         }
     }
 
-    /// Basic primitives — text, container, plain image. Same set of
-    /// rows the legacy non-structured page exposed; broken out into a
-    /// computed view so the structured page can reuse it without
-    /// duplicating the picker / button / state plumbing.
-    ///
-    /// `Container` is hidden on the structured page destination
-    /// because the Cards section already exposes Section Card, which
-    /// is what `CanvasMutator.addNode` produces for a `.container`
-    /// pick at the structured root anyway. Showing both rows just
-    /// duplicates the same outcome with two labels. Container stays
-    /// available everywhere else (nested into a Section Card or
-    /// inside another Container) where it builds a real nested
-    /// container instead.
+    /// Basic primitives — text, container, plain image.
     @ViewBuilder
-    private var basicSection: some View {
-        Section {
-            Button {
+    private var basicGroup: some View {
+        sectionGroup(label: "Basic") {
+            refinedRow(symbol: "textformat", title: "Text",
+                       subtitle: "A line or paragraph of text.") {
                 onPickType(.text)
                 dismiss()
-            } label: {
-                rowLabel(symbol: "textformat", title: "Text",
-                         subtitle: "A line or paragraph of text.")
             }
+            rowDivider
             if destination != .structuredPage {
-                Button {
+                refinedRow(symbol: "rectangle", title: "Container",
+                           subtitle: "A rectangular area you can nest other elements inside.") {
                     onPickType(.container)
                     dismiss()
-                } label: {
-                    rowLabel(symbol: "rectangle", title: "Container",
-                             subtitle: "A rectangular area you can nest other elements inside.")
                 }
+                rowDivider
             }
             PhotosPicker(selection: $pickerSelection, matching: .images, photoLibrary: .shared()) {
-                rowLabel(symbol: "photo", title: "Image",
-                         subtitle: pickerLoading
-                            ? "Loading…"
-                            : "Pick a photo from your library.")
+                refinedRowLabel(symbol: "photo", title: "Image",
+                                subtitle: pickerLoading
+                                    ? "Loading…"
+                                    : "Pick a photo from your library.")
             }
+            .buttonStyle(CucuRefinedRowButtonStyle())
             .disabled(pickerLoading)
-        } header: {
-            CucuSectionLabel(text: "Basic")
         }
     }
 
-    /// Identity / social rows — avatar, link, gallery, carousel. The
-    /// "things a profile page is actually for". Avatar uses a separate
-    /// picker selection from the Basic image picker so the two never
-    /// clash on a shared state slot.
+    /// Identity / social rows — avatar, link, gallery, carousel.
     @ViewBuilder
-    private var socialSection: some View {
-        Section {
+    private var socialGroup: some View {
+        sectionGroup(label: "Social / Profile") {
             PhotosPicker(selection: $avatarSelection, matching: .images, photoLibrary: .shared()) {
-                rowLabel(symbol: "person.crop.circle.fill", title: "Avatar",
-                         subtitle: pickerLoading
-                            ? "Loading…"
-                            : "A circular profile photo — square frame, circle clip.")
+                refinedRowLabel(symbol: "person.crop.circle.fill", title: "Avatar",
+                                subtitle: pickerLoading
+                                    ? "Loading…"
+                                    : "A circular profile photo — square frame, circle clip.")
             }
+            .buttonStyle(CucuRefinedRowButtonStyle())
             .disabled(pickerLoading)
+            rowDivider
 
-            Button {
+            refinedRow(symbol: "link", title: "Link",
+                       subtitle: "Profile link card — pill, button, badge, more.") {
                 onPickType(.link)
                 dismiss()
-            } label: {
-                rowLabel(symbol: "link", title: "Link",
-                         subtitle: "Profile link card — pill, button, badge, more.")
             }
+            rowDivider
 
             PhotosPicker(
                 selection: $gallerySelection,
@@ -300,54 +277,45 @@ struct AddNodeSheet: View {
                 matching: .images,
                 photoLibrary: .shared()
             ) {
-                rowLabel(symbol: "rectangle.grid.2x2", title: "Gallery",
-                         subtitle: pickerLoading
-                            ? "Loading…"
-                            : "Multiple photos in a grid, row, or collage.")
+                refinedRowLabel(symbol: "rectangle.grid.2x2", title: "Gallery",
+                                subtitle: pickerLoading
+                                    ? "Loading…"
+                                    : "Multiple photos in a grid, row, or collage.")
             }
+            .buttonStyle(CucuRefinedRowButtonStyle())
             .disabled(pickerLoading)
+            rowDivider
 
-            Button {
+            refinedRow(symbol: "rectangle.stack", title: "Carousel",
+                       subtitle: "A horizontal strip for text, images, and other items.") {
                 onPickType(.carousel)
                 dismiss()
-            } label: {
-                rowLabel(symbol: "rectangle.stack", title: "Carousel",
-                        subtitle: "A horizontal strip for text, images, and other items.")
             }
+            rowDivider
 
-            Button {
+            refinedRow(symbol: "note.text", title: "Note",
+                       subtitle: "Memo card — title, time, and a body of text.") {
                 onPickType(.note)
                 dismiss()
-            } label: {
-                rowLabel(symbol: "note.text", title: "Note",
-                         subtitle: "Memo card — title, time, and a body of text.")
             }
-        } header: {
-            CucuSectionLabel(text: "Social / Profile")
         }
     }
 
-    /// Decorative props — icon, divider. Visual flourishes that don't
-    /// hold content of their own.
+    /// Decorative props — icon, divider.
     @ViewBuilder
-    private var decorSection: some View {
-        Section {
-            Button {
+    private var decorGroup: some View {
+        sectionGroup(label: "Decor") {
+            refinedRow(symbol: "star.fill", title: "Icon",
+                       subtitle: "A cute symbol — pick a style family + glyph.") {
                 onPickType(.icon)
                 dismiss()
-            } label: {
-                rowLabel(symbol: "star.fill", title: "Icon",
-                         subtitle: "A cute symbol — pick a style family + glyph.")
             }
-            Button {
+            rowDivider
+            refinedRow(symbol: "scribble", title: "Divider",
+                       subtitle: "Decorative break — sparkle, lace, ribbon, more.") {
                 onPickType(.divider)
                 dismiss()
-            } label: {
-                rowLabel(symbol: "scribble", title: "Divider",
-                         subtitle: "Decorative break — sparkle, lace, ribbon, more.")
             }
-        } header: {
-            CucuSectionLabel(text: "Decor")
         }
     }
 
@@ -355,28 +323,119 @@ struct AddNodeSheet: View {
     /// currently selected container. Closes the loop on the user's
     /// nesting expectation: "if the destination is the container, dragging
     /// that container later will carry this new item with it."
+    /// Refined "Adding to" header — sits above the section list as a
+    /// theme-aware card showing where new items will land.
     @ViewBuilder
     private var destinationHeader: some View {
-        Section {
-            HStack(spacing: 10) {
-                Image(systemName: destinationSymbol)
-                    .foregroundStyle(Color.cucuInkSoft)
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 28, height: 28)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Adding to")
-                        .font(.cucuMono(10, weight: .medium))
-                        .tracking(2)
-                        .foregroundStyle(Color.cucuInkFaded)
-                        .textCase(.uppercase)
-                    Text(destinationLabel)
-                        .font(.cucuSerif(15, weight: .semibold))
-                        .foregroundStyle(Color.cucuInk)
-                }
-                Spacer()
+        HStack(spacing: 12) {
+            Image(systemName: destinationSymbol)
+                .foregroundStyle(chrome.theme.cardInkPrimary)
+                .font(.system(size: 18, weight: .regular))
+                .frame(width: 28, height: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Adding to")
+                    .font(.cucuSans(12, weight: .regular))
+                    .foregroundStyle(chrome.theme.cardInkFaded)
+                Text(destinationLabel)
+                    .font(.cucuSans(15, weight: .bold))
+                    .foregroundStyle(chrome.theme.cardInkPrimary)
             }
-            .padding(.vertical, 2)
+            Spacer()
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(chrome.theme.cardColor)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(chrome.theme.rule, lineWidth: 1)
+        )
+    }
+
+    /// Section wrapper — a refined faded label sitting on the page
+    /// above a card-grouped column of rows.
+    @ViewBuilder
+    private func sectionGroup<Content: View>(
+        label: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label)
+                .font(.cucuSans(13, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
+                .padding(.horizontal, 4)
+            VStack(spacing: 0) {
+                content()
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(chrome.theme.cardColor)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(chrome.theme.rule, lineWidth: 1)
+            )
+        }
+    }
+
+    /// Hairline rule between rows inside a card. Inset on the
+    /// leading edge so the rule reads as the row's bottom rather
+    /// than a full-card section break.
+    private var rowDivider: some View {
+        Rectangle()
+            .fill(chrome.theme.rule)
+            .frame(height: 1)
+            .padding(.leading, 56)
+    }
+
+    /// Tappable refined row — used for any non-PhotosPicker entry
+    /// in the section groups.
+    @ViewBuilder
+    private func refinedRow(
+        symbol: String,
+        title: String,
+        subtitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            refinedRowLabel(symbol: symbol, title: title, subtitle: subtitle)
+        }
+        .buttonStyle(CucuRefinedRowButtonStyle())
+    }
+
+    /// Shared row body. Used directly by `PhotosPicker` (which
+    /// supplies its own button chrome) and indirectly via
+    /// `refinedRow(...)` for tap-action rows.
+    private func refinedRowLabel(
+        symbol: String,
+        title: String,
+        subtitle: String
+    ) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .regular))
+                .frame(width: 32, height: 32)
+                .foregroundStyle(chrome.theme.cardInkPrimary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.cucuSans(16, weight: .bold))
+                    .foregroundStyle(chrome.theme.cardInkPrimary)
+                Text(subtitle)
+                    .font(.cucuSans(12, weight: .regular))
+                    .foregroundStyle(chrome.theme.cardInkFaded)
+            }
+            Spacer(minLength: 8)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+    }
+
+    /// Cherry tone for the inline picker error.
+    private var destructiveInk: Color {
+        Color(red: 178 / 255, green: 42 / 255, blue: 74 / 255)
     }
 
     private var destinationSymbol: String {
@@ -406,23 +465,4 @@ struct AddNodeSheet: View {
         return CanvasSectionPreset.allCases
     }
 
-    private func rowLabel(symbol: String, title: String, subtitle: String) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: symbol)
-                .font(.system(size: 17, weight: .semibold))
-                .frame(width: 32, height: 32)
-                .foregroundStyle(Color.cucuInkSoft)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.cucuSerif(16, weight: .semibold))
-                    .foregroundStyle(Color.cucuInk)
-                Text(subtitle)
-                    .font(.cucuSans(12, weight: .regular))
-                    .foregroundStyle(Color.cucuInkFaded)
-            }
-            Spacer()
-        }
-        .contentShape(Rectangle())
-        .padding(.vertical, 4)
-    }
 }

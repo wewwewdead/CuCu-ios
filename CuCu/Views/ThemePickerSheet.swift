@@ -16,6 +16,7 @@ struct ThemePickerSheet: View {
     let document: ProfileDocument
 
     @Environment(\.dismiss) private var dismiss
+    @State private var chrome = AppChromeStore.shared
     /// Theme tapped while the document had non-default chrome — we
     /// stash it here so the confirmation dialog can fire `applyTheme`
     /// on user confirm. `nil` whenever no confirmation is in flight.
@@ -28,26 +29,26 @@ struct ThemePickerSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 14) {
-                    ForEach(CucuTheme.presets) { theme in
-                        themeCard(theme)
+            ZStack {
+                CucuRefinedPageBackdrop()
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 14) {
+                        ForEach(CucuTheme.presets) { theme in
+                            themeCard(theme)
+                        }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 24)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 24)
             }
-            .background(Color.cucuPaper.ignoresSafeArea())
-            .cucuSheetTitle("Pick a vibe")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.cucuPaper, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            .tint(Color.cucuInk)
+            .cucuRefinedNav("Theme")
+            .tint(chrome.theme.inkPrimary)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
-                        .font(.cucuSerif(16, weight: .bold))
+                        .font(.cucuSans(15, weight: .semibold))
+                        .foregroundStyle(chrome.theme.inkPrimary)
                 }
             }
         }
@@ -84,11 +85,11 @@ struct ThemePickerSheet: View {
             .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.cucuCardSoft)
+                    .fill(chrome.theme.cardColor)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.cucuInkRule, lineWidth: 1)
+                    .strokeBorder(chrome.theme.rule, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
@@ -132,29 +133,28 @@ struct ThemePickerSheet: View {
         .aspectRatio(1.05, contentMode: .fit)
     }
 
-    /// Bottom strip — theme display name in italic Fraunces, tagline
-    /// in mono uppercase below.
+    /// Refined meta strip — bold theme name + faded sentence-case
+    /// tagline. Drops Fraunces italic and tracked-uppercase mono.
     @ViewBuilder
     private func meta(for theme: CucuTheme) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(theme.displayName)
-                .font(.cucuEditorial(15, weight: .semibold, italic: true))
-                .foregroundStyle(Color.cucuInk)
+                .font(.cucuSans(15, weight: .bold))
+                .foregroundStyle(chrome.theme.cardInkPrimary)
                 .lineLimit(1)
-            Text(theme.tagline.uppercased())
-                .font(.cucuMono(8.5, weight: .semibold))
-                .tracking(1.4)
-                .foregroundStyle(Color.cucuInkFaded)
+            Text(theme.tagline)
+                .font(.cucuSans(11, weight: .regular))
+                .foregroundStyle(chrome.theme.cardInkFaded)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(Color.cucuCard)
+        .background(chrome.theme.cardColor)
         .overlay(
             Rectangle()
-                .fill(Color.cucuInkRule)
+                .fill(chrome.theme.rule)
                 .frame(height: 1),
             alignment: .top
         )

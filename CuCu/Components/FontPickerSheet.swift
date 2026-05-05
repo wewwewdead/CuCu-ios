@@ -14,6 +14,7 @@ struct FontPickerSheet: View {
     let onCommit: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var chrome = AppChromeStore.shared
 
     private let columns = [
         GridItem(.adaptive(minimum: 92), spacing: 10)
@@ -21,30 +22,28 @@ struct FontPickerSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18, pinnedViews: []) {
-                    ForEach(NodeFontFamily.Category.allCases, id: \.self) { category in
-                        let families = NodeFontFamily.allCases.filter { $0.category == category }
-                        if !families.isEmpty {
-                            section(label: category.label, families: families)
+            ZStack {
+                CucuRefinedPageBackdrop()
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 18, pinnedViews: []) {
+                        ForEach(NodeFontFamily.Category.allCases, id: \.self) { category in
+                            let families = NodeFontFamily.allCases.filter { $0.category == category }
+                            if !families.isEmpty {
+                                section(label: category.label, families: families)
+                            }
                         }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
             }
-            .background(Color.cucuPaper.ignoresSafeArea())
-            .cucuSheetTitle("Font")
-            #if os(iOS) || os(visionOS)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.cucuPaper, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            #endif
-            .tint(Color.cucuInk)
+            .cucuRefinedNav("Font")
+            .tint(chrome.theme.inkPrimary)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
-                        .font(.cucuSerif(16, weight: .bold))
+                        .font(.cucuSans(15, weight: .semibold))
+                        .foregroundStyle(chrome.theme.inkPrimary)
                 }
             }
         }
@@ -53,10 +52,9 @@ struct FontPickerSheet: View {
     @ViewBuilder
     private func section(label: String, families: [NodeFontFamily]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(label.uppercased())
-                .font(.cucuMono(9, weight: .semibold))
-                .tracking(2)
-                .foregroundStyle(Color.cucuInkFaded)
+            Text(label)
+                .font(.cucuSans(13, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
                 .padding(.horizontal, 4)
 
             LazyVGrid(columns: columns, spacing: 10) {
@@ -78,12 +76,11 @@ struct FontPickerSheet: View {
             VStack(spacing: 4) {
                 Text("Aa")
                     .font(family.swiftUIFont(size: 30, weight: .semibold))
-                    .foregroundStyle(isSelected ? Color.cucuCard : Color.cucuInk)
+                    .foregroundStyle(isSelected ? chrome.theme.pageColor : chrome.theme.inkPrimary)
                     .lineLimit(1)
-                Text(family.displayName.uppercased())
-                    .font(.cucuMono(8.5, weight: .semibold))
-                    .tracking(1.6)
-                    .foregroundStyle(isSelected ? Color.cucuCard.opacity(0.85) : Color.cucuInkSoft)
+                Text(family.displayName)
+                    .font(.cucuSans(11, weight: .regular))
+                    .foregroundStyle(isSelected ? chrome.theme.pageColor.opacity(0.85) : chrome.theme.inkFaded)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
             }
@@ -92,16 +89,22 @@ struct FontPickerSheet: View {
             .padding(.horizontal, 6)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(isSelected ? Color.cucuInk : Color.cucuCardSoft)
+                    .fill(isSelected ? chrome.theme.inkPrimary : tileFill)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .strokeBorder(
-                        isSelected ? Color.cucuInk : Color.cucuInkRule,
+                        isSelected ? Color.clear : chrome.theme.rule,
                         lineWidth: 1
                     )
             )
         }
         .buttonStyle(CucuPressableButtonStyle())
+    }
+
+    private var tileFill: Color {
+        chrome.theme.isDark
+            ? Color.white.opacity(0.06)
+            : Color.black.opacity(0.04)
     }
 }

@@ -1,27 +1,9 @@
 import SwiftUI
 
 /// First-launch / empty-canvas overlay. Sits on top of the (empty)
-/// canvas surface and disappears the instant the first node lands —
-/// no separate "drafts page" tutorial, no full-screen onboarding,
-/// just a calm editorial nudge that points at the two affordances
-/// the new user actually needs (Add Element / Use Template).
-///
-/// Visual recipe — same editorial-scrapbook tone as every other
-/// modal in the app:
-///
-///   - `✦` sparkle + mono spec line (`fig. 01 — start`) so the
-///     blank page reads as "page one of a notebook" rather than
-///     "broken state."
-///   - **Caprasimo** italic display title for the call-out, then
-///     **Caveat** handwritten subtitle for the friendly prompt.
-///   - `❦` fleuron divider above the two CTAs.
-///   - Primary "Add Element" pill in solid ink + cream text;
-///     secondary "Use Template" in cream + ink stroke.
-///   - Subtle entrance: heading + buttons stagger-fade in 100ms /
-///     180ms behind the page mount so it lands rather than slams.
+/// canvas surface and disappears the instant the first node lands.
 struct CanvasEmptyStateView: View {
     let onAddElement: () -> Void
-    let onUseTemplate: () -> Void
     let onPreview: () -> Void
 
     @State private var headingVisible = false
@@ -29,11 +11,10 @@ struct CanvasEmptyStateView: View {
     @State private var ctasVisible = false
 
     @Environment(\.cucuWidthClass) private var widthClass
+    @State private var chrome = AppChromeStore.shared
 
     /// CTA buttons grow with the width class instead of capping at
-    /// 240pt on every device — Pro Max / iPad have plenty of room and
-    /// the conservative cap made the empty state feel marooned at
-    /// the centre of the screen.
+    /// 240pt on every device — Pro Max / iPad have plenty of room.
     private var ctaMaxWidth: CGFloat {
         switch widthClass {
         case .compact:  return 260
@@ -44,74 +25,51 @@ struct CanvasEmptyStateView: View {
     }
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 16) {
             Spacer(minLength: 24)
 
-            // — chunky cute headline —
             Text("Design your\ninternet identity.")
-                .font(.custom("Caprasimo-Regular", size: 36))
-                .foregroundStyle(Color.cucuInk)
+                .font(.cucuSans(34, weight: .bold))
+                .foregroundStyle(chrome.theme.inkPrimary)
                 .multilineTextAlignment(.center)
                 .lineSpacing(2)
                 .opacity(headingVisible ? 1 : 0)
                 .offset(y: headingVisible ? 0 : 8)
 
-            // — handwritten body —
-            Text("A blank page is waiting for your story.\nAdd an element or pick a template to begin.")
-                .font(.custom("Caveat-Regular", size: 21))
-                .foregroundStyle(Color.cucuInkSoft)
+            Text("A blank page is waiting for your story.\nAdd an element to begin.")
+                .font(.cucuSans(15, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
                 .multilineTextAlignment(.center)
                 .lineSpacing(4)
                 .padding(.horizontal, 24)
                 .opacity(bodyVisible ? 1 : 0)
                 .offset(y: bodyVisible ? 0 : 6)
 
-            CucuFleuronDivider()
-                .frame(maxWidth: ctaMaxWidth - 20)
-                .padding(.vertical, 4)
-                .opacity(bodyVisible ? 1 : 0)
-
-            // — CTA pair —
             VStack(spacing: 10) {
                 Button(action: onAddElement) {
                     HStack(spacing: 8) {
                         Image(systemName: "plus")
                             .font(.system(size: 14, weight: .heavy))
                         Text("Add Element")
-                            .font(.cucuSerif(16, weight: .bold))
+                            .font(.cucuSans(16, weight: .bold))
                     }
-                    .foregroundStyle(Color.cucuCard)
+                    .foregroundStyle(chrome.theme.pageColor)
                     .frame(maxWidth: ctaMaxWidth)
                     .padding(.horizontal, 22)
-                    .padding(.vertical, 12)
-                    .background(Capsule().fill(Color.cucuInk))
-                }
-                .buttonStyle(CucuPressableButtonStyle())
-
-                Button(action: onUseTemplate) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "square.on.square")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("Use Template")
-                            .font(.cucuSerif(15, weight: .semibold))
-                    }
-                    .foregroundStyle(Color.cucuInk)
-                    .frame(maxWidth: ctaMaxWidth)
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 11)
-                    .background(Capsule().fill(Color.cucuCard))
-                    .overlay(Capsule().strokeBorder(Color.cucuInk, lineWidth: 1.2))
+                    .padding(.vertical, 14)
+                    .background(Capsule().fill(chrome.theme.inkPrimary))
                 }
                 .buttonStyle(CucuPressableButtonStyle())
 
                 Button(action: onPreview) {
                     Label("Preview canvas", systemImage: "eye")
-                        .font(.cucuSerif(13, weight: .medium))
-                        .foregroundStyle(Color.cucuInkFaded)
+                        .font(.cucuSans(13, weight: .medium))
+                        .foregroundStyle(chrome.theme.inkFaded)
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 4)
             }
+            .padding(.top, 12)
             .opacity(ctasVisible ? 1 : 0)
             .offset(y: ctasVisible ? 0 : 10)
 
@@ -119,7 +77,6 @@ struct CanvasEmptyStateView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 28)
-        .background(Color.cucuPaper.opacity(0.0)) // Tap pass-through
         .allowsHitTesting(true)
         .onAppear {
             // Stagger the reveal so the page reads as "page is set

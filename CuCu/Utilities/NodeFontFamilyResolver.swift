@@ -201,3 +201,25 @@ extension NodeFontFamily {
     }
     #endif
 }
+
+extension NodeFontWeight {
+    var swiftUIWeight: Font.Weight {
+        switch self {
+        case .regular:  return .regular
+        case .medium:   return .medium
+        case .semibold: return .semibold
+        case .bold:     return .bold
+        }
+    }
+
+    #if canImport(UIKit)
+    var uiFontWeight: UIFont.Weight {
+        switch self {
+        case .regular:  return .regular
+        case .medium:   return .medium
+        case .semibold: return .semibold
+        case .bold:     return .bold
+        }
+    }
+    #endif
+}

@@ -62,11 +62,16 @@ private struct PencilGlyph: View {
 /// Capsule "Edit / Done" button that morphs in place — background fills, the
 /// glyph color inverts, the label crossfades. Tap is a single state flip;
 /// the host clears the inspector when leaving edit mode.
+///
+/// Reads its surface from `AppChromeStore.shared.theme` so a user who set
+/// the room to a dark stock gets a dark elevated chip on top of their
+/// (potentially light) canvas — same coherence the feed cards now use.
 struct EditCanvasToggleButton: View {
     let editMode: Bool
     let action: () -> Void
 
     @State private var isPressed: Bool = false
+    @State private var chrome = AppChromeStore.shared
 
     var body: some View {
         Button {
@@ -74,11 +79,11 @@ struct EditCanvasToggleButton: View {
         } label: {
             HStack(spacing: 6) {
                 PencilGlyph(size: 12,
-                            color: editMode ? Color.cucuCard : Color.cucuInk)
+                            color: editMode ? chrome.theme.cardColor : chrome.theme.cardInkPrimary)
                     .rotationEffect(.degrees(editMode ? -8 : 0))
                 Text(editMode ? "Done" : "Edit")
                     .font(.cucuSans(12.5, weight: .semibold))
-                    .foregroundStyle(editMode ? Color.cucuCard : Color.cucuInk)
+                    .foregroundStyle(editMode ? chrome.theme.cardColor : chrome.theme.cardInkPrimary)
                     .contentTransition(.opacity)
             }
             .padding(.leading, 10)
@@ -86,11 +91,11 @@ struct EditCanvasToggleButton: View {
             .frame(height: 30)
             .background(
                 Capsule(style: .continuous)
-                    .fill(editMode ? Color.cucuInk : Color.cucuCard)
+                    .fill(editMode ? chrome.theme.cardInkPrimary : chrome.theme.cardColor)
             )
             .overlay(
                 Capsule(style: .continuous)
-                    .stroke(Color.cucuInk.opacity(editMode ? 0 : 0.18), lineWidth: 1)
+                    .stroke(chrome.theme.cardInkPrimary.opacity(editMode ? 0 : 0.18), lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(0.18), radius: 6, x: 0, y: 4)
             .scaleEffect(isPressed ? 0.96 : 1.0)
@@ -121,10 +126,15 @@ struct EditCanvasToggleButton: View {
 /// Mono-cap "Live" / "Editing" label, crossfading between the two states.
 /// The dot pulse is a slow ambient cue that the canvas is "armed" — it hugs
 /// the cherry accent in edit mode and the moss live-tone otherwise.
+///
+/// The pill surface follows the chrome theme so a dark room paints a dark
+/// chip with light text — the cherry/moss dots stay the same so the
+/// "armed" / "live" semantic colour stays legible across themes.
 struct CanvasModeStatusLabel: View {
     let editMode: Bool
 
     @State private var pulse: CGFloat = 1.0
+    @State private var chrome = AppChromeStore.shared
 
     var body: some View {
         HStack(spacing: 6) {
@@ -139,18 +149,18 @@ struct CanvasModeStatusLabel: View {
                 .textCase(.uppercase)
                 .foregroundStyle(editMode
                                  ? Color.cucuCherry
-                                 : Color.cucuInk.opacity(0.55))
+                                 : chrome.theme.cardInkPrimary.opacity(0.65))
                 .contentTransition(.opacity)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(
             Capsule(style: .continuous)
-                .fill(Color.cucuCard.opacity(0.92))
+                .fill(chrome.theme.cardColor.opacity(0.92))
         )
         .overlay(
             Capsule(style: .continuous)
-                .stroke(Color.cucuInk.opacity(0.10), lineWidth: 1)
+                .stroke(chrome.theme.cardInkPrimary.opacity(0.10), lineWidth: 1)
         )
         .onAppear {
             // Slow heartbeat — only kicks in on edit mode so live state

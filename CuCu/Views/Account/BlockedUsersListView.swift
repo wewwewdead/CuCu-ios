@@ -131,16 +131,14 @@ struct BlockedUsersListView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 8) {
             Spacer()
-            CucuFleuronDivider()
-                .frame(maxWidth: 140)
             Text("Nobody blocked")
-                .font(.cucuSerif(22, weight: .bold))
+                .font(.cucuSans(18, weight: .bold))
                 .foregroundStyle(Color.cucuInk)
             Text("People you block will appear here.")
-                .font(.cucuEditorial(14, italic: true))
-                .foregroundStyle(Color.cucuInkSoft)
+                .font(.cucuSans(14, weight: .regular))
+                .foregroundStyle(Color.cucuInkFaded)
                 .multilineTextAlignment(.center)
             Spacer()
         }
@@ -150,21 +148,19 @@ struct BlockedUsersListView: View {
     private func errorState(_ message: String) -> some View {
         VStack(spacing: 12) {
             Spacer()
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 36))
-                .foregroundStyle(Color.cucuBurgundy)
             Text("Couldn't load your blocked list")
-                .font(.cucuSerif(18, weight: .bold))
+                .font(.cucuSans(18, weight: .bold))
                 .foregroundStyle(Color.cucuInk)
             Text(message)
-                .font(.cucuEditorial(13, italic: true))
-                .foregroundStyle(Color.cucuInkSoft)
+                .font(.cucuSans(14, weight: .regular))
+                .foregroundStyle(Color.cucuInkFaded)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-            CucuChip("Try again", systemImage: "arrow.clockwise") {
+            CucuRefinedPillButton("Try again") {
                 Task { await load() }
             }
-            .padding(.top, 4)
+            .padding(.top, 6)
+            .padding(.horizontal, 32)
             Spacer()
         }
     }

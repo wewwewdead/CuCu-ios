@@ -18,8 +18,6 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
     let addDestination: AddNodeSheet.Destination
     let isStructured: Bool
     let editingPageIndex: Int
-    let onSaveTemplate: (String) -> Bool
-    let onApplyTemplate: (ProfileTemplate) -> Bool
 
     func body(content: Content) -> some View {
         content
@@ -135,19 +133,6 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
                 .presentationContentInteraction(.scrolls)
-            }
-            .sheet(isPresented: $sheets.showSaveTemplateSheet) {
-                SaveTemplateSheet(
-                    defaultName: draft.title.isEmpty ? "Untitled Template" : draft.title,
-                    onSave: { name in onSaveTemplate(name) }
-                )
-                .presentationDetents([.medium])
-                .presentationDragIndicator(.visible)
-            }
-            .sheet(isPresented: $sheets.showApplyTemplateSheet) {
-                TemplatePickerSheet(onApply: { template in onApplyTemplate(template) })
-                    .presentationDetents([.large])
-                    .presentationDragIndicator(.hidden)
             }
             .sheet(isPresented: $sheets.showThemePickerSheet) {
                 ThemePickerSheet(mutator: mutator, document: document)

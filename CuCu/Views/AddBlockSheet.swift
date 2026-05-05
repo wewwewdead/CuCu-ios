@@ -9,6 +9,7 @@ import PhotosUI
 /// `ImageBlockData`. If the user cancels the system picker, no block is added.
 struct AddBlockSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var chrome = AppChromeStore.shared
 
     let draftID: UUID
     let onAddText: () -> Void
@@ -21,64 +22,63 @@ struct AddBlockSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 12) {
-                    Button {
-                        onAddText()
-                        dismiss()
-                    } label: {
-                        BlockOptionContent(
-                            icon: "textformat",
-                            title: "Text",
-                            subtitle: "A paragraph, heading, or note"
-                        )
-                    }
-                    .buttonStyle(.plain)
+            ZStack {
+                CucuRefinedPageBackdrop()
+                ScrollView {
+                    VStack(spacing: 0) {
+                        Button {
+                            onAddText()
+                            dismiss()
+                        } label: {
+                            BlockOptionContent(
+                                icon: "textformat",
+                                title: "Text",
+                                subtitle: "A paragraph, heading, or note"
+                            )
+                        }
+                        .buttonStyle(CucuRefinedRowButtonStyle())
+                        CucuRefinedDivider()
 
-                    PhotosPicker(selection: $pickerItem, matching: .images) {
-                        BlockOptionContent(
-                            icon: "photo",
-                            title: "Image",
-                            subtitle: "A picture from your library"
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isProcessing)
+                        PhotosPicker(selection: $pickerItem, matching: .images) {
+                            BlockOptionContent(
+                                icon: "photo",
+                                title: "Image",
+                                subtitle: "A picture from your library"
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isProcessing)
+                        CucuRefinedDivider()
 
-                    Button {
-                        onAddContainer()
-                        dismiss()
-                    } label: {
-                        BlockOptionContent(
-                            icon: "square.stack.3d.up",
-                            title: "Container",
-                            subtitle: "Group blocks into a row, column, or card"
-                        )
-                    }
-                    .buttonStyle(.plain)
+                        Button {
+                            onAddContainer()
+                            dismiss()
+                        } label: {
+                            BlockOptionContent(
+                                icon: "square.stack.3d.up",
+                                title: "Container",
+                                subtitle: "Group blocks into a row, column, or card"
+                            )
+                        }
+                        .buttonStyle(CucuRefinedRowButtonStyle())
 
-                    if let errorMessage {
-                        InlineErrorBanner(message: errorMessage)
+                        if let errorMessage {
+                            InlineErrorBanner(message: errorMessage)
+                                .padding(.top, 16)
+                        }
                     }
-
-                    // Future block types (quote, gallery, link, video) plug in here.
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+                    .padding(.bottom, 32)
                 }
-                .padding(20)
             }
-            .background(Color.cucuPaper.ignoresSafeArea())
-            .cucuSheetTitle("Add Block")
-            #if os(iOS) || os(visionOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            #if os(iOS) || os(visionOS)
-            .toolbarBackground(Color.cucuPaper, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            #endif
-            .tint(Color.cucuInk)
+            .cucuRefinedNav("Add Block")
+            .tint(chrome.theme.inkPrimary)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .font(.cucuSerif(16, weight: .semibold))
+                        .font(.cucuSans(15, weight: .regular))
+                        .foregroundStyle(chrome.theme.inkPrimary)
                 }
             }
             .overlay {
@@ -143,26 +143,17 @@ struct AddBlockSheet: View {
 
 private struct InlineErrorBanner: View {
     let message: String
+    @State private var chrome = AppChromeStore.shared
+
+    private static let cherry = Color(red: 178/255, green: 42/255, blue: 74/255)
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(Color.cucuCherry)
-                .font(.system(size: 14, weight: .semibold))
-            Text(message)
-                .font(.cucuSans(13, weight: .medium))
-                .foregroundStyle(Color.cucuInk)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.cucuShell.opacity(0.30))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.cucuCherry, lineWidth: 1)
-        )
+        Text(message)
+            .font(.cucuSans(13, weight: .regular))
+            .foregroundStyle(Self.cherry)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 8)
     }
 }
 
@@ -170,43 +161,29 @@ private struct BlockOptionContent: View {
     let icon: String
     let title: String
     let subtitle: String
-
-    /// Map the block's symbol to one of the editor's three node-kind tints
-    /// so the option swatches feel consistent with the inspector and
-    /// selection bar.
-    private var kind: CucuNodeKind {
-        switch icon {
-        case "textformat":          return .text
-        case "photo":               return .image
-        default:                    return .container
-        }
-    }
+    @State private var chrome = AppChromeStore.shared
 
     var body: some View {
-        HStack(spacing: 16) {
-            CucuIconBadge(kind: kind, symbol: icon, size: 44, iconSize: 18)
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(chrome.theme.inkPrimary)
+                .frame(width: 36, height: 36)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.cucuSerif(18, weight: .bold))
-                    .foregroundStyle(Color.cucuInk)
+                    .font(.cucuSans(16, weight: .bold))
+                    .foregroundStyle(chrome.theme.inkPrimary)
                 Text(subtitle)
                     .font(.cucuSans(13, weight: .regular))
-                    .foregroundStyle(Color.cucuInkFaded)
+                    .foregroundStyle(chrome.theme.inkFaded)
+                    .lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: 8)
             Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .heavy))
-                .foregroundStyle(Color.cucuInkFaded)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(chrome.theme.inkFaded)
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.cucuCard)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.cucuInk, lineWidth: 1)
-        )
-        .shadow(color: Color.cucuInk.opacity(0.10), radius: 6, y: 2)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
     }
 }

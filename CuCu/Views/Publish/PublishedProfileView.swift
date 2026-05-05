@@ -33,6 +33,11 @@ struct PublishedProfileView: View {
     /// reads in lock-step.
     @AppStorage("cucu.selected_tab") private var selectedTabRaw: String = "build"
     @State private var state: ViewState = .loading
+    /// Process-wide chrome theme. Drives the toolbar colour and the
+    /// Posts-section surface so the visitor's room flows through the
+    /// page chrome — the user's *canvas* stays as their published
+    /// design (the visitor came to see that, untouched).
+    @State private var chrome = AppChromeStore.shared
     /// A binding sink the canvas container needs but the viewer doesn't
     /// use — selection has no meaning in view-only mode.
     @State private var sinkSelectedID: UUID? = nil
@@ -60,14 +65,20 @@ struct PublishedProfileView: View {
     @State private var voteMessage: String?
     @State private var showShareSheet = false
     /// Last 10 top-level posts authored by the profile owner. Hydrated
-    /// in `loadUserPosts` once the profile resolves; an empty array
-    /// (the default) hides the Posts section so a user with nothing
-    /// posted yet doesn't see an empty stub under their canvas.
+    /// by `loadUserPostsIfNeeded` once the visitor scrolls past the
+    /// last canvas page; an empty array (the default) hides the
+    /// section so a user with nothing posted yet doesn't see an
+    /// empty stub under their canvas.
     @State private var userPosts: [Post] = []
     /// Set of `Post.id` that the current viewer has liked. Best-effort
     /// — failures fall back to "not liked" rather than blocking the
     /// section from rendering.
     @State private var viewerLikedPostIds: Set<String> = []
+    /// Lazy-load gate for the Posts section. Set the first time the
+    /// canvas finishes paginating so the 10-row fetch only fires for
+    /// visitors who actually scrolled past the canvas. Reset on each
+    /// `.task(id: username)` so a fresh profile open starts cold.
+    @State private var userPostsRequested: Bool = false
     /// Drives the navigation push into a thread when the visitor taps
     /// a row in the Posts section.
     @State private var threadDestination: Post?
@@ -237,6 +248,14 @@ struct PublishedProfileView: View {
         // really fills the screen — restored automatically when the
         // overlay dismisses.
         .toolbar(lightboxState == nil ? .visible : .hidden, for: .navigationBar)
+        // Toolbar follows the visitor's chrome theme rather than the
+        // owner's canvas: the canvas is what the visitor came to
+        // see (we don't repaint it), but the toolbar above it is
+        // the visitor's app chrome and should match Feed/Explore.
+        .toolbarBackground(chrome.theme.pageColor, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(chrome.theme.preferredColorScheme, for: .navigationBar)
+        .tint(chrome.theme.inkPrimary)
         // Status bar follows the same hide/reveal cadence so the
         // lightbox feels like a true fullscreen.
         .statusBarHidden(lightboxState != nil)
@@ -360,27 +379,23 @@ struct PublishedProfileView: View {
                 .lowercased() ?? ""
             return !me.isEmpty && username.lowercased() == me
         }()
-        return VStack(spacing: 12) {
-            Image(systemName: isSelf
-                  ? "paperplane.circle"
-                  : "person.crop.circle.badge.questionmark")
-                .font(.system(size: 44, weight: .light))
-                .foregroundStyle(Color.cucuInkSoft)
+        return VStack(spacing: 10) {
             Text(isSelf ? "You haven't published yet" : "Profile not found")
-                .font(.cucuSerif(20, weight: .bold))
+                .font(.cucuSans(18, weight: .bold))
                 .foregroundStyle(Color.cucuInk)
             Text(isSelf
                  ? "Switch to the Build tab and tap Publish to claim your card on Explore."
                  : "@\(username) hasn't published a profile yet, or it's no longer available.")
-                .font(.cucuEditorial(13, italic: true))
-                .foregroundStyle(Color.cucuInkSoft)
+                .font(.cucuSans(14, weight: .regular))
+                .foregroundStyle(Color.cucuInkFaded)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
             if isSelf {
-                CucuChip("Switch to Build", systemImage: "paintbrush") {
+                CucuRefinedPillButton("Switch to Build") {
                     selectedTabRaw = "build"
                 }
-                .padding(.top, 6)
+                .padding(.top, 12)
+                .padding(.horizontal, 32)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -498,6 +513,14 @@ struct PublishedProfileView: View {
             .onPreferenceChange(PublishedPageTopPreferenceKey.self) { positions in
                 guard let nearest = positions.min(by: { abs($0.value) < abs($1.value) }) else { return }
                 visiblePageIndex = nearest.key
+            }
+            // Lazy posts-section trigger. Fires the first time the
+            // visitor has scrolled past the last canvas page — visitors
+            // who bounce earlier never pay the 10-row + like-state cost.
+            .onChange(of: renderedCount) { _, newValue in
+                if newValue >= pageCount, case .loaded(let profile) = state {
+                    Task { await loadUserPostsIfNeeded(authorId: profile.userId) }
+                }
             }
         }
     }
@@ -617,13 +640,13 @@ struct PublishedProfileView: View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Posts")
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(Color.cucuInk)
+                .foregroundStyle(chrome.theme.inkPrimary)
                 .padding(.horizontal, 16)
                 .padding(.top, 24)
                 .padding(.bottom, 8)
 
             Divider()
-                .background(Color.cucuInkRule)
+                .background(chrome.theme.rule)
 
             ForEach(userPosts) { post in
                 PostRowView(
@@ -640,7 +663,7 @@ struct PublishedProfileView: View {
                 )
                 Divider()
                     .padding(.leading, 16)
-                    .background(Color.cucuInkRule)
+                    .background(chrome.theme.rule)
             }
 
             Button {
@@ -655,7 +678,7 @@ struct PublishedProfileView: View {
                     Image(systemName: "chevron.right")
                         .font(.footnote.weight(.semibold))
                 }
-                .foregroundStyle(Color.cucuInk)
+                .foregroundStyle(chrome.theme.inkPrimary)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -663,7 +686,7 @@ struct PublishedProfileView: View {
             }
             .buttonStyle(.plain)
         }
-        .background(Color.cucuPaper)
+        .background(chrome.theme.pageColor)
     }
 
     private func pageCountOverlay(current: Int, total: Int) -> some View {
@@ -706,9 +729,15 @@ struct PublishedProfileView: View {
             // under the new canvas.
             userPosts = []
             viewerLikedPostIds = []
+            userPostsRequested = false
             state = .loaded(profile)
             await loadVoteState(profileId: profile.id)
-            await loadUserPosts(authorId: profile.userId)
+            // Posts section deliberately *not* loaded here — see
+            // `loadUserPostsIfNeeded`. The 10-row + like-state pair
+            // costs ~2.5KB per profile open, and the section only
+            // appears once the visitor has scrolled past every
+            // canvas page. Visitors who bounce after the first
+            // page never trigger the load.
         } catch let err as PublishedProfileError {
             switch err {
             case .notFound: state = .notFound
@@ -747,10 +776,14 @@ struct PublishedProfileView: View {
     }
 
     /// Best-effort fetch of the profile owner's last 10 top-level
-    /// posts. Failures silently leave `userPosts` empty so the
-    /// section stays hidden — the visitor came to see the canvas,
-    /// and a network error banner under it would just be noise.
-    private func loadUserPosts(authorId: String) async {
+    /// posts. Idempotent: the `userPostsRequested` gate prevents a
+    /// re-fire on subsequent canvas-pagination ticks. Failures
+    /// silently leave `userPosts` empty so the section stays hidden
+    /// — the visitor came to see the canvas, and a network error
+    /// banner under it would just be noise.
+    private func loadUserPostsIfNeeded(authorId: String) async {
+        guard !userPostsRequested else { return }
+        userPostsRequested = true
         do {
             let posts = try await PostService().fetchUserPosts(
                 authorId: authorId,

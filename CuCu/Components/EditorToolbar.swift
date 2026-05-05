@@ -1,22 +1,25 @@
 import SwiftUI
 
-/// Floating action bar at the bottom of the builder. Theme on the left, primary
-/// "Add Block" call-to-action on the right — separated by a flexible spacer so
-/// the bar reads as intentional rather than a row of equal-weight icons.
+/// Floating action bar at the bottom of the builder. Theme on the
+/// left, primary "Add Block" call-to-action on the right. Refined-
+/// minimalist surface: theme-aware fills, hairline strokes, soft
+/// drop shadow tuned to the chrome mood.
 struct EditorToolbar: View {
     let onAddBlock: () -> Void
     let onEditTheme: () -> Void
+
+    @State private var chrome = AppChromeStore.shared
 
     var body: some View {
         HStack(spacing: 12) {
             Button(action: onEditTheme) {
                 Image(systemName: "paintpalette")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color.cucuInk)
+                    .foregroundStyle(chrome.theme.inkPrimary)
                     .frame(width: 46, height: 46)
-                    .background(Circle().fill(Color.cucuCard))
-                    .overlay(Circle().strokeBorder(Color.cucuInk, lineWidth: 1))
-                    .shadow(color: Color.cucuInk.opacity(0.22), radius: 14, y: 6)
+                    .background(Circle().fill(chrome.theme.cardColor))
+                    .overlay(Circle().strokeBorder(chrome.theme.rule, lineWidth: 1))
+                    .shadow(color: shadowColor, radius: 12, y: 5)
             }
             .buttonStyle(CucuPressableButtonStyle())
             .accessibilityLabel("Edit theme")
@@ -28,17 +31,22 @@ struct EditorToolbar: View {
                     Image(systemName: "plus")
                         .font(.system(size: 13, weight: .heavy))
                     Text("Add Block")
-                        .font(.cucuSerif(16, weight: .bold))
+                        .font(.cucuSans(16, weight: .bold))
                 }
-                .foregroundStyle(Color.cucuCard)
+                .foregroundStyle(chrome.theme.pageColor)
                 .padding(.horizontal, 22)
                 .padding(.vertical, 14)
-                .background(Capsule(style: .continuous).fill(Color.cucuInk))
-                .overlay(Capsule(style: .continuous).strokeBorder(Color.cucuCherry, lineWidth: 0).padding(0))
-                .shadow(color: Color.cucuInk.opacity(0.28), radius: 18, y: 9)
+                .background(Capsule(style: .continuous).fill(chrome.theme.inkPrimary))
+                .shadow(color: shadowColor, radius: 16, y: 8)
             }
             .buttonStyle(CucuPressableButtonStyle())
         }
         .padding(.horizontal, 24)
+    }
+
+    private var shadowColor: Color {
+        chrome.theme.isDark
+            ? Color.black.opacity(0.45)
+            : Color.black.opacity(0.18)
     }
 }

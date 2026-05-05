@@ -11,6 +11,15 @@ import SwiftUI
 /// Wrapped in a `NavigationStack` so the auth-gate's transition
 /// from sign-in to picker animates through a real nav back-stack
 /// (and the toolbar's Cancel sticks around in every sub-state).
+///
+/// Refined-minimalist surface: theme-aware page (snow / bone /
+/// midnight all read through `chrome.theme.pageColor`), Lexend
+/// bold display title, faded-ink subtitle, parent preview card on
+/// a soft chrome recess, page-recess editor pill, refined pill
+/// submit button. Drops the editorial chrome (Fraunces italic
+/// placeholders, tracked mono spec lines, ✦ flourishes, asymmetric
+/// pebble button) — the compose surface now matches the rest of
+/// the social chrome.
 struct ComposePostSheet: View {
     /// Lightweight preview shown above the editor when this sheet
     /// is presented as a reply. The replier sees the author handle
@@ -25,6 +34,7 @@ struct ComposePostSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AuthViewModel.self) private var auth
     @Environment(CucuPostFlightCoordinator.self) private var flightCoordinator
+    @State private var chrome = AppChromeStore.shared
 
     let parentId: String?
     var parentPreview: ParentPreview? = nil
@@ -57,22 +67,18 @@ struct ComposePostSheet: View {
             Group {
                 if !auth.isSignedIn {
                     AuthGateView()
+                        .cucuSheetTitle(navigationTitle)
                 } else if auth.requiresUsernameClaim {
                     UsernamePickerView()
+                        .cucuSheetTitle(navigationTitle)
                 } else {
                     composeContent
                 }
             }
-            .cucuSheetTitle(navigationTitle)
-            #if os(iOS) || os(visionOS)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.cucuPaper, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { requestDismiss() }
-                        .foregroundStyle(Color.cucuInk)
+                        .foregroundStyle(chrome.theme.inkPrimary)
                 }
             }
         }
@@ -88,22 +94,18 @@ struct ComposePostSheet: View {
         }
         // Anchor the success observer on the *root* of the sheet
         // body so it can't be torn down when an inner branch
-        // re-renders. The previous attachment was on
-        // `composeForm`, which got swapped out of the view tree
-        // the instant status became `.success` — SwiftUI never
-        // delivered the change, so `onPosted` and `dismiss`
-        // never ran. Top-level placement keeps the observer
-        // alive for the entire lifetime of the sheet.
+        // re-renders. Top-level placement keeps the observer alive
+        // for the entire lifetime of the sheet.
         .onChange(of: vm.status) { _, newStatus in
             if case .success(let post) = newStatus {
                 if usesFlight {
                     // Hand the post off to the flight coordinator —
                     // it owns the choreography from here, including
-                    // the success haptic on landing. We deliberately
-                    // skip `onPosted` so the feed doesn't prepend
-                    // the row twice (once now, once on land); the
-                    // feed instead observes `landedPostId` and
-                    // pulls the post off the coordinator at land.
+                    // the success haptic on landing. Skip `onPosted`
+                    // so the feed doesn't prepend the row twice (once
+                    // now, once on land); the feed instead observes
+                    // `landedPostId` and pulls the post off the
+                    // coordinator at land.
                     flightCoordinator.launch(post: post, sourceX: submitCenterX)
                 } else {
                     CucuHaptics.success()
@@ -134,6 +136,7 @@ struct ComposePostSheet: View {
         // mounted). Normal routing keeps this branch unreachable.
         if (auth.currentUser?.username ?? "").isEmpty {
             UsernamePickerView()
+                .cucuSheetTitle(navigationTitle)
         } else {
             // Render `composeForm` for every status, including
             // `.success`. The body-root `.onChange` consumes the
@@ -142,41 +145,43 @@ struct ComposePostSheet: View {
             // here, because doing so was tearing the observer
             // down before the change could be delivered.
             composeForm
+                .cucuRefinedNav(navigationTitle)
         }
     }
 
     private var composeForm: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                masthead
+        ZStack {
+            CucuRefinedPageBackdrop()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    masthead
 
-                if let preview = parentPreview {
-                    parentPreviewRow(preview)
+                    if let preview = parentPreview {
+                        parentPreviewRow(preview)
+                    }
+
+                    editor
+
+                    if case .failure(let message) = vm.status {
+                        Text(message)
+                            .font(.cucuSans(13, weight: .regular))
+                            .foregroundStyle(destructiveInk)
+                            .padding(.horizontal, 4)
+                    }
+
+                    CucuRefinedDivider()
+                        .padding(.top, 2)
+
+                    HStack {
+                        counter
+                        Spacer()
+                        submitButton
+                    }
                 }
-
-                editor
-
-                if case .failure(let message) = vm.status {
-                    Label(message, systemImage: "exclamationmark.triangle.fill")
-                        .font(.cucuEditorial(13, italic: true))
-                        .foregroundStyle(Color.cucuBurgundy)
-                        .padding(.horizontal, 4)
-                }
-
-                Rectangle()
-                    .fill(Color.cucuInkRule)
-                    .frame(height: 1)
-                    .padding(.top, 2)
-
-                HStack {
-                    counter
-                    Spacer()
-                    submitButton
-                }
+                .padding(20)
             }
-            .padding(16)
+            .scrollDismissesKeyboard(.interactively)
         }
-        .background(Color.cucuPaper.ignoresSafeArea())
         .onAppear {
             CucuHaptics.soft()
             bodyFocused = true
@@ -185,32 +190,28 @@ struct ComposePostSheet: View {
 
     // MARK: - Masthead
     //
-    // Borrows the feed's masthead idiom so the compose sheet
-    // reads as a printed page being filled in: serif display
-    // title, tracked-mono spec line (`TO @USERNAME` for replies,
-    // current month/year for new posts), Fraunces-italic
-    // subtitle, closed off by a 1pt ink hairline. Sized one
-    // notch smaller than the feed's masthead since the sheet's
-    // nav bar already carries the inline title.
+    // Refined opening real estate. Drops the tracked-mono spec
+    // line, the Fraunces-italic subtitle, and the hairline rule
+    // (the divider above the counter row already closes the
+    // section). Just a bold display heading + faded subtitle so
+    // the user lands with context for what they're writing.
 
     private var masthead: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(mastheadTitle)
-                .font(.cucuSerif(30, weight: .bold))
-                .foregroundStyle(Color.cucuInk)
+                .font(.cucuSans(28, weight: .bold))
+                .foregroundStyle(chrome.theme.inkPrimary)
                 .accessibilityAddTraits(.isHeader)
-            Text(mastheadSpecLine)
-                .font(.cucuMono(10, weight: .medium))
-                .tracking(2.4)
-                .foregroundStyle(Color.cucuInkFaded)
-                .padding(.top, 2)
+            if let toLine = mastheadToLine {
+                Text(toLine)
+                    .font(.cucuSans(13, weight: .regular))
+                    .foregroundStyle(chrome.theme.inkFaded)
+                    .padding(.top, 2)
+            }
             Text(mastheadSubtitle)
-                .font(.cucuEditorial(14, italic: true))
-                .foregroundStyle(Color.cucuInkSoft)
-                .padding(.bottom, 12)
-            Rectangle()
-                .fill(Color.cucuInkRule)
-                .frame(height: 1)
+                .font(.cucuSans(14, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
+                .padding(.top, 2)
         }
         .padding(.top, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -220,13 +221,13 @@ struct ComposePostSheet: View {
         parentId == nil ? "New post" : "Reply"
     }
 
-    private var mastheadSpecLine: String {
-        if let preview = parentPreview {
-            return "TO @\(preview.authorUsername)".uppercased()
-        }
-        let f = DateFormatter()
-        f.dateFormat = "MMMM · yyyy"
-        return f.string(from: Date()).uppercased()
+    /// Sentence-case "to @username" line, only shown for replies.
+    /// Drops the previous tracked-uppercase mono treatment in
+    /// favour of a plain Lexend regular line that reads as
+    /// metadata, not a printer's mark.
+    private var mastheadToLine: String? {
+        guard let preview = parentPreview else { return nil }
+        return "to @\(preview.authorUsername)"
     }
 
     private var mastheadSubtitle: String {
@@ -235,61 +236,57 @@ struct ComposePostSheet: View {
             : "Add a thoughtful answer."
     }
 
-    /// Parent preview as a printed pull-quote — a 2pt ink rule
-    /// runs the full leading edge of the card (read as a
-    /// quotation bracket), with a tracked "REPLYING TO" micro
-    /// label, the parent author's handle in serif, and the body
-    /// excerpt wrapped in curly quotes set in italic Fraunces.
-    /// Soft card fill keeps it secondary to the editor below.
+    // MARK: - Parent preview
+
+    /// Refined parent preview. A soft chrome recess (matching the
+    /// search field and reply bar) carries the "REPLYING TO" label
+    /// in faded sans, the bold parent handle, and the body excerpt
+    /// in regular Lexend. Drops the curly-quote italic Fraunces
+    /// treatment and the heavy 2pt ink quotation rule — the chrome
+    /// recess itself reads as quotation.
     private func parentPreviewRow(_ preview: ParentPreview) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("REPLYING TO")
-                .font(.cucuMono(9, weight: .medium))
-                .tracking(2.0)
-                .foregroundStyle(Color.cucuInkFaded)
+            Text("Replying to")
+                .font(.cucuSans(12, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
             Text("@\(preview.authorUsername)")
-                .font(.cucuSerif(14, weight: .semibold))
-                .foregroundStyle(Color.cucuInk)
-            Text("\u{201C}\(preview.bodyPreview)\u{201D}")
-                .font(.cucuEditorial(13, italic: true))
-                .foregroundStyle(Color.cucuInkSoft)
+                .font(.cucuSans(15, weight: .bold))
+                .foregroundStyle(chrome.theme.inkPrimary)
+            Text(preview.bodyPreview)
+                .font(.cucuSans(14, weight: .regular))
+                .foregroundStyle(chrome.theme.inkMuted)
                 .lineLimit(2)
                 .truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 12)
-        .padding(.leading, 14)
-        .padding(.trailing, 12)
+        .padding(.horizontal, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.cucuCardSoft)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(chromeRecessFill)
         )
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(Color.cucuInk)
-                .frame(width: 2)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
+    // MARK: - Editor
+
+    /// Refined editor surface. Theme-aware fill (matches the
+    /// search field and reply bar's chrome recess), no heavy ink
+    /// stroke, no cream-paper hardcode. Placeholder is plain
+    /// Lexend regular instead of Fraunces italic — reads as
+    /// instruction, not editorial voice.
     private var editor: some View {
-        // `TextEditor` keeps autocorrect / autocapitalize on by
-        // default, which is what we want for social-style text —
-        // the opposite of the username field that disables both.
         TextEditor(text: $vm.body)
             .focused($bodyFocused)
             .scrollContentBackground(.hidden)
-            .background(Color.cucuBone)
+            .background(chromeRecessFill)
+            .foregroundStyle(chrome.theme.inkPrimary)
+            .font(.cucuSans(16, weight: .regular))
             .frame(minHeight: 200)
             .padding(14)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.cucuBone)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.cucuInk, lineWidth: 1)
+                    .fill(chromeRecessFill)
             )
             .overlay(alignment: .topLeading) {
                 // Native placeholder — TextEditor doesn't supply
@@ -298,8 +295,8 @@ struct ComposePostSheet: View {
                     Text(parentId == nil
                          ? "What's happening?"
                          : "Write your reply…")
-                        .font(.cucuEditorial(17, italic: true))
-                        .foregroundStyle(Color.cucuInkFaded)
+                        .font(.cucuSans(16, weight: .regular))
+                        .foregroundStyle(chrome.theme.inkFaded)
                         .padding(.horizontal, 22)
                         .padding(.vertical, 22)
                         .allowsHitTesting(false)
@@ -307,91 +304,67 @@ struct ComposePostSheet: View {
             }
     }
 
-    /// Counter pill — paper capsule that tilts toward warning
-    /// tones as the user nears the limit. Three tiers:
-    ///   - `> 50` remaining → ink-on-card, the resting state
-    ///   - `≤ 50` remaining → burgundy-on-rose, "running short"
-    ///   - `≤ 0`  remaining → cherry-on-rose, "you're over"
+    // MARK: - Counter
+
+    /// Refined character counter — plain text in the chrome's
+    /// faded ink at rest, shifting to a destructive tone as the
+    /// user nears the limit. Drops the cream pill chrome; the
+    /// number is information, not a chip.
     private var counter: some View {
         let remaining = vm.remainingChars
-        let palette = counterPalette(remaining: remaining)
         return Text("\(remaining)")
-            .font(.cucuMono(12, weight: .medium))
-            .foregroundStyle(palette.text)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(palette.fill))
-            .overlay(Capsule().strokeBorder(palette.stroke, lineWidth: 1))
+            .font(.cucuSans(13, weight: .medium))
+            .foregroundStyle(counterTint(remaining: remaining))
             .accessibilityLabel("\(remaining) characters remaining")
     }
 
-    private func counterPalette(remaining: Int) -> (text: Color, fill: Color, stroke: Color) {
-        if remaining <= 0 {
-            return (.cucuCherry, .cucuRose, .cucuRoseStroke)
-        }
-        if remaining <= 50 {
-            return (.cucuBurgundy, .cucuRose, .cucuRoseStroke)
-        }
-        return (.cucuInk, .cucuCard, .cucuInk)
+    private func counterTint(remaining: Int) -> Color {
+        if remaining <= 0 { return destructiveInk }
+        if remaining <= 50 { return destructiveInk.opacity(0.75) }
+        return chrome.theme.inkFaded
     }
 
-    /// Monochrome submit, paired visually with the Sign In and
-    /// Sign Up chips: solid ink fill on paper text, asymmetric
-    /// pebble shape that leans trailing-side toward the action,
-    /// and a paper hairline inset 3pt for letterpress detail.
-    /// The faded `✦` flourish — the same closer used by the feed
-    /// and thread columns — survives in paper-tinted form. The
-    /// in-flight state swaps in italic Fraunces "Sending…"
-    /// alongside the spinner so the transition stays in voice.
+    // MARK: - Submit button
+
+    /// Refined submit. Solid ink-fill capsule with the page colour
+    /// label so the button always has page-vs-ink contrast on any
+    /// theme. Drops the asymmetric pebble + ✦ flourish in favour
+    /// of a clean capsule — same shape language as the search
+    /// field and reply bar.
     private var submitButton: some View {
-        let shape = UnevenRoundedRectangle(
-            topLeadingRadius: 18, bottomLeadingRadius: 18,
-            bottomTrailingRadius: 28, topTrailingRadius: 28,
-            style: .continuous
-        )
-        return Button {
+        Button {
             Task {
                 guard let user = auth.currentUser else { return }
                 await vm.submit(user: user, parentId: parentId)
             }
         } label: {
-            HStack(spacing: 9) {
+            HStack(spacing: 6) {
                 if vm.isSubmitting {
                     ProgressView()
-                        .tint(Color.cucuPaper)
+                        .tint(chrome.theme.pageColor)
                         .controlSize(.small)
-                    Text("Sending…")
-                        .font(.cucuEditorial(14, italic: true))
+                    Text("Sending")
+                        .font(.cucuSans(15, weight: .bold))
                 } else {
                     Text(parentId == nil ? "Post" : "Reply")
-                        .font(.cucuSerif(16, weight: .bold))
-                        .tracking(0.6)
-                    Text("✦")
-                        .font(.cucuSerif(13, weight: .regular))
-                        .foregroundStyle(Color.cucuPaper.opacity(0.6))
+                        .font(.cucuSans(15, weight: .bold))
                 }
             }
-            .foregroundStyle(Color.cucuPaper)
+            .foregroundStyle(chrome.theme.pageColor)
             .padding(.horizontal, 22)
             .padding(.vertical, 11)
-            .frame(minWidth: 124)
-            .background(shape.fill(Color.cucuInk))
-            .overlay(
-                shape
-                    .inset(by: 3)
-                    .strokeBorder(Color.cucuPaper.opacity(0.18), lineWidth: 0.5)
+            .frame(minWidth: 110)
+            .background(
+                Capsule().fill(chrome.theme.inkPrimary)
             )
-            .shadow(color: Color.cucuInk.opacity(0.18), radius: 6, x: 0, y: 2)
         }
-        .buttonStyle(CucuPressableButtonStyle())
+        .buttonStyle(CucuRefinedSubmitButtonStyle())
         .disabled(!vm.canSubmit)
         .opacity(vm.canSubmit ? 1.0 : 0.35)
         .accessibilityLabel(parentId == nil ? "Post" : "Reply")
         // Snapshot the button's center-x in window coordinates so
         // the flight overlay can launch the ghost card from the
-        // exact horizontal position the user just tapped. Cheap to
-        // re-read here — `.global` resolves on the same pass as
-        // the rest of layout. Only used when `usesFlight` is on.
+        // exact horizontal position the user just tapped.
         .background(
             GeometryReader { geo in
                 Color.clear
@@ -403,6 +376,25 @@ struct ComposePostSheet: View {
                     }
             }
         )
+    }
+
+    // MARK: - Tokens
+
+    /// Subtle ink-against-page recess used by every input on the
+    /// refined social chrome (search, reply bar, parent preview,
+    /// editor). Theme-aware: a faint shadow on light themes, a
+    /// faint highlight on dark themes.
+    private var chromeRecessFill: Color {
+        chrome.theme.isDark
+            ? Color.white.opacity(0.08)
+            : Color.black.opacity(0.05)
+    }
+
+    /// Cherry tone for over-limit counter and inline submit
+    /// errors. Same constant the refined pill button uses for the
+    /// destructive role.
+    private var destructiveInk: Color {
+        Color(red: 178 / 255, green: 42 / 255, blue: 74 / 255)
     }
 
     // MARK: - Cancel handling
@@ -417,5 +409,17 @@ struct ComposePostSheet: View {
         } else {
             showDiscardConfirm = true
         }
+    }
+}
+
+/// Soft press response for the refined submit pill. Slight scale
+/// + opacity dip so the button acknowledges the tap without the
+/// shadow-heavy press state the editorial pebble had.
+private struct CucuRefinedSubmitButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+            .opacity(configuration.isPressed ? 0.85 : 1.0)
+            .animation(.spring(response: 0.22, dampingFraction: 0.78), value: configuration.isPressed)
     }
 }

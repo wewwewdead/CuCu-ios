@@ -1,5 +1,4 @@
 import Foundation
-import SwiftData
 import SwiftUI
 
 /// All the document-mutation methods that previously lived as private
@@ -18,7 +17,6 @@ struct CanvasMutator {
     let selectedID: Binding<UUID?>
     let draft: ProfileDraft
     let store: DraftStore
-    let context: ModelContext
     let rootPageIndex: Int
 
     /// Reads the AppStorage default-font key (written by
@@ -810,39 +808,6 @@ struct CanvasMutator {
         document.wrappedValue.sendBackward(id)
         StructuredProfileLayout.normalize(&document.wrappedValue)
         store.updateDocument(draft, document: document.wrappedValue)
-    }
-
-    // MARK: - Templates
-
-    func saveTemplate(named name: String) -> Bool {
-        do {
-            _ = try TemplateStore(context: context).createTemplate(
-                name: name,
-                document: document.wrappedValue
-            )
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    /// Apply a saved template to this draft. On success replaces the
-    /// document and clears selection; the caller is responsible for
-    /// resetting any view-only flags (legacyDraft / sheets) and firing
-    /// the success haptic post-transition cues — see `onAppliedSuccess`.
-    func applyTemplate(_ template: ProfileTemplate, onAppliedSuccess: () -> Void) -> Bool {
-        do {
-            let appliedDocument = try TemplateStore(context: context).apply(template, to: draft)
-            document.wrappedValue = appliedDocument
-            StructuredProfileLayout.normalize(&document.wrappedValue)
-            selectedID.wrappedValue = nil
-            store.updateDocument(draft, document: document.wrappedValue)
-            CucuHaptics.success()
-            onAppliedSuccess()
-            return true
-        } catch {
-            return false
-        }
     }
 
     // MARK: - Asset housekeeping

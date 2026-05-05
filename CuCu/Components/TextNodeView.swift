@@ -521,13 +521,3 @@ final class TextNodeView: NodeRenderView, UITextViewDelegate {
     }
 }
 
-private extension NodeFontWeight {
-    var uiFontWeight: UIFont.Weight {
-        switch self {
-        case .regular: return .regular
-        case .medium: return .medium
-        case .semibold: return .semibold
-        case .bold: return .bold
-        }
-    }
-}

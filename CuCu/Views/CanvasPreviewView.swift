@@ -22,20 +22,28 @@ struct CanvasPreviewView: View {
 
     @State private var sinkSelectedID: UUID?
     @Environment(\.openURL) private var openURL
+    /// Process-wide chrome theme. The preview's outer page (the
+    /// letterboxing around the user's canvas at narrow widths) and
+    /// the toolbar follow the room — the canvas inside is the user's
+    /// design and stays untouched.
+    @State private var chrome = AppChromeStore.shared
 
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.cucuPaper.ignoresSafeArea()
+                chrome.theme.pageColor
+                    .ignoresSafeArea()
+                    .animation(.easeInOut(duration: 0.32), value: chrome.theme.id)
                 adaptiveCanvas
             }
             .navigationTitle("")
             #if os(iOS) || os(visionOS)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.cucuPaper, for: .navigationBar)
+            .toolbarBackground(chrome.theme.pageColor, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(chrome.theme.preferredColorScheme, for: .navigationBar)
             #endif
-            .tint(Color.cucuInk)
+            .tint(chrome.theme.inkPrimary)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { onClose() }
@@ -45,11 +53,11 @@ struct CanvasPreviewView: View {
                     VStack(spacing: 1) {
                         Text("preview")
                             .font(.cucuSerif(18, weight: .bold))
-                            .foregroundStyle(Color.cucuInk)
+                            .foregroundStyle(chrome.theme.inkPrimary)
                         Text("FIG. 02 · YOUR PAGE")
                             .font(.cucuMono(9, weight: .medium))
                             .tracking(2)
-                            .foregroundStyle(Color.cucuInkFaded)
+                            .foregroundStyle(chrome.theme.inkFaded)
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {

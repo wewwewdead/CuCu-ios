@@ -29,6 +29,12 @@ enum PostLikeError: Error, LocalizedError, Equatable {
     }
 }
 
+nonisolated struct PostLikeMutationResult: Equatable, Sendable {
+    let postId: String
+    let viewerHasLiked: Bool
+    let likeCount: Int
+}
+
 /// Reads / writes the `post_likes` table.
 ///
 /// One row per (post_id, user_id) pair (uniquely constrained
@@ -73,6 +79,38 @@ nonisolated struct PostLikeService {
         }
         #else
         return []
+        #endif
+    }
+
+    /// Toggle the current viewer's like through the database RPC
+    /// that owns both the `post_likes` row and `posts.like_count`.
+    /// The returned count is canonical, so optimistic UI settles
+    /// to the same value other viewers will read on their next
+    /// feed/thread fetch.
+    func toggle(postId: String) async throws -> PostLikeMutationResult {
+        #if canImport(Supabase)
+        guard let client = SupabaseClientProvider.shared else {
+            throw PostLikeError.notConfigured(reason: .missingCredentials)
+        }
+        guard (try? await client.auth.session) != nil else {
+            throw PostLikeError.notSignedIn
+        }
+        do {
+            let rows: [LikeMutationRow] = try await client
+                .rpc("toggle_post_like", params: ["p_post_id": postId])
+                .execute()
+                .value
+            guard let row = rows.first else {
+                throw PostLikeError.unknown("Like RPC returned no rows.")
+            }
+            return try row.toModel(fallbackPostId: postId)
+        } catch let err as PostLikeError {
+            throw err
+        } catch {
+            throw mapError(error)
+        }
+        #else
+        throw PostLikeError.notConfigured(reason: .packageNotAdded)
         #endif
     }
 
@@ -144,4 +182,22 @@ private nonisolated struct LikeRow: Decodable, Sendable {
 private nonisolated struct NewLike: Encodable {
     let user_id: String
     let post_id: String
+}
+
+private nonisolated struct LikeMutationRow: Decodable, Sendable {
+    let post_id: String?
+    let liked: Bool?
+    let viewer_has_liked: Bool?
+    let like_count: Int
+
+    func toModel(fallbackPostId: String) throws -> PostLikeMutationResult {
+        guard let viewerHasLiked = liked ?? viewer_has_liked else {
+            throw PostLikeError.unknown("Like RPC did not return liked state.")
+        }
+        return PostLikeMutationResult(
+            postId: post_id ?? fallbackPostId,
+            viewerHasLiked: viewerHasLiked,
+            likeCount: like_count
+        )
+    }
 }

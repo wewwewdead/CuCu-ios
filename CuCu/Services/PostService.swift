@@ -9,6 +9,7 @@ enum PostError: Error, LocalizedError, Equatable {
     case notSignedIn
     case noUsername
     case notConfigured(reason: SupabaseClientProvider.Unavailability)
+    case notFound
     case bodyEmpty
     case bodyTooLong(limit: Int)
     case rateLimited
@@ -26,6 +27,8 @@ enum PostError: Error, LocalizedError, Equatable {
             return "Add the Supabase Swift package in Xcode to enable posting."
         case .notConfigured(.missingCredentials):
             return "Add your Supabase URL and anon key to enable posting."
+        case .notFound:
+            return "Post not found."
         case .bodyEmpty:
             return "Type something before posting."
         case .bodyTooLong(let limit):
@@ -73,6 +76,7 @@ nonisolated struct PostService {
     /// view (e.g., `bookmark_count`) doesn't quietly enlarge every
     /// row the feed pulls down.
     private static let readSelect = "id,author_id,author_username,parent_id,root_id,depth,body,like_count,reply_count,created_at,edited_at"
+    private static let feedReadSelect = "id,author_id,author_username,body,like_count,reply_count,created_at,edited_at"
 
     /// Insert a new post owned by `user`, optionally as a reply to
     /// `parentId`. Returns the freshly-decoded `Post` so the caller
@@ -202,48 +206,7 @@ nonisolated struct PostService {
     func deletePost(postId: String, authorId: String? = nil) async throws {
         #if canImport(Supabase)
         guard let client = SupabaseClientProvider.shared else {
-            print("[CuCu/deletePost] FAIL: Supabase client not configured")
             throw PostError.notConfigured(reason: .missingCredentials)
-        }
-
-        // Read the current session up-front so the log shows the
-        // exact user id the JWT will carry — i.e. what `auth.uid()`
-        // will resolve to server-side. Mismatches between this and
-        // the row's `author_id` are the most common cause of a
-        // silent RLS no-op.
-        let sessionUserId: String
-        do {
-            sessionUserId = try await client.auth.session.user.id.uuidString.lowercased()
-        } catch {
-            sessionUserId = "<no session: \(error)>"
-        }
-        print("[CuCu/deletePost] start postId=\(postId) authorId=\(authorId ?? "<nil>") sessionUserId=\(sessionUserId)")
-
-        // Round-trip diagnostic: ask the server what it sees for
-        // `auth.uid()` on this very request. If `serverUid` comes
-        // back `<null>`, the JWT we just sent was rejected at the
-        // gateway and the user is being treated as `anon` — which
-        // is the dominant cause of "new row violates RLS" on
-        // owner-targeted UPDATEs (the `posts_update_*` policies
-        // are scoped `to authenticated`, so an anon caller has no
-        // permissive policy at all). Requires the `who_am_i()`
-        // function to exist server-side; if it doesn't, the call
-        // fails harmlessly and we just log the failure.
-        struct WhoAmI: Decodable { let uid: String; let is_authenticated: Bool; let is_mod: Bool }
-        do {
-            let rows: [WhoAmI] = try await client.rpc("who_am_i").execute().value
-            if let me = rows.first {
-                print("[CuCu/deletePost] server who_am_i uid=\(me.uid) is_authenticated=\(me.is_authenticated) is_mod=\(me.is_mod)")
-                if !me.is_authenticated {
-                    print("[CuCu/deletePost] !!! server treats this request as ANON. JWT is missing/expired/wrong-project. Sign out and sign back in.")
-                } else if me.uid != sessionUserId {
-                    print("[CuCu/deletePost] !!! server auth.uid()=\(me.uid) but local sessionUserId=\(sessionUserId). JWT subject diverges from local session.")
-                }
-            } else {
-                print("[CuCu/deletePost] server who_am_i returned no rows")
-            }
-        } catch {
-            print("[CuCu/deletePost] who_am_i RPC call failed (function may not exist yet): \(error)")
         }
 
         do {
@@ -257,7 +220,6 @@ nonisolated struct PostService {
                 )
                 .execute()
                 .value
-            print("[CuCu/deletePost] rpc hard_delete_post affected=\(affected)")
 
             guard affected > 0 else {
                 // Zero rows matched — typically an RLS reject or
@@ -265,16 +227,11 @@ nonisolated struct PostService {
                 // roll the optimistic removal back and show a
                 // toast, instead of letting the row silently
                 // re-appear on refresh.
-                print("[CuCu/deletePost] ZERO ROWS DELETED — RPC matched no rows. Caller is not the author/moderator, the post id is stale, or the post was already deleted. postId=\(postId) authorId=\(authorId ?? "<nil>") sessionUserId=\(sessionUserId)")
                 throw PostError.database("Couldn't delete this post. Make sure you're signed in as the post's author.")
             }
-
-            print("[CuCu/deletePost] success: \(affected) row(s) deleted")
         } catch let err as PostError {
-            print("[CuCu/deletePost] threw PostError: \(err.errorDescription ?? "<no description>")")
             throw err
         } catch {
-            print("[CuCu/deletePost] threw raw error: \(error) detail=\(SupabaseErrorMapper.detail(error))")
             throw mapError(error)
         }
         #else
@@ -392,7 +349,7 @@ nonisolated struct PostService {
             // single `var` of one nominal type doesn't compose.
             let baseSelect = client
                 .from("posts_with_author")
-                .select(Self.readSelect)
+                .select(Self.feedReadSelect)
                 .is("parent_id", value: nil)
                 .is("deleted_at", value: nil)
 
@@ -444,7 +401,7 @@ nonisolated struct PostService {
         do {
             let baseSelect = client
                 .from("posts_with_author")
-                .select(Self.readSelect)
+                .select(Self.feedReadSelect)
                 .eq("author_id", value: authorId.lowercased())
                 .is("parent_id", value: nil)
                 .is("deleted_at", value: nil)
@@ -603,6 +560,13 @@ nonisolated struct PostService {
 
         if SupabaseErrorMapper.isNetwork(error) {
             return .network
+        }
+
+        if text.contains("pgrst116")
+            || text.contains("0 rows")
+            || text.contains("no rows")
+            || text.contains("not found") {
+            return .notFound
         }
 
         // CHECK constraint failures land here — surface the limit

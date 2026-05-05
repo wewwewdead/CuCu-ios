@@ -17,6 +17,13 @@ import SwiftUI
 /// builder's overflow menu are gone — those surfaces are tabs now.
 struct RootView: View {
     @AppStorage("cucu.selected_tab") private var selectedTabRaw: String = Tab.build.rawValue
+    /// Process-wide chrome theme. The TabView shell reads this so the
+    /// tab bar repaints in lock-step with the page above it — Feed's
+    /// background and the bar underneath should never disagree on
+    /// what stock the room is painted in. The Build tab still owns
+    /// its own surface (per-page `PageStyle.backgroundHex`), so the
+    /// bar is the only seam this store needs to bridge.
+    @State private var chrome = AppChromeStore.shared
 
     /// Three tabs that survive a relaunch via `@AppStorage`.
     /// Storing the rawValue keeps the persisted value
@@ -48,9 +55,15 @@ struct RootView: View {
                     }
                     .tag(Tab.explore)
             }
-            .tint(Color.cucuInk)
-            .toolbarBackground(Color.cucuPaper, for: .tabBar)
+            .tint(chrome.theme.inkPrimary)
+            .toolbarBackground(chrome.theme.pageColor, for: .tabBar)
             .toolbarBackground(.visible, for: .tabBar)
+            // Match the bar's `colorScheme` to the chrome mood so
+            // SwiftUI picks the right glyph variants for the tab
+            // icons — a midnight backdrop reads dark, snow reads
+            // light, and the Build tab's own light look isn't
+            // affected because it draws its own page bg above this.
+            .toolbarColorScheme(chrome.theme.preferredColorScheme, for: .tabBar)
 
             // Post-submission flight overlay. Sits above the TabView
             // so the ghost card and its particle burst paint on top
@@ -109,14 +122,6 @@ private struct BuildTab: View {
     @Environment(AuthViewModel.self) private var auth
     @Query(sort: \ProfileDraft.updatedAt, order: .reverse) private var drafts: [ProfileDraft]
 
-    /// True while `ensureDraftExists` is awaiting the published-profile
-    /// fetch. Combined with the "signed-in but username still
-    /// hydrating" check below to drive `isLoadingProfile` and the
-    /// editorial loading view — without it, the user would briefly
-    /// see a blank canvas during the network round-trip after a
-    /// fresh sign-in.
-    @State private var isFetchingPublished: Bool = false
-
     /// Drafts visible to the currently signed-in account. When
     /// signed out, every draft is visible — anonymous editing
     /// stays untouched. When signed in, the filter has two layers:
@@ -138,29 +143,20 @@ private struct BuildTab: View {
     /// stay claimable so an offline-then-sign-up flow doesn't
     /// orphan the user's pre-account work.
     /// Drives the `BuildTabLoadingView` branch in `body`. True while
-    /// the bootstrap is doing real work the user shouldn't see a
-    /// blank canvas during. Three signals collapse into one flag:
+    /// a signed-in account has no visible local draft yet, which is
+    /// exactly when bootstrap may be pulling that user's published
+    /// profile from Supabase or creating their first empty draft.
     ///
     ///   - **No local draft for this user yet.** If a draft is
     ///     already on screen we don't want to flash the loading
     ///     view over it; only `else`-branch states qualify.
-    ///   - **Signed in but `username` still nil.** A fresh sign-in
-    ///     lands with `username` unhydrated for a beat —
-    ///     `hydrateUsername()` runs after `signIn` resolves. The
-    ///     keyed `.task` will re-fire when it lands; until then,
-    ///     show the loading view.
-    ///   - **Active published-profile fetch.** `ensureDraftExists`
-    ///     toggles `isFetchingPublished` around the network round-
-    ///     trip so the loading view stays put across the await.
-    ///
     /// Signed-out users skip the loading view entirely — anonymous
     /// editing is supposed to be instant, so the empty-draft
     /// fallback paints immediately.
     private var isLoadingProfile: Bool {
         guard visibleDrafts.isEmpty else { return false }
         guard auth.currentUser != nil else { return false }
-        if (auth.currentUser?.username ?? "").isEmpty { return true }
-        return isFetchingPublished
+        return true
     }
 
     private var visibleDrafts: [ProfileDraft] {
@@ -188,15 +184,10 @@ private struct BuildTab: View {
                     // decoded design — so the new user sees the old
                     // user's profile until relaunch.
                     .id(draft.id)
-                    .onAppear { claimIfUnowned(draft) }
             } else if isLoadingProfile {
-                // Two cases land here, both during the brief window
-                // between sign-in and the user's design becoming
-                // available locally:
-                //   - waiting on `hydrateUsername()` to finish
-                //   - the published-profile fetch is in flight
-                // An editorial pulse keeps the user oriented instead
-                // of showing a blank canvas during that beat.
+                // Brief window between sign-in and the user's design
+                // becoming available locally. An editorial pulse keeps
+                // the user oriented instead of showing a blank canvas.
                 BuildTabLoadingView()
                     .transition(.opacity.animation(.easeOut(duration: 0.18)))
             } else {
@@ -212,33 +203,19 @@ private struct BuildTab: View {
         // Re-run draft bootstrap on every session change so a
         // sign-in to a different account picks up that account's
         // published profile from Supabase (when one exists) instead
-        // of stranding the user on a blank canvas. Keyed on both
-        // userId and username because brand-new sign-ins land with
-        // username=nil and `hydrateUsername()` populates it
-        // asynchronously — without re-firing on the username
-        // arrival, we'd miss the published-profile fetch and create
-        // an empty draft anyway.
-        .task(id: SessionKey(
-            userId: auth.currentUser?.id,
-            username: auth.currentUser?.username
-        )) {
+        // of inheriting another local account's draft.
+        .task(id: auth.currentUser?.id) {
             await ensureDraftExists()
         }
-        // Default templates: insert / refresh the seven prebuilt picks
-        // so the "Apply Template" sheet always has them. Idempotent —
-        // existing rows are skipped unless the bundled seed version
-        // changed.
-        .task { DefaultTemplateSeeder.seedIfNeeded(context: context) }
     }
 
-    /// Stamp the current user's id onto a draft that has none yet.
-    /// Lets anonymous drafts (created pre-sign-in or before this
-    /// field existed) flip into the user's scoped set on first
-    /// view, instead of staying available to every future account
-    /// on the device.
-    private func claimIfUnowned(_ draft: ProfileDraft) {
+    /// Stamp the current user's id onto a draft that has none yet, but
+    /// only after the bootstrap has checked Supabase for a published
+    /// profile. That ordering keeps stale anonymous drafts on a shared
+    /// phone from winning over the signed-in user's cloud profile.
+    private func claimIfUnowned(_ draft: ProfileDraft, canonical: String) {
         guard draft.ownerUserId == nil,
-              let canonical = auth.currentUser?.id.lowercased() else { return }
+              auth.currentUser?.id.lowercased() == canonical else { return }
         draft.ownerUserId = canonical
         try? context.save()
     }
@@ -250,47 +227,27 @@ private struct BuildTab: View {
     /// published profile on Supabase (if they have one) so a
     /// returning user lands on their actual design instead of an
     /// empty canvas. Falls back to a fresh empty draft when there's
-    /// no username, no published profile, or the network call
-    /// fails — anonymous editing must always work.
+    /// no published profile or the network call fails — anonymous
+    /// editing must always work.
     ///
-    /// **Path B — a draft exists but is pristine.** Covers the
-    /// common race where path A ran before `hydrateUsername()`
-    /// resolved (so it created an empty draft and bailed); when
-    /// the username arrives the keyed `.task` re-fires, finds the
-    /// pristine draft, and swaps in the published design. We
-    /// implement the swap by deleting + recreating so SwiftUI
-    /// re-mounts `ProfileCanvasBuilderView` (its `@State document`
-    /// would otherwise keep the old decoded JSON).
+    /// **Path B — a replaceable draft exists.** If the only visible
+    /// draft is anonymous or pristine, the user's published profile
+    /// gets a chance to replace it before the draft is claimed.
     ///
     /// Re-validates the user identity *after* every `await` so a
     /// rapid sign-out / sign-in mid-fetch can't write the wrong
     /// account's design into the new account's draft.
     private func ensureDraftExists() async {
         let canonical = auth.currentUser?.id.lowercased()
-        let username = auth.currentUser?.username
 
         // Path A: no local draft for this user yet.
         if visibleDrafts.isEmpty {
-            // Signed in but username still hydrating — wait for
-            // the next .task fire (when username arrives) so we
-            // don't create an empty draft we'd just have to throw
-            // away. Anonymous (signed-out) users skip the wait
-            // and get the empty draft immediately.
-            if canonical != nil && (username?.isEmpty ?? true) {
-                return
-            }
-
-            // Try to seed from the server-side published profile.
-            // Toggle `isFetchingPublished` around the await so the
-            // loading view stays mounted across the round-trip.
-            if let canonical, let username, !username.isEmpty {
-                isFetchingPublished = true
-                let fetched = try? await PublishedProfileService()
-                    .fetch(username: username)
-                isFetchingPublished = false
-                if let profile = fetched,
-                   profile.userId.lowercased() == canonical,
-                   auth.currentUser?.id.lowercased() == canonical,
+            // Try to seed from the server-side published profile by
+            // user id. This works on a fresh phone before username
+            // hydration has completed, and it ignores stale local
+            // username state entirely.
+            if let canonical {
+                if let profile = await fetchPublishedProfile(userId: canonical),
                    visibleDrafts.isEmpty {
                     seedDraft(from: profile, canonical: canonical)
                     return
@@ -315,28 +272,42 @@ private struct BuildTab: View {
             return
         }
 
-        // Path B: a draft exists. If it's the auto-created
-        // pristine empty (no edits, no prior publish) AND the
-        // user now has a username AND the server has a published
-        // profile for them, swap in the published design. This
-        // is the recovery path for the "username hydrated after
-        // path A already created the empty draft" race.
-        guard let canonical, let username, !username.isEmpty,
-              let draft = visibleDrafts.first,
-              isPristine(draft) else { return }
-        guard let profile = try? await PublishedProfileService()
-            .fetch(username: username),
-              profile.userId.lowercased() == canonical,
-              auth.currentUser?.id.lowercased() == canonical,
-              isPristine(draft) else { return }
+        // Path B: a draft exists. If it is an unowned anonymous
+        // draft, or the auto-created pristine empty draft, first ask
+        // Supabase whether this signed-in account already published a
+        // profile. Published cloud state wins over anonymous local
+        // leftovers on shared devices. If no profile exists, the
+        // anonymous draft is claimed for the current account.
+        guard let canonical,
+              let draft = visibleDrafts.first else { return }
+        let canReplaceWithCloud = draft.ownerUserId == nil || isPristine(draft)
+        guard canReplaceWithCloud else { return }
 
-        // Delete + recreate so the builder re-mounts cleanly
-        // with the new designJSON. Mutating the existing draft's
-        // designJSON in place wouldn't work — the editor's
-        // already-decoded `@State document` would survive.
-        let store = DraftStore(context: context)
-        store.deleteDraft(draft)
-        seedDraft(from: profile, canonical: canonical)
+        if let profile = await fetchPublishedProfile(userId: canonical),
+           auth.currentUser?.id.lowercased() == canonical,
+           visibleDrafts.first?.id == draft.id,
+           (draft.ownerUserId == nil || isPristine(draft)) {
+            // Delete + recreate so the builder re-mounts cleanly
+            // with the new designJSON. Mutating the existing draft's
+            // designJSON in place wouldn't work — the editor's
+            // already-decoded `@State document` would survive.
+            let store = DraftStore(context: context)
+            store.deleteDraft(draft)
+            seedDraft(from: profile, canonical: canonical)
+        } else {
+            claimIfUnowned(draft, canonical: canonical)
+        }
+    }
+
+    private func fetchPublishedProfile(userId canonical: String) async -> PublishedProfile? {
+        guard auth.currentUser?.id.lowercased() == canonical else { return nil }
+        guard let profile = try? await PublishedProfileService()
+            .fetch(userId: canonical),
+              profile.userId.lowercased() == canonical,
+              auth.currentUser?.id.lowercased() == canonical else {
+            return nil
+        }
+        return profile
     }
 
     /// Pristine = the auto-created empty draft we just bootstrapped.
@@ -372,11 +343,9 @@ private struct BuildTab: View {
 // MARK: - Build tab loading view
 
 /// Editorial loading state shown in the build tab while the user's
-/// design is being pulled across the wire (or while we're waiting
-/// for the auth view-model's `hydrateUsername()` to resolve so we
-/// can even start the fetch). Three layered details carry the
-/// "we're setting your page" feel without resorting to a generic
-/// spinner:
+/// design is being pulled across the wire. Three layered details
+/// carry the "we're setting your page" feel without resorting to a
+/// generic spinner:
 ///
 ///   1. **Tracked spec line** — a printer's-mark style label that
 ///      tells the user *what* is happening, not just *that*
@@ -439,18 +408,6 @@ private struct BuildTabLoadingView: View {
             .fill(Color.cucuCardSoft)
             .frame(width: width, height: 8)
     }
-}
-
-/// Composite key driving `BuildTab`'s session-aware bootstrap.
-/// Both fields participate so the keyed `.task` re-fires twice
-/// across a typical sign-in flow: once when `userId` flips from
-/// nil → the new account, and again when `hydrateUsername()`
-/// resolves and `username` flips from nil → the claimed handle.
-/// Equatable derivation does the right thing — only string
-/// comparisons.
-private struct SessionKey: Hashable {
-    let userId: String?
-    let username: String?
 }
 
 /// Feed tab — global Latest posts. Wrapped in its own

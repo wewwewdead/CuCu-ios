@@ -20,7 +20,7 @@ import UIKit
 ///   chained sheet hand-offs (page background → effects, inspector →
 ///   container effects).
 /// - `CanvasMutator` owns every document mutation (add/delete/duplicate,
-///   asset save/replace/delete, template save/apply).
+///   asset save/replace/delete).
 /// - `CanvasPresetBuilder` owns the section-preset construction tree.
 struct ProfileCanvasBuilderView: View {
     @Bindable var draft: ProfileDraft
@@ -99,6 +99,12 @@ struct ProfileCanvasBuilderView: View {
     /// skipped because the user is signed out). Drives the secondary
     /// "Couldn't fully reset" alert; the local wipe still proceeded.
     @State private var resetErrorMessage: String?
+    /// Process-wide app-chrome theme. Drives the colour of the
+    /// floating Edit / Live / title chips that sit on top of the
+    /// canvas so they match the room the user picked from the
+    /// social-stack picker — even though the canvas background
+    /// itself is owned by the user's `PageStyle`.
+    @State private var chrome = AppChromeStore.shared
     private let richTextToolbarReservedHeight: CGFloat = 58
 
     // MARK: Delete Published Profile (cloud-only wipe)
@@ -179,7 +185,6 @@ struct ProfileCanvasBuilderView: View {
             selectedID: $selectedID,
             draft: draft,
             store: resolvedStore,
-            context: context,
             rootPageIndex: editingPageIndex
         )
     }
@@ -441,6 +446,17 @@ struct ProfileCanvasBuilderView: View {
                     canvasTitleOverlay
                         .padding(.top, 10)
                 }
+                // Only the canvas itself opts out of the keyboard
+                // safe-area shrink — its size must stay constant so
+                // the UIKit `keyboardWillChangeFrame` handler in
+                // `CanvasEditorView` can lift just the editing node
+                // via a transform. The bottom inspector overlay is
+                // *not* opted out (it lives on the outer ZStack),
+                // which lets SwiftUI's automatic keyboard avoidance
+                // glue the panel to the keyboard's top edge for node
+                // types whose editing surface is a SwiftUI TextField
+                // inside the panel itself (link / icon / note).
+                .ignoresSafeArea(.keyboard, edges: .bottom)
 
                 // Empty-state overlay — fades on top of the (empty)
                 // canvas, fades out the moment the user adds the
@@ -451,7 +467,6 @@ struct ProfileCanvasBuilderView: View {
                 if canvasIsEmpty {
                     CanvasEmptyStateView(
                         onAddElement: { sheets.showAddSheet = true },
-                        onUseTemplate: { sheets.showApplyTemplateSheet = true },
                         onPreview: { sheets.showPreview = true }
                     )
                     .equatable()
@@ -465,23 +480,25 @@ struct ProfileCanvasBuilderView: View {
             if let target = activeRichTextSelection {
                 richTextSelectionToolbar(nodeID: target.nodeID, range: target.range)
                     .padding(.horizontal, 12)
-                    .padding(.bottom, keyboardAwarePanelBottomPadding)
+                    .padding(.bottom, 8)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
             // While a text node is in in-place editing the keyboard
             // is up and we lift just that text node above it (see
             // `keyboardWillChangeFrame` in `CanvasEditorView`). The
-            // bottom panel also rides above the keyboard via
-            // `keyboardAwarePanelBottomPadding`, which puts it right
-            // on top of the lifted text node. Drop the panel for the
-            // duration of the edit; it returns the moment the
-            // keyboard dismisses.
+            // bottom panel rides above the keyboard via SwiftUI's
+            // automatic keyboard avoidance — the overlay's bottom
+            // anchor naturally tracks the keyboard's top edge once
+            // the canvas (the only view that wants to *ignore* the
+            // keyboard) is the sole owner of `.ignoresSafeArea`. Drop
+            // the panel for the duration of in-place text editing; it
+            // returns the moment the keyboard dismisses.
             if !legacyDraft, !isInlineTextEditing, let id = selectedID, document.nodes[id] != nil {
                 if StructuredProfileLayout.isStructured(document) {
                     structuredNodePanel(for: id, sheets: sheets)
                         .id(id)
-                        .padding(.bottom, keyboardAwarePanelBottomPadding)
+                        .padding(.bottom, 8)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 } else {
                     // Legacy/freeform documents keep the previous
@@ -541,13 +558,6 @@ struct ProfileCanvasBuilderView: View {
                     .opacity(canvasIsEmpty ? 0 : 1)
             }
         }
-        // Opt the entire view tree out of SwiftUI's automatic
-        // keyboard safe-area shrink. We don't want the canvas's
-        // allotted space to change when the keyboard appears — the
-        // canvas keeps its full size, and only the *editing text
-        // node* lifts itself (via a transform inside the UIKit
-        // canvas) to sit above the keyboard.
-        .ignoresSafeArea(.keyboard, edges: .bottom)
         .animation(.spring(response: 0.32, dampingFraction: 0.85), value: selectedID)
         .animation(.spring(response: 0.32, dampingFraction: 0.85), value: sheets.isSelectionBarExpanded)
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: editMode)
@@ -598,16 +608,20 @@ struct ProfileCanvasBuilderView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent(sheets: sheets) }
-        // Edge-to-edge: tint the toolbar to the focused page's bg
-        // colour so the status-bar / toolbar strip blends straight
-        // into the page below it. No seam between the chrome and the
-        // canvas; the editor reads as one continuous surface like the
-        // published profile does. `.toolbarColorScheme` adapts the
-        // toolbar buttons + title for legibility on dark page bgs
-        // (e.g. Dusk Diary) — light icons on dark, dark on light.
-        .toolbarBackground(focusedPageBackgroundColor, for: .navigationBar)
+        // Toolbar follows the *global* chrome theme rather than the
+        // canvas page's own background: the canvas is the user's
+        // design (which they may have set to a bright photo or a pale
+        // bone for someone else's eyes), the toolbar is *their* app
+        // chrome that should match Feed / Explore / Thread. iOS 18
+        // renders these toolbar items as glass pills, so the visible
+        // colour comes from `.toolbarBackground` (the strip behind
+        // the pills) plus `.toolbarColorScheme` (which flips the
+        // glass material between light- and dark-glass variants and
+        // selects the right glyph polarity).
+        .toolbarBackground(chrome.theme.pageColor, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
-        .toolbarColorScheme(focusedPageIsDark ? .dark : .light, for: .navigationBar)
+        .toolbarColorScheme(chrome.theme.preferredColorScheme, for: .navigationBar)
+        .tint(chrome.theme.inkPrimary)
         .modifier(CanvasBuilderSheetsModifier(
             document: $document,
             selectedID: $selectedID,
@@ -617,14 +631,7 @@ struct ProfileCanvasBuilderView: View {
             mutator: mutator,
             addDestination: addDestination,
             isStructured: StructuredProfileLayout.isStructured(document),
-            editingPageIndex: editingPageIndex,
-            onSaveTemplate: { name in mutator.saveTemplate(named: name) },
-            onApplyTemplate: { template in
-                mutator.applyTemplate(template) {
-                    legacyDraft = false
-                    sheets.handleTemplateApplied()
-                }
-            }
+            editingPageIndex: editingPageIndex
         ))
         .sheet(isPresented: $showAccountSheet) {
             AccountSheet()
@@ -796,7 +803,7 @@ struct ProfileCanvasBuilderView: View {
         } label: {
             Text("Done")
                 .font(.cucuSans(17, weight: .medium))
-                .foregroundStyle(Color.cucuInk)
+                .foregroundStyle(chrome.theme.cardInkPrimary)
                 .frame(height: 30)
                 .padding(.horizontal, 4)
                 .contentShape(Rectangle())
@@ -820,7 +827,7 @@ struct ProfileCanvasBuilderView: View {
                     .textFieldStyle(.plain)
                     .multilineTextAlignment(.center)
                     .font(.cucuSans(17, weight: .medium))
-                    .foregroundStyle(Color.cucuInk)
+                    .foregroundStyle(chrome.theme.cardInkPrimary)
                     .focused($isTitleFieldFocused)
                     .submitLabel(.done)
                     .frame(minWidth: 60, maxWidth: 220)
@@ -834,7 +841,7 @@ struct ProfileCanvasBuilderView: View {
                     }
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.cucuInk.opacity(0.55))
+                    .foregroundStyle(chrome.theme.cardInkPrimary.opacity(0.55))
             }
             .padding(.horizontal, 12)
             .frame(height: 30)
@@ -842,14 +849,15 @@ struct ProfileCanvasBuilderView: View {
             // canvas can ship any image / dark theme behind the title,
             // so we keep a near-invisible card backing that only
             // becomes visible while the user is editing. Idle: pure
-            // text. Focused: thin pill so the field reads as "armed".
+            // text. Focused: themed pill so the field reads as "armed"
+            // on whatever room the user has set globally.
             .background(
                 Capsule(style: .continuous)
-                    .fill(Color.cucuCard.opacity(isTitleFieldFocused ? 0.95 : 0.0))
+                    .fill(chrome.theme.cardColor.opacity(isTitleFieldFocused ? 0.95 : 0.0))
             )
             .overlay(
                 Capsule(style: .continuous)
-                    .stroke(Color.cucuInk.opacity(isTitleFieldFocused ? 0.40 : 0.0),
+                    .stroke(chrome.theme.cardInkPrimary.opacity(isTitleFieldFocused ? 0.40 : 0.0),
                             lineWidth: isTitleFieldFocused ? 1.5 : 0)
             )
             .animation(.easeInOut(duration: 0.18), value: isTitleFieldFocused)
@@ -954,22 +962,22 @@ struct ProfileCanvasBuilderView: View {
             textColorHex: richTextColorBinding(nodeID: nodeID, range: range),
             highlightColorHex: richTextHighlightBinding(nodeID: nodeID, range: range),
             fontFamily: richTextFontFamilyBinding(nodeID: nodeID, range: range),
-            boldActive: inlineBoolActive(nodeID: nodeID, range: range, reader: inlineBold),
-            italicActive: inlineBoolActive(nodeID: nodeID, range: range, reader: inlineItalic),
-            underlineActive: inlineBoolActive(nodeID: nodeID, range: range, reader: inlineUnderline),
+            boldActive: inlineBoolActive(nodeID: nodeID, range: range, reader: boldFullyActive),
+            italicActive: inlineBoolActive(nodeID: nodeID, range: range, reader: italicFullyActive),
+            underlineActive: inlineBoolActive(nodeID: nodeID, range: range, reader: underlineFullyActive),
             onBold: {
                 mutateRichTextSpan(nodeID: nodeID, range: range) { node, normalized in
-                    applyBold(range: normalized, to: &node)
+                    toggleBold(range: normalized, in: &node)
                 }
             },
             onItalic: {
                 mutateRichTextSpan(nodeID: nodeID, range: range) { node, normalized in
-                    applyItalic(range: normalized, to: &node)
+                    toggleItalic(range: normalized, in: &node)
                 }
             },
             onUnderline: {
                 mutateRichTextSpan(nodeID: nodeID, range: range) { node, normalized in
-                    applyUnderline(range: normalized, to: &node)
+                    toggleUnderline(range: normalized, in: &node)
                 }
             },
             onClearStyle: {
@@ -1036,10 +1044,10 @@ struct ProfileCanvasBuilderView: View {
 
     private func inlineBoolActive(nodeID: UUID,
                                   range: NSRange,
-                                  reader: (CanvasNode, NSRange) -> Bool?) -> Bool {
+                                  reader: (CanvasNode, NSRange) -> Bool) -> Bool {
         guard let node = document.nodes[nodeID] else { return false }
         let normalized = normalizedRange(selection: range, text: node.content.text ?? "")
-        return reader(node, normalized) == true
+        return reader(node, normalized)
     }
 
     private func mutateRichTextSpan(nodeID: UUID,
@@ -1148,12 +1156,6 @@ struct ProfileCanvasBuilderView: View {
                 Button("Edit Properties…", systemImage: "slider.horizontal.3") { sheets.showInspector = true }
                     .disabled(selectedID == nil)
                 Divider()
-                Button("Save as Template", systemImage: "square.and.arrow.down") {
-                    sheets.showSaveTemplateSheet = true
-                }
-                Button("Apply Template", systemImage: "square.on.square") {
-                    sheets.showApplyTemplateSheet = true
-                }
                 Button("Theme…", systemImage: "paintpalette") {
                     sheets.showThemePickerSheet = true
                 }
@@ -1273,10 +1275,9 @@ struct ProfileCanvasBuilderView: View {
 
     /// Hex of the currently-focused page's background. Falls back to
     /// the document's legacy `pageBackgroundHex` when the editing
-    /// index isn't a valid page (transient state during page deletion
-    /// / template swap). Drives the toolbar tint so the editor chrome
-    /// reads as part of the page rather than a system bar floating
-    /// above it.
+    /// index isn't a valid page (transient state during page deletion).
+    /// Drives the toolbar tint so the editor chrome reads as part of
+    /// the page rather than a system bar floating above it.
     private var focusedPageBackgroundHex: String {
         let pages = document.pages
         let index = max(0, min(editingPageIndex, pages.count - 1))

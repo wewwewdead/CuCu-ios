@@ -22,6 +22,7 @@ import UIKit
 struct PublishSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AuthViewModel.self) private var auth
+    @State private var chrome = AppChromeStore.shared
 
     @Bindable var draft: ProfileDraft
     /// V2 source-of-truth document. The publish service walks this for
@@ -39,23 +40,25 @@ struct PublishSheet: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if !auth.isSignedIn || auth.requiresUsernameClaim {
-                    // Pre-publish: not signed in *or* signed in but no
-                    // username yet. AuthGateView routes between the
-                    // sign-in/up tabs and the picker on its own.
-                    AuthGateView()
-                } else {
-                    publishContent
+            ZStack {
+                CucuRefinedPageBackdrop()
+                Group {
+                    if !auth.isSignedIn || auth.requiresUsernameClaim {
+                        // Pre-publish: not signed in *or* signed in but no
+                        // username yet. AuthGateView routes between the
+                        // sign-in/up tabs and the picker on its own.
+                        AuthGateView()
+                    } else {
+                        publishContent
+                    }
                 }
             }
-            .navigationTitle(navigationTitle)
-            #if os(iOS) || os(visionOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
+            .cucuRefinedNav(navigationTitle)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .font(.cucuSans(15, weight: .regular))
+                        .foregroundStyle(chrome.theme.inkPrimary)
                 }
                 // Sign Out / account-glance lives in the editor's
                 // AccountSheet now; no per-sheet duplicate here.
@@ -116,45 +119,88 @@ struct PublishSheet: View {
     }
 
     private var publishForm: some View {
-        Form {
-            Section {
-                HStack(spacing: 4) {
-                    Text("@")
-                        .foregroundStyle(.secondary)
-                        .font(.body.monospaced())
-                    Text(auth.currentUser?.username ?? "")
-                        .font(.body.monospaced())
-                    Spacer()
-                }
-            } header: {
-                Text("Publishing as")
-            } footer: {
-                Text("Your username is set for life. The published page lives at \(ProfileShareLink.linkString(username: auth.currentUser?.username ?? "")).")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                identityCard
+                publishButton
+                publishFooter
+                Spacer(minLength: 0)
             }
-
-            Section {
-                Button {
-                    Task {
-                        guard let user = auth.currentUser else { return }
-                        await publishVM.publish(
-                            user: user,
-                            draft: draft,
-                            document: document
-                        )
-                        if case .success(let result) = publishVM.status {
-                            applySuccessToDraft(result)
-                        }
-                    }
-                } label: {
-                    HStack {
-                        Spacer()
-                        Text("Publish").fontWeight(.semibold)
-                        Spacer()
-                    }
-                }
-                .disabled(publishVM.isWorking)
-            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 32)
         }
+    }
+
+    /// "Publishing as" card — username surfaced as a refined card row
+    /// so it reads as deliberate metadata rather than a system Form
+    /// section. Theme-aware throughout.
+    private var identityCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Publishing as")
+                .font(.cucuSans(13, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
+            HStack(spacing: 4) {
+                Text("@\(auth.currentUser?.username ?? "")")
+                    .font(.cucuSans(17, weight: .bold))
+                    .foregroundStyle(chrome.theme.cardInkPrimary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(chrome.theme.cardColor)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(chrome.theme.rule, lineWidth: 1)
+            )
+        }
+    }
+
+    /// Primary publish action — refined ink-on-page pill. Disabled
+    /// while a publish is in flight; the pill's opacity drops via
+    /// the system's `.disabled` modifier so the user reads "not
+    /// available right now" without a colour swap.
+    private var publishButton: some View {
+        Button {
+            Task {
+                guard let user = auth.currentUser else { return }
+                await publishVM.publish(
+                    user: user,
+                    draft: draft,
+                    document: document
+                )
+                if case .success(let result) = publishVM.status {
+                    applySuccessToDraft(result)
+                    CucuProfileEvents.broadcastAvatarChange(username: result.username)
+                }
+            }
+        } label: {
+            Text("Publish")
+                .font(.cucuSans(16, weight: .bold))
+                .foregroundStyle(chrome.theme.pageColor)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(
+                    Capsule().fill(chrome.theme.inkPrimary)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(publishVM.isWorking)
+        .opacity(publishVM.isWorking ? 0.4 : 1)
+    }
+
+    /// "Set for life" footer — small faded sentence below the
+    /// action so the user knows what they're committing to.
+    private var publishFooter: some View {
+        Text("Your username is set for life. The published page lives at \(ProfileShareLink.linkString(username: auth.currentUser?.username ?? "")).")
+            .font(.cucuSans(12, weight: .regular))
+            .foregroundStyle(chrome.theme.inkFaded)
+            .lineLimit(nil)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var publishProgress: some View {
@@ -162,9 +208,10 @@ struct PublishSheet: View {
             Spacer()
             ProgressView()
                 .controlSize(.large)
+                .tint(chrome.theme.inkPrimary)
             Text(progressLabel)
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.secondary)
+                .font(.cucuSans(15, weight: .medium))
+                .foregroundStyle(chrome.theme.inkFaded)
             Spacer()
         }
         .padding()
@@ -173,8 +220,7 @@ struct PublishSheet: View {
     private func publishSuccess(_ result: PublishedProfileResult) -> some View {
         VStack(spacing: 18) {
             // Fire the success haptic on the first frame the
-            // success card is on screen — once per `result.profileId`
-            // so a re-publish to the same id doesn't double-pulse.
+            // success card is on screen.
             Color.clear
                 .frame(width: 0, height: 0)
                 .onAppear { CucuHaptics.success() }
@@ -182,57 +228,37 @@ struct PublishSheet: View {
             Spacer()
             ZStack {
                 Circle()
-                    .fill(Color.green.opacity(0.15))
+                    .fill(Color.green.opacity(chrome.theme.isDark ? 0.22 : 0.15))
                     .frame(width: 96, height: 96)
                 Image(systemName: "checkmark")
                     .font(.system(size: 44, weight: .semibold))
                     .foregroundStyle(.green)
             }
             VStack(spacing: 6) {
-                Text("Published!")
-                    .font(.title3.weight(.semibold))
+                Text("Published")
+                    .font(.cucuSans(20, weight: .bold))
+                    .foregroundStyle(chrome.theme.inkPrimary)
                 Text(ProfileShareLink.linkString(username: result.username))
-                    .font(.body.monospaced())
-                    .foregroundStyle(.secondary)
+                    .font(.cucuSans(14, weight: .regular))
+                    .foregroundStyle(chrome.theme.inkFaded)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
             }
 
             VStack(spacing: 10) {
-                Button {
+                CucuRefinedPillButton("View Profile") {
                     onViewPublished?(result.username)
                     dismiss()
-                } label: {
-                    Label("View Profile", systemImage: "eye")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
                 }
-                .buttonStyle(.borderedProminent)
-
-                Button {
+                CucuRefinedPillButton("Share Profile") {
                     showShareSheet = true
-                } label: {
-                    Label("Share Profile", systemImage: "square.and.arrow.up")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
                 }
-                .buttonStyle(.bordered)
-
-                Button {
+                CucuRefinedPillButton("Copy path") {
                     copyToClipboard(ProfileShareLink.linkString(username: result.username))
-                } label: {
-                    Label("Copy path", systemImage: "doc.on.doc")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
                 }
-                .buttonStyle(.bordered)
-
-                Button {
+                CucuRefinedPillButton("Done") {
                     dismiss()
-                } label: {
-                    Text("Done")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
                 }
-                .buttonStyle(.bordered)
             }
             .padding(.horizontal, 28)
             Spacer()
@@ -245,34 +271,28 @@ struct PublishSheet: View {
             Spacer()
             ZStack {
                 Circle()
-                    .fill(Color.orange.opacity(0.15))
+                    .fill(Color.orange.opacity(chrome.theme.isDark ? 0.22 : 0.15))
                     .frame(width: 96, height: 96)
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 40))
                     .foregroundStyle(.orange)
             }
             Text("Publish failed")
-                .font(.title3.weight(.semibold))
+                .font(.cucuSans(20, weight: .bold))
+                .foregroundStyle(chrome.theme.inkPrimary)
             Text(message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(.cucuSans(14, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 28)
 
             VStack(spacing: 10) {
-                Button {
+                CucuRefinedPillButton("Try again") {
                     publishVM.reset()
-                } label: {
-                    Text("Try again")
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
                 }
-                .buttonStyle(.borderedProminent)
-
-                Button("Cancel") { dismiss() }
-                    .buttonStyle(.bordered)
-                    .frame(maxWidth: .infinity)
+                CucuRefinedPillButton("Cancel") {
+                    dismiss()
+                }
             }
             .padding(.horizontal, 28)
             Spacer()

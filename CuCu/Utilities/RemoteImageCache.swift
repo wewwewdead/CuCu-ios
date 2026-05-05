@@ -21,6 +21,11 @@ final class RemoteImageCache {
     }()
     private let session: URLSession = {
         let cfg = URLSessionConfiguration.default
+        cfg.urlCache = URLCache(
+            memoryCapacity: 50 * 1024 * 1024,
+            diskCapacity: 500 * 1024 * 1024,
+            diskPath: "cucu-remote-images"
+        )
         cfg.requestCachePolicy = .returnCacheDataElseLoad
         cfg.timeoutIntervalForRequest = 20
         cfg.timeoutIntervalForResource = 60

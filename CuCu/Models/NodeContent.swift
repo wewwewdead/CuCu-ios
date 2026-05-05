@@ -330,6 +330,42 @@ func applyUnderline(range: NSRange, to node: inout CanvasNode) {
     )
 }
 
+func clearBold(range: NSRange, from node: inout CanvasNode) {
+    clearInlineStyle(.bold, range: range, from: &node)
+}
+
+func clearItalic(range: NSRange, from node: inout CanvasNode) {
+    clearInlineStyle(.italic, range: range, from: &node)
+}
+
+func clearUnderline(range: NSRange, from node: inout CanvasNode) {
+    clearInlineStyle(.underline, range: range, from: &node)
+}
+
+func toggleBold(range: NSRange, in node: inout CanvasNode) {
+    if boldFullyActive(in: node, range: range) {
+        clearBold(range: range, from: &node)
+    } else {
+        applyBold(range: range, to: &node)
+    }
+}
+
+func toggleItalic(range: NSRange, in node: inout CanvasNode) {
+    if italicFullyActive(in: node, range: range) {
+        clearItalic(range: range, from: &node)
+    } else {
+        applyItalic(range: range, to: &node)
+    }
+}
+
+func toggleUnderline(range: NSRange, in node: inout CanvasNode) {
+    if underlineFullyActive(in: node, range: range) {
+        clearUnderline(range: range, from: &node)
+    } else {
+        applyUnderline(range: range, to: &node)
+    }
+}
+
 /// Apply an inline font-family override to `range`. Mirrors the
 /// color / highlight / bold helpers so a selection-driven Font
 /// picker can use the same `if selection { applyFontFamily }`
@@ -385,6 +421,42 @@ func inlineItalic(in node: CanvasNode, range: NSRange) -> Bool? {
 
 func inlineUnderline(in node: CanvasNode, range: NSRange) -> Bool? {
     lastInlineBool(in: node, range: range, keyPath: \.underline)
+}
+
+/// True only when every UTF-16 unit of `range` is covered by some span
+/// whose `bold` is `true`. Used by the toolbar to drive the "active"
+/// indicator and to decide toggle direction — a partially-bold selection
+/// is *not* fully active, so tapping the button bolds the rest of it.
+func boldFullyActive(in node: CanvasNode, range: NSRange) -> Bool {
+    rangeFullyCovered(node: node, range: range, keyPath: \.bold)
+}
+
+func italicFullyActive(in node: CanvasNode, range: NSRange) -> Bool {
+    rangeFullyCovered(node: node, range: range, keyPath: \.italic)
+}
+
+func underlineFullyActive(in node: CanvasNode, range: NSRange) -> Bool {
+    rangeFullyCovered(node: node, range: range, keyPath: \.underline)
+}
+
+private func rangeFullyCovered(node: CanvasNode,
+                               range: NSRange,
+                               keyPath: KeyPath<TextStyleSpan, Bool?>) -> Bool {
+    guard let clamped = clampedRange(range, text: node.content.text ?? "") else {
+        return false
+    }
+    var covered = Array(repeating: false, count: clamped.length)
+    for span in node.content.textStyleSpans ?? [] where span[keyPath: keyPath] == true {
+        guard let spanRange = clampedRange(span.nsRange, text: node.content.text ?? ""),
+              let intersection = spanRange.textStyleOverlap(with: clamped) else {
+            continue
+        }
+        let offset = intersection.location - clamped.location
+        for i in offset..<(offset + intersection.length) {
+            covered[i] = true
+        }
+    }
+    return covered.allSatisfy { $0 }
 }
 
 /// Most-recently-applied inline font family covering any part of

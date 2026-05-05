@@ -11,7 +11,7 @@ import Foundation
 /// removed because the canvas itself is the right place for any "About"
 /// content the author wants to publish — duplicate fields above the
 /// canvas confused the design and split the source of truth.
-nonisolated struct PublishedProfile: Sendable, Equatable {
+nonisolated struct PublishedProfile: Sendable, Equatable, Codable {
     let id: String
     let userId: String
     let username: String

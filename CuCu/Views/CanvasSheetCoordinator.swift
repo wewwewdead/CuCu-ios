@@ -32,8 +32,6 @@ final class CanvasSheetCoordinator {
     var showPageBackgroundSheet = false
     var showBackgroundEffectsSheet = false
     var showLayersSheet = false
-    var showSaveTemplateSheet = false
-    var showApplyTemplateSheet = false
     var showThemePickerSheet = false
     var showContainerBackgroundEffectsSheet = false
 
@@ -130,12 +128,5 @@ final class CanvasSheetCoordinator {
             showContainerBackgroundEffectsSheet = false
             containerEffectsTargetID = nil
         }
-    }
-
-    /// Reset by `applyTemplate` — closes the inspector and layers
-    /// sheets that may be tied to the prior document.
-    func handleTemplateApplied() {
-        showInspector = false
-        showLayersSheet = false
     }
 }

@@ -135,30 +135,44 @@ nonisolated struct PublishService {
         // 2. Determine profile id BEFORE any I/O so storage paths are stable
         //    across upload + DB insert (and across republishes).
         //
-        //    Server-of-truth ownership check: if `existingProfileId` is
-        //    handed in but we don't actually own that row (sign-out →
-        //    sign-up on the same device leaves the draft pointing at the
-        //    previous user's profile, and pre-`publishedOwnerUserId`
-        //    drafts bypass the local cross-account guard in
-        //    `PublishViewModel`), upsert-onto-someone-else's-row would
-        //    silently no-op: PostgREST returns success but Postgres'
-        //    `Owners can update their own profiles` RLS policy
-        //    (`using (auth.uid() = user_id)`) hides the conflicted row
-        //    from the UPDATE branch of `INSERT ... ON CONFLICT (id)`,
-        //    so zero rows are written and the caller stamps the local
-        //    draft with a foreign profile id. Querying ownership here
-        //    lets us mint a fresh UUID instead and treat the publish as
-        //    a clean insert.
+        //    Three-stage resolution, ordered by trust:
+        //    a) Local `existingProfileId` if we still own that row — happy
+        //       path for the typical republish.
+        //    b) Server-side lookup by `user_id` if (a) failed. Catches the
+        //       case where the local stamp drifted (sign-out/in, fresh
+        //       install before re-stamp, SwiftData wipe, pre-
+        //       `publishedOwnerUserId` drafts). Picks the user's most
+        //       recently updated row so the result is deterministic when
+        //       legacy data left multiple rows under one user_id.
+        //    c) Fresh UUID when the user has no row anywhere — genuine
+        //       first publish.
+        //
+        //    Without (b), an out-of-sync local stamp dropped the upsert
+        //    into the INSERT branch and tripped `profiles.username`'s
+        //    UNIQUE constraint against the user's *own* prior row,
+        //    surfacing as a misleading "username is taken" error.
         let canonicalUserId = user.id.lowercased()
         let resolvedProfileId: String
         if let candidate = existingProfileId?.lowercased(),
-           !candidate.isEmpty {
-            let ownsExisting = try await isOwnedByCurrentUser(
-                client: client,
-                profileId: candidate,
-                userId: canonicalUserId
-            )
-            resolvedProfileId = ownsExisting ? candidate : UUID().uuidString
+           !candidate.isEmpty,
+           try await isOwnedByCurrentUser(
+               client: client,
+               profileId: candidate,
+               userId: canonicalUserId
+           ) {
+            resolvedProfileId = candidate
+        } else if let serverId = try await findOwnedProfileId(
+            client: client,
+            userId: canonicalUserId
+        ) {
+            #if DEBUG
+            if let candidate = existingProfileId?.lowercased(),
+               !candidate.isEmpty,
+               candidate != serverId {
+                print("PublishService: local publishedProfileId \(candidate) drifted from server row \(serverId); adopting server id.")
+            }
+            #endif
+            resolvedProfileId = serverId
         } else {
             resolvedProfileId = UUID().uuidString
         }
@@ -471,6 +485,42 @@ nonisolated struct PublishService {
                 .execute()
                 .value
             return !rows.isEmpty
+        } catch {
+            if SupabaseErrorMapper.isNetwork(error) {
+                throw PublishError.network
+            }
+            throw PublishError.database(SupabaseErrorMapper.detail(error))
+        }
+    }
+
+    /// Look up the current user's most-recently-updated profile row.
+    /// Used as the fallback when the local `existingProfileId` no longer
+    /// matches a row this user owns — without this, an out-of-sync local
+    /// stamp drops the upsert into the INSERT branch and trips the
+    /// `username UNIQUE` constraint against the user's own prior row.
+    ///
+    /// Ordering: `updated_at DESC, id DESC` keeps the result deterministic
+    /// even when legacy data left two rows with identical `updated_at`.
+    /// Returns the canonical lowercase id (matching how Postgres renders
+    /// UUIDs) so storage paths stay stable downstream.
+    private func findOwnedProfileId(
+        client: SupabaseClient,
+        userId: String
+    ) async throws -> String? {
+        struct OwnedRow: Decodable, Sendable {
+            let id: String
+        }
+        do {
+            let rows: [OwnedRow] = try await client
+                .from("profiles")
+                .select("id")
+                .eq("user_id", value: userId)
+                .order("updated_at", ascending: false)
+                .order("id", ascending: false)
+                .limit(1)
+                .execute()
+                .value
+            return rows.first?.id.lowercased()
         } catch {
             if SupabaseErrorMapper.isNetwork(error) {
                 throw PublishError.network
