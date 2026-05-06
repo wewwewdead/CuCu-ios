@@ -536,6 +536,14 @@ final class PostThreadViewModel {
         }
 
         thread = current
+
+        // Tell other surfaces (the feed underneath, profile post
+        // columns, etc.) that the parent's and root's reply counts
+        // moved so their local copies stay in sync without a
+        // refetch.
+        CucuPostEvents.broadcastReplyPosted(
+            ancestorIds: [parentId, current.rootId]
+        )
     }
 
     // MARK: - Helpers

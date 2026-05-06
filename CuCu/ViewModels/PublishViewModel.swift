@@ -45,7 +45,8 @@ final class PublishViewModel {
     func publish(
         user: AppUser,
         draft: ProfileDraft,
-        document: ProfileDocument
+        document: ProfileDocument,
+        category: ProfileVibe? = nil
     ) async {
         status = .validating
 
@@ -108,6 +109,7 @@ final class PublishViewModel {
             let result = try await service.publish(
                 existingProfileId: draft.publishedProfileId,
                 document: document,
+                category: category?.rawValue,
                 onPhaseChange: { [weak self] phase in
                     guard let self else { return }
                     switch phase {

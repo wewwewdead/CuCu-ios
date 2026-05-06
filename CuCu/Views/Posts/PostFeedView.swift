@@ -68,13 +68,17 @@ struct PostFeedView: View {
             CucuRefinedPageBackdrop()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
+                    feedMasthead
+                        .padding(.horizontal, 22)
+                        .padding(.top, 14)
                     flightAnchor
                         .padding(.horizontal, 20)
-                        .padding(.top, 12)
+                        .padding(.top, 4)
                     stateContent
                 }
                 .padding(.bottom, 32)
             }
+            .scrollIndicators(.hidden)
             .refreshable {
                 // Visible rows after refresh will pull their own
                 // avatars through the lazy `.onAppear` path.
@@ -188,6 +192,29 @@ struct PostFeedView: View {
             }
             Task { await avatarStore.refresh(username: username) }
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .cucuPostReplyPosted)
+        ) { notification in
+            // A reply landed in the thread VM (or any other surface
+            // that broadcasts the same event); bump the local
+            // replyCount on any of our rows that match. Idempotent
+            // per-id check keeps it safe to subscribe from every
+            // feed surface — non-matching rows just no-op.
+            //
+            // Also kick a server-side refetch as a backstop so the
+            // canonical denormalised counter wins if the optimistic
+            // bump missed for any reason (e.g., the row was paginated
+            // out and back in between the bump and re-render).
+            let ids = CucuPostEvents.replyAncestorIds(from: notification)
+            for id in ids {
+                vm.incrementReplyCount(postId: id)
+            }
+            Task {
+                for id in ids {
+                    await vm.refreshPost(id: id)
+                }
+            }
+        }
         .onChange(of: flightCoordinator.landedPostId) { _, newValue in
             // Flight ghost just reached the destination. Prepend
             // the post the coordinator is carrying with the
@@ -248,13 +275,144 @@ struct PostFeedView: View {
     // the page reads as a magazine spread that gives the feed its
     // own opening real estate.
 
+    // MARK: - Editorial masthead
+    //
+    // Premium pass: the page opens with an editorial masthead that
+    // gives the feed real weight before the scroll begins. A tracked
+    // monospaced spec line carries a printer's-mark date / section
+    // label; below it sits a Fraunces-italic display title (the page
+    // identity) on the leading edge with a small bookplate avatar
+    // puck on the trailing edge that points at the signed-in viewer.
+    // A fleuron-rule closes the masthead and hands off to the flight
+    // anchor + feed column. The whole masthead scrolls with the
+    // content — it's a magazine spread's opener, not a sticky bar.
+
+    /// Notebook masthead — playful display title in a chunky cut
+    /// (Caprasimo) on the leading edge, viewer avatar puck on the
+    /// trailing edge, with a tracked-mono spec line above. Scrolls
+    /// with the content rather than pinning, so the page reads as
+    /// a notebook spread that gives the feed its own opening real
+    /// estate.
+    private var feedMasthead: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(Color.cucuCherry)
+                        .frame(width: 5, height: 5)
+                    Text(mastheadSpec)
+                        .font(.cucuMono(10, weight: .medium))
+                        .tracking(2.4)
+                        .foregroundStyle(chrome.theme.inkMuted)
+                }
+                Spacer(minLength: 8)
+                Text(mastheadFolio)
+                    .font(.cucuMono(10, weight: .medium))
+                    .tracking(2.4)
+                    .foregroundStyle(chrome.theme.inkFaded)
+            }
+            HStack(alignment: .lastTextBaseline, spacing: 12) {
+                Text(displayTitle)
+                    .font(.custom("Caprasimo-Regular", size: 36))
+                    .foregroundStyle(chrome.theme.inkPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Spacer(minLength: 6)
+                viewerPuck
+            }
+        }
+    }
+
+    /// Tracked uppercased spec — today's date for the global feed,
+    /// "JOURNAL" for per-user surfaces. Reads as a printer's mark
+    /// rather than a section heading.
+    private var mastheadSpec: String {
+        switch vm.feedSource {
+        case .global:   return Self.mastheadDateString()
+        case .byAuthor: return "JOURNAL"
+        }
+    }
+
+    /// Trailing folio — the masthead's right-edge counterpart to the
+    /// spec line. Uses an italic-friendly numeral for the global
+    /// feed ("№ DAILY") and the running post count for per-user
+    /// surfaces, so each surface has its own quiet identifier.
+    private var mastheadFolio: String {
+        switch vm.feedSource {
+        case .global:
+            return "№ DAILY"
+        case .byAuthor:
+            let count = vm.posts.count
+            if count == 0 { return "№ —" }
+            return "№ \(String(format: "%03d", count))"
+        }
+    }
+
+    /// Trailing avatar puck — a small bookplate tile that points at
+    /// the signed-in viewer. Tapping it opens the viewer's own
+    /// published profile, mirroring the in-row avatar idiom. When
+    /// the viewer hasn't published a profile yet (or the avatar
+    /// hasn't resolved) the tile falls through to a Fraunces-italic
+    /// initial on a paper-toned fill.
+    @ViewBuilder
+    private var viewerPuck: some View {
+        if let username = auth.currentUser?.username, !username.isEmpty {
+            Button {
+                CucuHaptics.selection()
+                profileDestination = AuthorRoute(username: username)
+            } label: {
+                Group {
+                    if let urlString = avatarStore.avatarURL(for: username),
+                       let url = CucuImageTransform.resized(urlString, square: 36) {
+                        CachedRemoteImage(url: url, contentMode: .fill) {
+                            mastheadLetterTile(for: username)
+                        }
+                        .frame(width: 36, height: 36)
+                        .clipShape(Circle())
+                        .overlay(
+                            Circle()
+                                .strokeBorder(chrome.theme.inkPrimary.opacity(0.35), lineWidth: 0.8)
+                        )
+                    } else {
+                        mastheadLetterTile(for: username)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("View your profile")
+        }
+    }
+
+    private func mastheadLetterTile(for username: String) -> some View {
+        ZStack {
+            Circle()
+                .fill(PostRowView.avatarColor(for: username))
+                .frame(width: 36, height: 36)
+                .overlay(
+                    Circle()
+                        .strokeBorder(chrome.theme.inkPrimary.opacity(0.35), lineWidth: 0.8)
+                )
+            Text(PostRowView.avatarInitial(for: username))
+                .font(.custom("Caprasimo-Regular", size: 17))
+                .foregroundStyle(Color.cucuInk)
+        }
+    }
+
+    /// Today's date in editorial-mono format ("WEDNESDAY · MAY 06,
+    /// 2026"). Recomputed each render so a feed left open across
+    /// midnight repaints with the correct stamp on the next refresh.
+    private static func mastheadDateString() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "EEEE · MMM d, yyyy"
+        return f.string(from: Date()).uppercased()
+    }
+
     /// Invisible flight-coordinator anchor. The post-compose flight
     /// overlay needs a fixed point at the top of the feed where
-    /// freshly-prepended rows will land — under the previous design
-    /// it sat at the bottom of the masthead's hairline rule. Now
-    /// that the masthead is gone, the anchor is a 1pt clear strip at
-    /// the top of the scroll content. Keeps the flight landing
-    /// behaviour identical without resurrecting the editorial chrome.
+    /// freshly-prepended rows will land. Sits just below the
+    /// editorial masthead's fleuron rule, so the destination it
+    /// registers tracks the top of the feed column itself — flight
+    /// landing behaviour stays unchanged.
     private var flightAnchor: some View {
         Color.clear
             .frame(height: 1)
@@ -303,33 +461,38 @@ struct PostFeedView: View {
     // MARK: - Column
 
     private var feedColumn: some View {
-        LazyVStack(spacing: 10) {
-            ForEach(vm.posts) { post in
-                PostRowView(
-                    post: post,
-                    style: .full,
-                    viewerHasLiked: vm.viewerLikedIds.contains(post.id),
-                    isOwnPost: post.authorId == auth.currentUser?.id.lowercased(),
-                    avatarURL: avatarStore.avatarURL(for: post.authorUsername),
-                    onTap: { threadDestination = post },
-                    onLike: { vm.toggleLike(postId: post.id) },
-                    onReply: { threadDestination = post },
-                    onDelete: { handleDelete(post) },
-                    onReport: { reportTarget = post },
-                    onBlock: { blockTarget = post },
-                    onAuthorTap: {
-                        profileDestination = AuthorRoute(
-                            username: post.authorUsername
-                        )
+        LazyVStack(spacing: 0) {
+            ForEach(Array(vm.posts.enumerated()), id: \.element.id) { index, post in
+                VStack(spacing: 0) {
+                    PostRowView(
+                        post: post,
+                        style: .full,
+                        viewerHasLiked: vm.viewerLikedIds.contains(post.id),
+                        isOwnPost: post.authorId == auth.currentUser?.id.lowercased(),
+                        avatarURL: avatarStore.avatarURL(for: post.authorUsername),
+                        onTap: { threadDestination = post },
+                        onLike: { vm.toggleLike(postId: post.id) },
+                        onReply: { threadDestination = post },
+                        onDelete: { handleDelete(post) },
+                        onReport: { reportTarget = post },
+                        onBlock: { blockTarget = post },
+                        onAuthorTap: {
+                            profileDestination = AuthorRoute(
+                                username: post.authorUsername
+                            )
+                        }
+                    )
+                    if index < vm.posts.count - 1 {
+                        Rectangle()
+                            .fill(chrome.theme.rule)
+                            .frame(height: 1)
+                            .padding(.leading, 18)
+                            .padding(.trailing, 18)
                     }
-                )
+                }
                 .scaleEffect(rowScaleEffect(for: post.id), anchor: .center)
                 .animation(.spring(response: 0.22, dampingFraction: 0.55), value: poppingPostId)
                 .animation(.spring(response: 0.32, dampingFraction: 0.5), value: flightCoordinator.pulsingPostId)
-                // Use the materialise-in-place transition only for
-                // the row that just received the flight; every
-                // other insertion (refresh, server push) keeps the
-                // standard top-edge slide.
                 .transition(
                     lastLandedPostId == post.id
                         ? .cucuPostLanding
@@ -343,8 +506,6 @@ struct PostFeedView: View {
                 .onAppear {
                     avatarStore.requestLazy(for: post.authorUsername)
                     if post.id == vm.posts.last?.id {
-                        // Newly-paginated rows will lazy-load
-                        // their own avatars as they enter view.
                         Task { await vm.loadMore() }
                     }
                 }
@@ -365,36 +526,55 @@ struct PostFeedView: View {
             }
         }
         .animation(.spring(response: 0.46, dampingFraction: 0.7), value: vm.posts.map(\.id))
-        .padding(.top, 14)
-        .padding(.horizontal, 20)
+        .padding(.top, 6)
     }
 
-    /// Quiet end-of-feed marker. Refined-minimalist: drops the
-    /// sparkle brackets in favour of a flat sentence-case label
-    /// in faded ink. The end of the feed is information, not a
-    /// flourish.
+    /// Notebook end-of-feed sign-off. A single fleuron between two
+    /// hairline rules, with a handwritten "you're all caught up"
+    /// note below — softer than the editorial spec stamps the page
+    /// used to close on, and a closer match to the page-of-a-diary
+    /// aesthetic the row vocabulary now establishes.
     private var endOfFeed: some View {
-        Text("End of feed")
-            .font(.cucuSans(13, weight: .regular))
-            .foregroundStyle(chrome.theme.inkFaded)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 28)
+        VStack(spacing: 6) {
+            HStack(spacing: 12) {
+                Rectangle()
+                    .fill(chrome.theme.rule)
+                    .frame(height: 1)
+                Text("❦")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.cucuCherry)
+                Rectangle()
+                    .fill(chrome.theme.rule)
+                    .frame(height: 1)
+            }
+            Text("you're all caught up — pull to refresh")
+                .font(.custom("Caveat-Regular", size: 18))
+                .foregroundStyle(chrome.theme.inkFaded)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 36)
+        .padding(.vertical, 28)
     }
 
     // MARK: - State surfaces
 
-    /// Skeleton column — three placeholder cards that ghost the
-    /// real row geometry. Pulses opacity rather than running a
-    /// shimmer band, which feels more refined and less "loading
-    /// gif" energy.
+    /// Skeleton column — three placeholder rows that ghost the real
+    /// row geometry (rainbow stripe + round avatar + handle / body /
+    /// action bars). Pulses opacity rather than running a shimmer
+    /// band, which feels more refined and less "loading gif" energy.
     private var skeletonColumn: some View {
-        VStack(spacing: 10) {
-            ForEach(0..<3, id: \.self) { _ in
+        VStack(spacing: 0) {
+            ForEach(0..<3, id: \.self) { idx in
                 FeedSkeletonCard()
+                if idx < 2 {
+                    Rectangle()
+                        .fill(chrome.theme.rule)
+                        .frame(height: 1)
+                        .padding(.horizontal, 18)
+                }
             }
         }
-        .padding(.top, 14)
-        .padding(.horizontal, 20)
+        .padding(.top, 6)
     }
 
     private var emptyState: some View {
@@ -609,6 +789,33 @@ private struct AuthorRoute: Identifiable, Hashable {
     var id: String { username }
 }
 
+// MARK: - Masthead fleuron rule
+
+/// Hairline rule with a centred fleuron, theme-aware. Sits beneath
+/// the editorial masthead and the thread masthead so the social
+/// surfaces share one closing-flourish idiom — same vocabulary the
+/// editor's `CucuFleuronDivider` uses inside cards, but tinted to
+/// the on-page chrome (cardless surface) instead of the cream-card
+/// ink palette.
+struct CucuFeedFleuronRule: View {
+    @State private var chrome = AppChromeStore.shared
+    var glyph: String = "❦"
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Rectangle()
+                .fill(chrome.theme.rule)
+                .frame(height: 1)
+            Text(glyph)
+                .font(.cucuSerif(12, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
+            Rectangle()
+                .fill(chrome.theme.rule)
+                .frame(height: 1)
+        }
+    }
+}
+
 // MARK: - Skeleton card
 
 /// Loading-state placeholder — ghosts the real row geometry
@@ -636,54 +843,52 @@ struct FeedSkeletonCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 14) {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(barFill)
-                    .frame(width: 40, height: 40)
+        HStack(alignment: .top, spacing: 0) {
+            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                .fill(barFill)
+                .frame(width: 4, height: 96)
+                .padding(.trailing, 14)
+            Circle()
+                .fill(barFill)
+                .frame(width: 40, height: 40)
+                .padding(.trailing, 12)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Capsule()
+                        .fill(barFill)
+                        .frame(width: 110, height: 14)
+                    Spacer(minLength: 0)
+                    Capsule()
+                        .fill(barFill)
+                        .frame(width: 24, height: 9)
+                }
                 VStack(alignment: .leading, spacing: 6) {
                     Capsule()
                         .fill(barFill)
-                        .frame(width: 130, height: 11)
+                        .frame(height: 10)
+                        .frame(maxWidth: .infinity)
                     Capsule()
                         .fill(barFill)
-                        .frame(width: 70, height: 8)
+                        .frame(width: 220, height: 10)
                 }
-                Spacer(minLength: 0)
+                HStack(spacing: 18) {
+                    Capsule()
+                        .fill(barFill)
+                        .frame(width: 36, height: 10)
+                    Capsule()
+                        .fill(barFill)
+                        .frame(width: 36, height: 10)
+                    Capsule()
+                        .fill(barFill)
+                        .frame(width: 22, height: 10)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 2)
             }
-            VStack(alignment: .leading, spacing: 7) {
-                Capsule()
-                    .fill(barFill)
-                    .frame(height: 10)
-                    .frame(maxWidth: .infinity)
-                Capsule()
-                    .fill(barFill)
-                    .frame(height: 10)
-                    .frame(maxWidth: .infinity)
-                Capsule()
-                    .fill(barFill)
-                    .frame(width: 200, height: 10)
-            }
-            HStack(spacing: 14) {
-                Spacer(minLength: 0)
-                Capsule()
-                    .fill(barFill)
-                    .frame(width: 28, height: 10)
-                Capsule()
-                    .fill(barFill)
-                    .frame(width: 28, height: 10)
-            }
-            .padding(.top, 2)
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(chrome.theme.cardColor)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(chrome.theme.cardStroke, lineWidth: 1)
-        )
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .opacity(phase ? 1.0 : 0.55)
         .onAppear {
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {

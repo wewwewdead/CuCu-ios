@@ -323,12 +323,15 @@ nonisolated struct PublishedProfileService {
     /// its `security_invoker` setting keeps the underlying table policies
     /// active for anonymous viewers.
     func fetchLatest(limit: Int = listPageSize,
-                     before cursor: Date? = nil) async throws -> [PublishedProfileSummary] {
+                     before cursor: Date? = nil,
+                     category: String? = nil) async throws -> [PublishedProfileSummary] {
         #if canImport(Supabase)
         // First-page only — use the 60s in-memory snapshot if it's
         // fresh. Pagination cursors must always go to the wire so
-        // page boundaries stay aligned with `published_at`.
-        if cursor == nil, limit == Self.listPageSize,
+        // page boundaries stay aligned with `published_at`. The
+        // category-filtered path bypasses the cache so a chip flip
+        // doesn't return a stale "All" snapshot under a filter pill.
+        if cursor == nil, category == nil, limit == Self.listPageSize,
            let cached = await ExploreListCache.shared.latest() {
             return cached
         }
@@ -345,18 +348,33 @@ nonisolated struct PublishedProfileService {
                 .select(Self.summarySelect)
 
             let rows: [PublishedProfileSummaryRow]
-            if let cursor {
-                let isoFormatter = ISO8601DateFormatter()
-                isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                let cursorString = isoFormatter.string(from: cursor)
+            switch (cursor, category) {
+            case (nil, nil):
+                rows = try await baseSelect
+                    .order("published_at", ascending: false)
+                    .limit(limit)
+                    .execute()
+                    .value
+            case (let cursor?, nil):
+                let cursorString = isoFormat(cursor)
                 rows = try await baseSelect
                     .lt("published_at", value: cursorString)
                     .order("published_at", ascending: false)
                     .limit(limit)
                     .execute()
                     .value
-            } else {
+            case (nil, let category?):
                 rows = try await baseSelect
+                    .eq("category", value: category)
+                    .order("published_at", ascending: false)
+                    .limit(limit)
+                    .execute()
+                    .value
+            case (let cursor?, let category?):
+                let cursorString = isoFormat(cursor)
+                rows = try await baseSelect
+                    .eq("category", value: category)
+                    .lt("published_at", value: cursorString)
                     .order("published_at", ascending: false)
                     .limit(limit)
                     .execute()
@@ -364,8 +382,10 @@ nonisolated struct PublishedProfileService {
             }
             let summaries = rows.map { $0.toModel() }
             // Stamp the first-page snapshot so subsequent calls in
-            // the next 60s short-circuit at the top.
-            if cursor == nil, limit == Self.listPageSize {
+            // the next 60s short-circuit at the top — but only the
+            // un-filtered path; we don't cache per-category lists in
+            // this layer.
+            if cursor == nil, category == nil, limit == Self.listPageSize {
                 await ExploreListCache.shared.setLatest(summaries)
             }
             return summaries
@@ -380,6 +400,16 @@ nonisolated struct PublishedProfileService {
         #else
         throw PublishedProfileError.notConfigured(reason: .packageNotAdded)
         #endif
+    }
+
+    /// Compact ISO-8601 formatter used by the category-aware fetch
+    /// branches above. Pulled out so each switch arm doesn't
+    /// re-instantiate the formatter; the cost is negligible per call
+    /// but keeping the cursor formatting in one place avoids drift.
+    private func isoFormat(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 
     /// Case-insensitive substring search by `username`. Empty /
@@ -587,11 +617,14 @@ nonisolated struct PublishedProfileService {
     /// pages can shift if a row's score crosses a page boundary between
     /// fetches, so the caller must de-dupe by `id` before appending.
     func fetchHottest(limit: Int = listPageSize,
-                      offset: Int = 0) async throws -> [PublishedProfileSummary] {
+                      offset: Int = 0,
+                      category: String? = nil) async throws -> [PublishedProfileSummary] {
         #if canImport(Supabase)
         // First-page fast path. Same TTL discipline as `fetchLatest`
-        // — paginated reads (offset > 0) bypass the snapshot.
-        if offset == 0, limit == Self.listPageSize,
+        // — paginated reads (offset > 0) bypass the snapshot. The
+        // category-filtered path skips the cache so a chip flip
+        // doesn't return a stale "All" hottest snapshot.
+        if offset == 0, category == nil, limit == Self.listPageSize,
            let cached = await ExploreListCache.shared.hottest() {
             return cached
         }
@@ -601,16 +634,28 @@ nonisolated struct PublishedProfileService {
         let from = max(offset, 0)
         let to = from + max(limit, 1) - 1
         do {
-            let rows: [PublishedProfileSummaryRow] = try await client
+            let baseSelect = client
                 .from("published_profile_stats")
                 .select(Self.summarySelect)
-                .order("hot_score", ascending: false)
-                .order("published_at", ascending: false)
-                .range(from: from, to: to)
-                .execute()
-                .value
+            let rows: [PublishedProfileSummaryRow]
+            if let category {
+                rows = try await baseSelect
+                    .eq("category", value: category)
+                    .order("hot_score", ascending: false)
+                    .order("published_at", ascending: false)
+                    .range(from: from, to: to)
+                    .execute()
+                    .value
+            } else {
+                rows = try await baseSelect
+                    .order("hot_score", ascending: false)
+                    .order("published_at", ascending: false)
+                    .range(from: from, to: to)
+                    .execute()
+                    .value
+            }
             let summaries = rows.map { $0.toModel() }
-            if offset == 0, limit == Self.listPageSize {
+            if offset == 0, category == nil, limit == Self.listPageSize {
                 await ExploreListCache.shared.setHottest(summaries)
             }
             return summaries

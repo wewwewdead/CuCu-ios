@@ -62,6 +62,15 @@ final class ProfileDraft {
     /// scoping works going forward.
     var ownerUserId: String?
 
+    /// Username of the published profile this draft was remixed
+    /// from, if any. Stamped by the "Use this style" flow on
+    /// `PublishedProfileView` and surfaced (optionally) as a
+    /// small "Inspired by @…" attribution in the editor and the
+    /// share card. Optional + nil for every non-remixed draft, so
+    /// the field qualifies as a SwiftData lightweight migration —
+    /// no migration plan needed.
+    var remixSourceUsername: String?
+
     init(id: UUID = UUID(),
          title: String = "Untitled",
          designJSON: String = DesignJSONCoder.fallbackJSON,
@@ -71,7 +80,8 @@ final class ProfileDraft {
          publishedUsername: String? = nil,
          lastPublishedAt: Date? = nil,
          publishedOwnerUserId: String? = nil,
-         ownerUserId: String? = nil) {
+         ownerUserId: String? = nil,
+         remixSourceUsername: String? = nil) {
         self.id = id
         self.title = title
         self.designJSON = designJSON
@@ -82,5 +92,6 @@ final class ProfileDraft {
         self.lastPublishedAt = lastPublishedAt
         self.publishedOwnerUserId = publishedOwnerUserId
         self.ownerUserId = ownerUserId
+        self.remixSourceUsername = remixSourceUsername
     }
 }

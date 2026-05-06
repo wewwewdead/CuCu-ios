@@ -36,7 +36,10 @@ struct PublishedProfilesListView: View {
     @State private var status: Status = .loading
     @State private var query: String = ""
     @State private var feedMode: FeedMode = .suggested
-    @State private var category: ExploreCategory = .all
+    /// Active vibe filter. `nil` is "All" — the selector treats the
+    /// "All" pill as the absence of a category constraint, so old
+    /// rows that never got vibe-stamped still surface under it.
+    @State private var category: ProfileVibe?
     @State private var canLoadMore: Bool = true
     @State private var isLoadingMore: Bool = false
     @State private var dismissed: Set<String> = []
@@ -107,34 +110,20 @@ struct PublishedProfilesListView: View {
         case error(String)
     }
 
-    /// Three primary sub-filters surfaced under the category row.
+    /// Two primary sub-filters surfaced under the category row.
     /// Suggested/Recents map onto the existing Hottest/Latest service
-    /// calls; Online renders an empty state until a presence channel
-    /// exists, which is fine for now — the segment is the right
-    /// hook to add it later without re-shuffling chrome.
+    /// calls.
+    ///
+    /// **Online removed.** The previous Online segment was a
+    /// placeholder for a presence channel we never shipped — it
+    /// surfaced an empty state with copy promising a future
+    /// feature, which read as broken to first-time users. Per the
+    /// "no more social-graph features" sprint constraint we drop
+    /// the segment entirely; presence can ship later as its own
+    /// project alongside any backend it actually needs.
     private enum FeedMode: String, CaseIterable, Identifiable {
-        case suggested = "Suggested"
-        case recents = "Recents"
-        case online = "Online"
-
-        var id: String { rawValue }
-    }
-
-    /// Local taxonomy used for the category strip. The backend has no
-    /// equivalent column yet, so picks are visual-only — the active
-    /// pill just changes the underline. Listed here (instead of being
-    /// server-fetched) because the design needs immediate, predictable
-    /// chips rather than a "loading…" placeholder above the feed.
-    private enum ExploreCategory: String, CaseIterable, Identifiable {
-        case all = "All"
-        case anime = "Anime"
-        case aot = "AOT"
-        case journaling = "Journaling"
-        case kpop = "K-Pop"
-        case student = "Student"
-        case art = "Art"
-        case music = "Music"
-        case writing = "Writing"
+        case suggested = "Top this week"
+        case recents = "Freshly published"
 
         var id: String { rawValue }
     }
@@ -185,6 +174,15 @@ struct PublishedProfilesListView: View {
             scheduleSearch(rawQuery: newValue)
         }
         .onChange(of: feedMode) { _, _ in
+            Task { await initialLoad() }
+        }
+        .onChange(of: category) { _, _ in
+            // Category swap re-runs the initial-load path so the
+            // visible feed lines up with the active vibe. Search
+            // queries take precedence — if a query is active the
+            // category filter is folded in by `runSearch` /
+            // `loadMore` once we add it; in v1 search is global
+            // across vibes.
             Task { await initialLoad() }
         }
         .refreshable {
@@ -381,7 +379,7 @@ struct PublishedProfilesListView: View {
     /// page count.
     private var topThisWeekSkeletonSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Top This Week")
+            Text("Top styles this week")
                 .font(.cucuSerif(20, weight: .bold))
                 .foregroundStyle(chrome.theme.inkPrimary)
                 .padding(.horizontal, 20)
@@ -526,7 +524,7 @@ struct PublishedProfilesListView: View {
 
     private var topThisWeekSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Top this week")
+            Text("Top styles this week")
                 .font(.cucuSans(15, weight: .bold))
                 .foregroundStyle(chrome.theme.inkPrimary)
                 .padding(.horizontal, 20)
@@ -561,27 +559,39 @@ struct PublishedProfilesListView: View {
     private var categoryRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .center, spacing: 22) {
-                ForEach(ExploreCategory.allCases) { cat in
-                    Button {
-                        category = cat
-                    } label: {
-                        VStack(spacing: 6) {
-                            Text(cat.rawValue)
-                                .font(.cucuSans(15, weight: cat == category ? .bold : .regular))
-                                .foregroundStyle(cat == category ? chrome.theme.inkPrimary : chrome.theme.inkFaded)
-                            Rectangle()
-                                .fill(cat == category ? chrome.theme.inkPrimary : Color.clear)
-                                .frame(height: 2)
-                                .frame(width: cat == category ? 24 : 0)
-                                .animation(.spring(response: 0.25, dampingFraction: 0.85), value: category)
-                        }
+                // Leading "All" pill — represents the absence of a
+                // category constraint. Old rows that never got a
+                // vibe stamp surface here, same as before.
+                categoryPill(label: "All", isSelected: category == nil) {
+                    category = nil
+                }
+                ForEach(ProfileVibe.allCases) { vibe in
+                    categoryPill(label: vibe.label, isSelected: category == vibe) {
+                        category = vibe
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 2)
         }
+    }
+
+    private func categoryPill(label: String,
+                              isSelected: Bool,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Text(label)
+                    .font(.cucuSans(15, weight: isSelected ? .bold : .regular))
+                    .foregroundStyle(isSelected ? chrome.theme.inkPrimary : chrome.theme.inkFaded)
+                Rectangle()
+                    .fill(isSelected ? chrome.theme.inkPrimary : Color.clear)
+                    .frame(height: 2)
+                    .frame(width: isSelected ? 24 : 0)
+                    .animation(.spring(response: 0.25, dampingFraction: 0.85), value: category)
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Mode segment
@@ -775,18 +785,22 @@ struct PublishedProfilesListView: View {
     }
 
     private var emptyFeedTitle: String {
+        if let category {
+            return "No \(category.label) profiles yet"
+        }
         switch feedMode {
-        case .suggested: return "No suggestions yet"
+        case .suggested: return "Find your next vibe"
         case .recents:   return "Nothing published yet"
-        case .online:    return "Online presence is coming"
         }
     }
 
     private var emptyFeedSubtitle: String {
+        if category != nil {
+            return "Try another vibe, or publish your own and tag it for others to discover."
+        }
         switch feedMode {
-        case .suggested: return "Published profiles will surface here once they catch a wave."
+        case .suggested: return "Top styles will surface here once published profiles catch a wave."
         case .recents:   return "Be the first — publish a draft and it'll show up here."
-        case .online:    return "We'll light this up once a live presence channel ships."
         }
     }
 
@@ -810,17 +824,14 @@ struct PublishedProfilesListView: View {
         if profiles.isEmpty { status = .loading }
         do {
             let next: [PublishedProfileSummary]
+            let categoryRaw = category?.rawValue
             switch feedMode {
             case .suggested:
-                next = try await PublishedProfileService().fetchHottest(offset: 0)
+                next = try await PublishedProfileService().fetchHottest(offset: 0, category: categoryRaw)
                 canLoadMore = next.count >= PublishedProfileService.listPageSize
             case .recents:
-                next = try await PublishedProfileService().fetchLatest()
+                next = try await PublishedProfileService().fetchLatest(category: categoryRaw)
                 canLoadMore = next.count >= PublishedProfileService.listPageSize
-            case .online:
-                // No presence backend yet — surface an empty state.
-                next = []
-                canLoadMore = false
             }
             profiles = next
             isLoadingMore = false
@@ -904,8 +915,6 @@ struct PublishedProfilesListView: View {
     /// pagination; Suggested + active search use offset pagination
     /// against `.range(from:to:)` server-side.
     private func maybeLoadMore(triggeredBy profile: PublishedProfileSummary) {
-        let isSearch = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if !isSearch && feedMode == .online { return }
         guard canLoadMore, !isLoadingMore else { return }
         guard let last = profiles.last, last.id == profile.id else { return }
         Task { await loadMore() }
@@ -918,6 +927,7 @@ struct PublishedProfilesListView: View {
         // query swap can't blend pages from two different sources.
         let mode = feedMode
         let offset = profiles.count
+        let categoryRaw = category?.rawValue
         isLoadingMore = true
         defer { isLoadingMore = false }
         do {
@@ -927,12 +937,10 @@ struct PublishedProfilesListView: View {
             } else {
                 switch mode {
                 case .suggested:
-                    next = try await PublishedProfileService().fetchHottest(offset: offset)
+                    next = try await PublishedProfileService().fetchHottest(offset: offset, category: categoryRaw)
                 case .recents:
                     guard let cursor = profiles.last?.sortDate else { return }
-                    next = try await PublishedProfileService().fetchLatest(before: cursor)
-                case .online:
-                    return
+                    next = try await PublishedProfileService().fetchLatest(before: cursor, category: categoryRaw)
                 }
             }
             // Bail if the user changed modes / typed a new query while

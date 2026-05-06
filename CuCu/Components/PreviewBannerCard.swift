@@ -68,6 +68,19 @@ struct PreviewBannerCard: View {
         return metadata?.backgroundHex
     }
 
+    /// True only when the card has an actual image background to
+    /// paint. Drives both the gradient/side-wash overlays (only
+    /// rendered when there's a photo to compete with for legibility)
+    /// and the text-color picks (dark ink on the default cream
+    /// surface vs. cream on photo). Hex-only / seeded fallbacks count
+    /// as "no image" — the user wanted those rows to land on the
+    /// flat default cream surface, matching the reference's
+    /// no-banner row treatment.
+    private var hasImageBackground: Bool {
+        if let url = resolvedBackgroundImageURL, !url.isEmpty { return true }
+        return false
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             avatarTile
@@ -173,80 +186,60 @@ struct PreviewBannerCard: View {
         if let urlString = resolvedBackgroundImageURL,
            let url = CucuImageTransform.resized(urlString, width: 600, height: 112) {
             CachedRemoteImage(url: url, contentMode: .fill) {
-                hexOrGradientBackground
+                defaultBackground
             }
         } else {
-            // Deliberately don't fall through to `thumbnailURL` here —
-            // that's the whole-canvas snapshot (mostly empty cream
-            // space at the bottom), which crops poorly into a wide
-            // banner. The seed gradient gives every metadata-less
-            // profile a distinct themed surface that the type sits
-            // over cleanly.
-            hexOrGradientBackground
+            // No image set — paint the flat default cream surface
+            // and skip the seed/hex gradient entirely. Per design,
+            // banners without a real photo all share one quiet
+            // default look, with dark ink text on top.
+            defaultBackground
         }
     }
 
-    /// Solid color → linear two-tone if the profile carries a hex,
-    /// else a deterministic seeded gradient so every empty profile
-    /// still reads as a different banner.
-    @ViewBuilder
-    private var hexOrGradientBackground: some View {
-        if let hex = resolvedBackgroundHex, !hex.isEmpty {
-            let base = Color(hex: hex)
-            LinearGradient(
-                colors: [base, base.opacity(0.78)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        } else {
-            seedGradient
-        }
+    /// Default no-image surface. A soft cream tone consistent with
+    /// the rest of the explore chrome so a photo-less profile reads
+    /// as "no banner yet" rather than a mismatched coloured tile.
+    private var defaultBackground: some View {
+        Color.cucuPaperDeep
     }
 
     // MARK: - Gradient overlay (text contrast)
 
-    /// Bottom-heavy gradient that always fades to an *ink* stop where
-    /// the text sits, regardless of bg luminance. The screenshot's
-    /// cards do this same trick — light pastel banners still get a
-    /// dark fade at the bottom so the white display name reads
-    /// cleanly. We tune the top of the gradient by luminance: darker
-    /// backgrounds get a transparent top (no need to dim further),
-    /// lighter backgrounds get a faint ink wash so the text isn't
-    /// floating on a pure pastel.
+    /// Bottom-heavy gradient for legibility. Only rendered when the
+    /// card has an actual photo behind it — flat cream cards don't
+    /// need an overlay to read clearly. Opacities are intentionally
+    /// gentle so the photo stays mostly visible (the previous tune
+    /// blacked out the bottom half).
     @ViewBuilder
     private var gradientLayer: some View {
-        let darkBg = isBackgroundDark
-        // Top: faint wash so the display name reads on bright photo
-        // bands (e.g. a sky in the upper third).
-        // Mid: drop quickly to a denser stop ~50% — that's where the
-        //   handle sits and where most photo subjects also land.
-        // Bottom: a near-opaque ink stop under the bio so even a
-        //   high-contrast lower band can't beat the type.
-        let topOpacity: Double = darkBg ? 0.20 : 0.30
-        let midOpacity: Double = darkBg ? 0.55 : 0.62
-        let bottomOpacity: Double = darkBg ? 0.92 : 0.86
-        LinearGradient(
-            stops: [
-                .init(color: Color.black.opacity(topOpacity), location: 0.0),
-                .init(color: Color.black.opacity(midOpacity), location: 0.50),
-                .init(color: Color.black.opacity(bottomOpacity), location: 1.0),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        if hasImageBackground {
+            LinearGradient(
+                stops: [
+                    .init(color: Color.black.opacity(0.05), location: 0.0),
+                    .init(color: Color.black.opacity(0.22), location: 0.55),
+                    .init(color: Color.black.opacity(0.45), location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
     }
 
     /// Left-side wash that biases contrast toward the text column.
-    /// The display name + bio sit on the leading edge, so a horizontal
-    /// gradient from a deeper-on-left stop to transparent on the right
-    /// keeps the right side of the banner photographically clean while
-    /// the typography on the left has its own contrast budget.
+    /// Same gating as `gradientLayer` — only paints when there's a
+    /// photo behind the type. Reduced opacities so the photo on the
+    /// right side reads naturally, with just enough wash on the
+    /// leading edge to keep the display name legible.
+    @ViewBuilder
     private var sideWashLayer: some View {
-        LinearGradient(
-            colors: [Color.black.opacity(0.55), Color.black.opacity(0.10), Color.clear],
-            startPoint: .leading,
-            endPoint: .trailing
-        )
+        if hasImageBackground {
+            LinearGradient(
+                colors: [Color.black.opacity(0.30), Color.black.opacity(0.05), Color.clear],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        }
     }
 
     // MARK: - Content
@@ -333,13 +326,14 @@ struct PreviewBannerCard: View {
 
     // MARK: - Resolved colors
 
-    /// Display-name tone. Authored color when present; else the
-    /// adaptive light-on-dark / dark-on-light pick that matches the
-    /// hero's `applyAdaptiveHeroTextColors` math.
+    /// Display-name tone. Authored color when present; else adapts
+    /// to the surface: cream ink on photo banners, dark ink on the
+    /// flat default cream surface.
     private var displayNameColor: Color {
         if let hex = metadata?.displayNameColorHex, !hex.isEmpty {
             return Color(hex: hex)
         }
+        if !hasImageBackground { return Color.cucuInk }
         return isBackgroundDark ? Color(hex: "#FBF9F2") : Color.white
     }
 
@@ -350,21 +344,26 @@ struct PreviewBannerCard: View {
             // their voice without overpowering the display name.
             return Color(hex: hex).opacity(0.92)
         }
+        if !hasImageBackground { return Color.cucuInk.opacity(0.62) }
         return Color.white.opacity(0.88)
     }
 
     private var handleColor: Color {
-        // Always cream-on-dark — the handle is consistent across
-        // every card so users can scan @-tags without reparsing the
-        // banner's tone each row.
-        Color.white.opacity(0.78)
+        if !hasImageBackground { return Color.cucuInk.opacity(0.55) }
+        // Cream-on-dark for photo banners — consistent across every
+        // image card so users can scan @-tags without reparsing
+        // tone each row.
+        return Color.white.opacity(0.78)
     }
 
     private var textShadowColor: Color {
         // Subtle shadow guarantees readability when the gradient
         // alone isn't enough (e.g. a light pastel bg that decoded
         // its hex correctly but the bottom fade is still soft).
-        Color.black.opacity(0.35)
+        // Skip on the flat default surface — no shadow on dark ink
+        // over cream, it just smudges the type.
+        if !hasImageBackground { return Color.clear }
+        return Color.black.opacity(0.35)
     }
 
     // MARK: - Background luminance
@@ -393,30 +392,7 @@ struct PreviewBannerCard: View {
         return 0.2126 * r + 0.7152 * g + 0.0722 * b
     }
 
-    // MARK: - Seeded fallback gradient
-
-    /// Hash the username into the cucu palette so empty-banner cards
-    /// still differentiate. Three-stop gradient gives the card a bit
-    /// of motion across the wide aspect — closer to the screenshot's
-    /// vibe than a flat fill.
-    private var seedGradient: LinearGradient {
-        let palette: [(Color, Color)] = [
-            (.cucuBurgundy, .cucuRose),
-            (.cucuMidnight, .cucuCobalt),
-            (.cucuMoss, .cucuMatcha),
-            (.cucuCherry, .cucuShell),
-            (.cucuInk, .cucuInkSoft),
-            (Color(hex: "#5C3A8A"), Color(hex: "#A88FCB")),
-            (Color(hex: "#1F4F4A"), Color(hex: "#A8C4B5")),
-            (Color(hex: "#7A2A4D"), Color(hex: "#E8B0C0")),
-        ]
-        let pair = palette[abs(seedHash) % palette.count]
-        return LinearGradient(
-            colors: [pair.0, pair.1],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-    }
+    // MARK: - Seeded avatar tint
 
     private func seedTint(saturation: Double, luminance: Double) -> Color {
         let h = Double(abs(seedHash) % 360) / 360

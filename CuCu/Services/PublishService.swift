@@ -113,6 +113,7 @@ nonisolated struct PublishService {
     func publish(
         existingProfileId: String?,
         document: ProfileDocument,
+        category: String? = nil,
         onPhaseChange: (@MainActor (Phase) -> Void)? = nil
     ) async throws -> PublishedProfileResult {
         // 1. Pull the username from the authenticated user. The picker
@@ -253,7 +254,8 @@ nonisolated struct PublishService {
             design_json: publishedDocument,
             thumbnail_url: thumbnailURL(from: assetRows),
             is_published: true,
-            published_at: ISO8601DateFormatter().string(from: .now)
+            published_at: ISO8601DateFormatter().string(from: .now),
+            category: category
         )
 
         // If the profile upsert fails, scrub the storage objects we just
@@ -580,6 +582,27 @@ private nonisolated struct PublishedProfileRowEncodable: Encodable {
     let thumbnail_url: String?
     let is_published: Bool
     let published_at: String
+    /// Optional category column. Encoded only when non-nil so an
+    /// upsert without a vibe doesn't write a literal `null` over a
+    /// previously-stamped category — the user's old vibe sticks
+    /// across re-publishes that don't change it.
+    let category: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, user_id, username, design_json, thumbnail_url, is_published, published_at, category
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(user_id, forKey: .user_id)
+        try c.encode(username, forKey: .username)
+        try c.encode(design_json, forKey: .design_json)
+        try c.encodeIfPresent(thumbnail_url, forKey: .thumbnail_url)
+        try c.encode(is_published, forKey: .is_published)
+        try c.encode(published_at, forKey: .published_at)
+        try c.encodeIfPresent(category, forKey: .category)
+    }
 }
 
 /// Find the hero's `.profileAvatar` node and return its resolved

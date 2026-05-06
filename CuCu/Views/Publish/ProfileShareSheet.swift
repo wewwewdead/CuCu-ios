@@ -88,7 +88,7 @@ struct ProfileShareSheet: View {
                 set: { if !$0 { shareErrorMessage = nil } }
             )
         ) {
-            Button("More Options") {
+            Button("Send the link instead") {
                 shareErrorMessage = nil
                 sharePathOnly()
             }
@@ -101,50 +101,54 @@ struct ProfileShareSheet: View {
     }
 
     private var header: some View {
-        VStack(spacing: 8) {
-            Text("Share your CuCu profile")
-                .font(.cucuSans(30, weight: .bold))
+        VStack(spacing: 6) {
+            Text("Share your CuCu")
+                .font(.cucuSerif(32, weight: .bold))
                 .foregroundStyle(Color.cucuInk)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .minimumScaleFactor(0.78)
 
-            Text("Post your profile card or send your profile path.")
-                .font(.callout)
+            Text("Post your vibe — friends tap and they're in.")
+                .font(.cucuEditorial(15, italic: true))
                 .foregroundStyle(Color.cucuInkFaded)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 10)
+        .padding(.top, 6)
     }
 
     private var cardPreviewSection: some View {
         VStack(spacing: 12) {
+            // 2:3 portrait matches the renderer's output (1080×1620). The
+            // preview frame is intentionally restrained — a thin warm
+            // matte and a hairline border, not a glossy tile — so the
+            // card itself does the visual heavy lifting.
             ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .fill(Color.cucuCard)
-                    .shadow(color: Color.cucuInk.opacity(0.12), radius: 18, x: 0, y: 10)
+                    .shadow(color: Color.cucuInk.opacity(0.10), radius: 22, x: 0, y: 14)
 
                 cardPreviewContent
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .padding(10)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .padding(8)
             }
-            .aspectRatio(9.0 / 16.0, contentMode: .fit)
-            .frame(maxHeight: 430)
+            .aspectRatio(2.0 / 3.0, contentMode: .fit)
+            .frame(maxHeight: 460)
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.cucuInk.opacity(0.12), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(Color.cucuInk.opacity(0.10), lineWidth: 1)
             )
 
-            Text("Use Share Profile Card for Instagram, Facebook, TikTok, and Stories.")
-                .font(.footnote.weight(.medium))
+            Text("Looks right at home in Stories, TikTok, and DMs.")
+                .font(.cucuEditorial(13, italic: true))
                 .foregroundStyle(Color.cucuInkSoft)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 8)
 
             if showsPageOneNotice {
-                Text("Sharing page 1 of your profile.")
-                    .font(.footnote.weight(.semibold))
+                Text("Sharing page one of your CuCu.")
+                    .font(.cucuSans(12, weight: .medium))
                     .foregroundStyle(Color.cucuInkFaded)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 8)
@@ -159,8 +163,8 @@ struct ProfileShareSheet: View {
             VStack(spacing: 14) {
                 ProgressView()
                     .controlSize(.large)
-                Text("Making your profile card…")
-                    .font(.cucuSans(15, weight: .semibold))
+                Text("Polishing your CuCu…")
+                    .font(.cucuEditorial(14, italic: true))
                     .foregroundStyle(Color.cucuInkSoft)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -174,15 +178,15 @@ struct ProfileShareSheet: View {
                 .clipped()
 
         case .failed:
-            VStack(spacing: 12) {
-                Image(systemName: "sparkles.rectangle.stack")
-                    .font(.system(size: 42, weight: .light))
-                    .foregroundStyle(Color.cucuBurgundy)
+            VStack(spacing: 10) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 36, weight: .light))
+                    .foregroundStyle(Color.cucuBurgundy.opacity(0.85))
                 Text("Card preview unavailable")
-                    .font(.cucuSans(16, weight: .bold))
+                    .font(.cucuSerif(16, weight: .bold))
                     .foregroundStyle(Color.cucuInk)
-                Text("You can still share your profile path.")
-                    .font(.footnote)
+                Text("You can still share your link.")
+                    .font(.cucuEditorial(13, italic: true))
                     .foregroundStyle(Color.cucuInkFaded)
                     .multilineTextAlignment(.center)
             }
@@ -194,62 +198,63 @@ struct ProfileShareSheet: View {
 
     private var previewPlaceholderBackground: some View {
         LinearGradient(
-            colors: [Color.cucuRose.opacity(0.55), Color.cucuSky.opacity(0.75), Color.cucuMossSoft.opacity(0.55)],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
+            colors: [Color.cucuPaper, Color.cucuPaperDeep],
+            startPoint: .top,
+            endPoint: .bottom
         )
     }
 
     private var identityCard: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(Color.cucuRose)
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundStyle(Color.cucuBurgundy)
-                }
-                .frame(width: 48, height: 48)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("@\(normalizedUsername)")
-                        .font(.cucuSans(18, weight: .bold))
-                        .foregroundStyle(Color.cucuInk)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                    Text(profilePath)
-                        .font(.cucuMono(14, weight: .semibold))
-                        .foregroundStyle(Color.cucuInkFaded)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                }
-
-                Spacer(minLength: 0)
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(Color.cucuRose)
+                Image(systemName: "sparkles")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color.cucuBurgundy)
             }
+            .frame(width: 46, height: 46)
+            .overlay(Circle().strokeBorder(Color.cucuInk.opacity(0.12), lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("@\(normalizedUsername)")
+                    .font(.cucuSerif(20, weight: .bold))
+                    .foregroundStyle(Color.cucuInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Text(profilePath)
+                    .font(.cucuMono(13, weight: .medium))
+                    .foregroundStyle(Color.cucuInkFaded)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+
+            Spacer(minLength: 0)
         }
-        .padding(14)
-        .background(Color.cucuCard, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(Color.cucuCard, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.cucuInk.opacity(0.12), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.cucuInk.opacity(0.10), lineWidth: 1)
         )
     }
 
     private var platformHint: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "info.circle")
-                .font(.system(size: 15, weight: .semibold))
+            Image(systemName: "sparkles")
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color.cucuInkFaded)
-                .padding(.top, 2)
-            Text("The iOS share sheet opens next. You choose the final app and whether to post, send, or save.")
-                .font(.footnote)
+                .padding(.top, 3)
+            Text("Pick where it lands next — Story, post, DM, save.")
+                .font(.cucuEditorial(13, italic: true))
                 .foregroundStyle(Color.cucuInkFaded)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
-        .padding(12)
-        .background(Color.cucuCardSoft.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.cucuCardSoft.opacity(0.72), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private var actionStack: some View {
@@ -262,15 +267,15 @@ struct ProfileShareSheet: View {
                         ProgressView()
                             .tint(Color.cucuCard)
                     } else {
-                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                        Image(systemName: "square.and.arrow.up")
                     }
-                    Text(isSharingCard || isGeneratingCard ? "Preparing Card…" : "Share Profile Card")
+                    Text(isSharingCard || isGeneratingCard ? "Polishing your CuCu…" : "Share my CuCu")
                 }
                 .font(.cucuSans(17, weight: .bold))
                 .foregroundStyle(Color.cucuCard)
                 .frame(maxWidth: .infinity)
-                .frame(height: 52)
-                .background(Color.cucuInk, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .frame(height: 54)
+                .background(Capsule().fill(Color.cucuInk))
             }
             .buttonStyle(.plain)
             .disabled(actionsDisabled)
@@ -280,18 +285,15 @@ struct ProfileShareSheet: View {
                 copyPath()
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: copiedPath ? "checkmark" : "doc.on.doc")
-                    Text(copiedPath ? "Copied" : "Copy Profile Path")
+                    Image(systemName: copiedPath ? "checkmark" : "link")
+                    Text(copiedPath ? "Copied" : "Copy link")
                 }
                 .font(.cucuSans(16, weight: .semibold))
                 .foregroundStyle(Color.cucuInk)
                 .frame(maxWidth: .infinity)
                 .frame(height: 50)
-                .background(Color.cucuCard, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.cucuInk.opacity(0.18), lineWidth: 1)
-                )
+                .background(Capsule().fill(Color.cucuCard))
+                .overlay(Capsule().strokeBorder(Color.cucuInk.opacity(0.16), lineWidth: 1))
             }
             .buttonStyle(.plain)
             .disabled(actionsDisabled)
@@ -299,14 +301,11 @@ struct ProfileShareSheet: View {
             Button {
                 sharePathOnly()
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "square.and.arrow.up")
-                    Text("More Options")
-                }
-                .font(.cucuSans(15, weight: .semibold))
-                .foregroundStyle(Color.cucuInkSoft)
-                .frame(maxWidth: .infinity)
-                .frame(height: 44)
+                Text("Just send the link")
+                    .font(.cucuSans(13, weight: .medium))
+                    .foregroundStyle(Color.cucuInkFaded)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
             }
             .buttonStyle(.plain)
             .disabled(actionsDisabled)
@@ -343,10 +342,10 @@ struct ProfileShareSheet: View {
             cardState = .ready(image)
         } catch {
             let message = (error as? LocalizedError)?.errorDescription
-                ?? "Couldn't make the profile card right now."
+                ?? "Couldn't make your CuCu card right now."
             cardState = .failed(message)
             if showErrorOnFailure {
-                shareErrorMessage = "\(message) You can still use More Options to share \(profilePath)."
+                shareErrorMessage = "\(message) You can still send \(profilePath)."
             }
         }
     }

@@ -251,7 +251,10 @@ struct PostThreadView: View {
         }
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                Color.clear.frame(height: 8)
+                threadMasthead(thread)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 14)
+                    .padding(.bottom, 6)
                 ForEach(items) { item in
                     renderItem(item, in: thread)
                         .transition(.cucuPostPop)
@@ -273,10 +276,80 @@ struct PostThreadView: View {
         .opacity(threadRetreating ? 0 : 1)
     }
 
-    /// Skip the row-divider after the root post — the root sits in
-    /// a lifted card already, so a flat hairline below it would
-    /// double-rule the surface. Every other row keeps the spec's
-    /// 1pt ink-rule break.
+    // MARK: - Editorial masthead
+    //
+    // Premium pass: the thread opens with an editorial masthead in
+    // the same vocabulary the feed uses — tracked-mono "REPLY THREAD"
+    // spec line on the leading edge, a printer's-folio reply count
+    // on the trailing edge, a Fraunces-italic display title carrying
+    // the root author's handle, an editorial subtitle in the same
+    // italic, and a fleuron rule that hands off to the journal-entry
+    // caption above the root card. Scrolls with the content rather
+    // than pinning, so the thread reads as a magazine spread that
+    // gives the conversation its own opening real estate.
+
+    /// Tracked editorial masthead. Theme-aware via `chrome.theme.*`
+    /// so the spec line + display title repaint cleanly when the
+    /// viewer flips paper stock from the feed underneath. Bails to
+    /// an empty view if the root post hasn't materialised yet —
+    /// the masthead's whole identity is the root's @handle, so
+    /// painting it without a root would just be a blank title.
+    @ViewBuilder
+    private func threadMasthead(_ thread: PostThread) -> some View {
+        if let root = thread.root {
+            let stamp = PostRowView.relativeTimestamp(for: root.createdAt)
+            let directReplies = root.replyCount
+            let folio = directReplies == 0
+                ? "№ ROOT"
+                : "№ \(String(format: "%03d", directReplies)) REPL\(directReplies == 1 ? "Y" : "IES")"
+            mastheadBody(authorHandle: root.authorUsername, stamp: stamp, folio: folio)
+        }
+    }
+
+    /// Concrete masthead layout. Pulled out of `threadMasthead` so
+    /// the `@ViewBuilder` branch above stays a clean if-let without
+    /// a giant inline body.
+    private func mastheadBody(authorHandle: String, stamp: String, folio: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(Color.cucuCherry)
+                        .frame(width: 5, height: 5)
+                    Text("REPLY THREAD")
+                        .font(.cucuMono(10, weight: .medium))
+                        .tracking(2.4)
+                        .foregroundStyle(chrome.theme.inkMuted)
+                    Text("·")
+                        .font(.cucuMono(10, weight: .medium))
+                        .foregroundStyle(chrome.theme.inkFaded)
+                    Text(stamp)
+                        .font(.cucuMono(10, weight: .medium))
+                        .tracking(2.0)
+                        .foregroundStyle(chrome.theme.inkFaded)
+                }
+                Spacer(minLength: 8)
+                Text(folio)
+                    .font(.cucuMono(10, weight: .medium))
+                    .tracking(2.4)
+                    .foregroundStyle(chrome.theme.inkFaded)
+            }
+            HStack(alignment: .lastTextBaseline, spacing: 8) {
+                Text(authorHandle)
+                    .font(.custom("Caprasimo-Regular", size: 32))
+                    .foregroundStyle(chrome.theme.inkPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Spacer(minLength: 6)
+            }
+        }
+    }
+
+    /// Skip the heavy hairline rule between rows when the row above
+    /// is the thread root — the root already gets its own emphasized
+    /// stripe + bottom rule treatment, so a stacked hairline below
+    /// would double-rule the surface. Every non-root row keeps the
+    /// per-row break that separates entries in the thread.
     private func shouldDrawDivider(after item: PostThread.RenderItem) -> Bool {
         if case .post(let post, _, _) = item, post.id == vm.thread?.rootId {
             return false
@@ -321,47 +394,57 @@ struct PostThreadView: View {
                 )
             }
         )
-        .environment(\.cucuPostRowSuppressCard, true)
 
         return Group {
             if isRoot {
-                // Themed lifted-card surface for the thread root.
-                // Mirrors the geometry of the editor's `.cucuCard`
-                // (corner 16, inner rule, lifted shadow) but reads
-                // its surface and stroke from the chrome so the
-                // root flips dark-on-dark cleanly rather than
-                // staying cream against a coal backdrop.
-                row
-                    .background(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(chrome.theme.cardColor)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(chrome.theme.cardStroke, lineWidth: 1)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(chrome.theme.cardInkPrimary.opacity(0.10), lineWidth: 1)
-                            .padding(5)
-                            .allowsHitTesting(false)
-                    )
-                    .shadow(
-                        color: Color.black.opacity(chrome.theme.isDark ? 0.45 : 0.28),
-                        radius: 22,
-                        x: 0,
-                        y: 10
-                    )
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                // Root entry sits at the top of the thread without
+                // a lifted card — the flat row vocabulary now does
+                // the visual work, and a tracked-mono "ROOT ENTRY"
+                // caption above the row gives it just enough
+                // ceremony to read as the conversation's anchor.
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(Color.cucuCherry)
+                            .frame(width: 4, height: 4)
+                        Text("ROOT ENTRY")
+                            .font(.cucuMono(10, weight: .medium))
+                            .tracking(2.4)
+                            .foregroundStyle(chrome.theme.inkFaded)
+                        Spacer(minLength: 8)
+                        Text(PostRowView.shortTimestamp(for: post.createdAt))
+                            .font(.cucuMono(10, weight: .medium))
+                            .tracking(1.8)
+                            .foregroundStyle(chrome.theme.inkFaded)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.top, 4)
+                    .padding(.bottom, 2)
+                    row
+                    Rectangle()
+                        .fill(chrome.theme.inkFaded.opacity(0.35))
+                        .frame(height: 1)
+                        .padding(.horizontal, 18)
+                        .padding(.top, 2)
+                }
             } else {
+                // Reply rows inherit the same flat row geometry,
+                // with a thin indent spine on the leading edge that
+                // reads as the parent → child relationship without
+                // the heavy left-margin shift the previous design
+                // used. The spine sits inside the row's own
+                // horizontal padding so the rainbow stripe still
+                // anchors the row's identity at depth 0.
                 row
                     .padding(.leading, CGFloat(depth) * indentStep)
                     .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(chrome.theme.rule)
-                            .frame(width: 1)
-                            .padding(.leading, CGFloat(depth) * indentStep + 8)
+                        if depth > 0 {
+                            Rectangle()
+                                .fill(chrome.theme.rule)
+                                .frame(width: 1)
+                                .padding(.leading, CGFloat(depth) * indentStep + 6)
+                                .padding(.vertical, 6)
+                        }
                     }
             }
         }
@@ -700,13 +783,29 @@ struct PostThreadView: View {
 
     // MARK: - End-of-thread colophon
 
-    /// Quiet end-of-thread marker matching the feed's refined idiom.
+    /// Notebook-style end-of-thread sign-off. Single fleuron between
+    /// hairline rules and a handwritten note below — same closing
+    /// idiom the feed uses, keeping the two surfaces in one voice.
     private var endOfThread: some View {
-        Text("End of thread")
-            .font(.cucuSans(13, weight: .regular))
-            .foregroundStyle(chrome.theme.inkFaded)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 28)
+        VStack(spacing: 6) {
+            HStack(spacing: 12) {
+                Rectangle()
+                    .fill(chrome.theme.rule)
+                    .frame(height: 1)
+                Text("❦")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.cucuCherry)
+                Rectangle()
+                    .fill(chrome.theme.rule)
+                    .frame(height: 1)
+            }
+            Text("end of thread — reply to keep it going")
+                .font(.custom("Caveat-Regular", size: 18))
+                .foregroundStyle(chrome.theme.inkFaded)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 36)
+        .padding(.vertical, 24)
     }
 
 }

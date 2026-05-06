@@ -22,6 +22,14 @@ extension Notification.Name {
         "CuCu.PostOptimisticallyDeleted"
     )
 
+    /// Posted after a reply lands optimistically. `userInfo["postIds"]`
+    /// carries an array of post IDs whose `replyCount` should bump by
+    /// one — typically the immediate parent and (if different) the
+    /// thread root, so any surface displaying either gets in sync.
+    static let cucuPostReplyPosted = Notification.Name(
+        "CuCu.PostReplyPosted"
+    )
+
     /// Posted after a successful profile publish that may have
     /// changed the profile hero/avatar. `userInfo["username"]`
     /// carries the lowercased username (String).
@@ -48,6 +56,26 @@ enum CucuPostEvents {
     /// safely `guard let` to no-op on bad input rather than trap.
     static func deletedPostId(from notification: Notification) -> String? {
         notification.userInfo?["postId"] as? String
+    }
+
+    /// Broadcast that a reply was just posted, bumping the
+    /// `replyCount` of one or more ancestor posts. Pass the parent
+    /// id and the root id (deduped) so any feed/profile surface
+    /// showing either can reconcile its local count.
+    static func broadcastReplyPosted(ancestorIds: [String]) {
+        let unique = Array(Set(ancestorIds.filter { !$0.isEmpty }))
+        guard !unique.isEmpty else { return }
+        NotificationCenter.default.post(
+            name: .cucuPostReplyPosted,
+            object: nil,
+            userInfo: ["postIds": unique]
+        )
+    }
+
+    /// Pull the bumped ancestor ids out of a reply-posted
+    /// notification. Returns an empty array on malformed payload.
+    static func replyAncestorIds(from notification: Notification) -> [String] {
+        notification.userInfo?["postIds"] as? [String] ?? []
     }
 }
 

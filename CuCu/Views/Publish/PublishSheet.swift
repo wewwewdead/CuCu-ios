@@ -37,6 +37,13 @@ struct PublishSheet: View {
     @State private var publishVM = PublishViewModel()
     @State private var showShareSheet = false
     @State private var copiedLinkMessage: String?
+    /// Optional vibe stamped on publish. The chip row offers all
+    /// `ProfileVibe` cases plus a leading "None" tile that maps to
+    /// `nil` so a user who doesn't identify with any of them can
+    /// publish unchanged. Persisted only after a successful publish
+    /// — Cancel discards the picker selection along with the rest of
+    /// the sheet's state.
+    @State private var selectedVibe: ProfileVibe?
 
     var body: some View {
         NavigationStack {
@@ -122,6 +129,7 @@ struct PublishSheet: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 identityCard
+                vibePicker
                 publishButton
                 publishFooter
                 Spacer(minLength: 0)
@@ -130,6 +138,69 @@ struct PublishSheet: View {
             .padding(.top, 12)
             .padding(.bottom, 32)
         }
+    }
+
+    /// Vibe chip row. "None" is the leading option (selected by
+    /// default) so a user who doesn't want to vibe-tag isn't pushed
+    /// into picking one — old rows stay unchanged and so do users
+    /// who simply skip the picker.
+    private var vibePicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Vibe")
+                .font(.cucuMono(11, weight: .medium))
+                .tracking(2.5)
+                .foregroundStyle(chrome.theme.inkFaded)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    vibeChip(label: "None", isSelected: selectedVibe == nil) {
+                        selectedVibe = nil
+                    }
+                    ForEach(ProfileVibe.allCases) { vibe in
+                        vibeChip(
+                            label: vibe.label,
+                            symbol: vibe.iconSymbol,
+                            isSelected: selectedVibe == vibe
+                        ) {
+                            selectedVibe = vibe
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            Text("Helps people on Explore find your page.")
+                .font(.cucuSans(11, weight: .regular))
+                .foregroundStyle(chrome.theme.inkFaded)
+        }
+    }
+
+    private func vibeChip(label: String,
+                          symbol: String? = nil,
+                          isSelected: Bool,
+                          action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let symbol {
+                    Image(systemName: symbol)
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                Text(label)
+                    .font(.cucuSans(13, weight: .semibold))
+            }
+            .foregroundStyle(isSelected ? chrome.theme.pageColor : chrome.theme.cardInkPrimary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                Capsule().fill(isSelected ? chrome.theme.inkPrimary : chrome.theme.cardColor)
+            )
+            .overlay(
+                Capsule().strokeBorder(
+                    isSelected ? chrome.theme.inkPrimary : chrome.theme.rule,
+                    lineWidth: 1
+                )
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     /// "Publishing as" card — username surfaced as a refined card row
@@ -171,7 +242,8 @@ struct PublishSheet: View {
                 await publishVM.publish(
                     user: user,
                     draft: draft,
-                    document: document
+                    document: document,
+                    category: selectedVibe
                 )
                 if case .success(let result) = publishVM.status {
                     applySuccessToDraft(result)
@@ -218,52 +290,19 @@ struct PublishSheet: View {
     }
 
     private func publishSuccess(_ result: PublishedProfileResult) -> some View {
-        VStack(spacing: 18) {
-            // Fire the success haptic on the first frame the
-            // success card is on screen.
-            Color.clear
-                .frame(width: 0, height: 0)
-                .onAppear { CucuHaptics.success() }
-
-            Spacer()
-            ZStack {
-                Circle()
-                    .fill(Color.green.opacity(chrome.theme.isDark ? 0.22 : 0.15))
-                    .frame(width: 96, height: 96)
-                Image(systemName: "checkmark")
-                    .font(.system(size: 44, weight: .semibold))
-                    .foregroundStyle(.green)
-            }
-            VStack(spacing: 6) {
-                Text("Published")
-                    .font(.cucuSans(20, weight: .bold))
-                    .foregroundStyle(chrome.theme.inkPrimary)
-                Text(ProfileShareLink.linkString(username: result.username))
-                    .font(.cucuSans(14, weight: .regular))
-                    .foregroundStyle(chrome.theme.inkFaded)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 24)
-            }
-
-            VStack(spacing: 10) {
-                CucuRefinedPillButton("View Profile") {
-                    onViewPublished?(result.username)
-                    dismiss()
-                }
-                CucuRefinedPillButton("Share Profile") {
-                    showShareSheet = true
-                }
-                CucuRefinedPillButton("Copy path") {
-                    copyToClipboard(ProfileShareLink.linkString(username: result.username))
-                }
-                CucuRefinedPillButton("Done") {
-                    dismiss()
-                }
-            }
-            .padding(.horizontal, 28)
-            Spacer()
-        }
-        .padding(.horizontal)
+        PublishSuccessView(
+            result: result,
+            document: document,
+            onShare: { showShareSheet = true },
+            onView: {
+                onViewPublished?(result.username)
+                dismiss()
+            },
+            onCopy: {
+                copyToClipboard(ProfileShareLink.linkString(username: result.username))
+            },
+            onDone: { dismiss() }
+        )
     }
 
     private func publishFailure(_ message: String) -> some View {

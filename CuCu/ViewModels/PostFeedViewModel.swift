@@ -257,9 +257,35 @@ final class PostFeedViewModel {
     /// by the thread VM when `replyPosted` runs while the feed is
     /// still mounted underneath — keeps the parent post's reply
     /// pip in sync without a refetch.
+    ///
+    /// Explicit struct reassignment (rather than
+    /// `posts[idx].replyCount += 1`) so `@Observable` consistently
+    /// sees the array mutation as a write — there have been
+    /// reports of subscript-property mutations not always
+    /// triggering view updates depending on Swift macro version.
     func incrementReplyCount(postId: String) {
         guard let idx = posts.firstIndex(where: { $0.id == postId }) else { return }
-        posts[idx].replyCount += 1
+        var updated = posts[idx]
+        updated.replyCount += 1
+        posts[idx] = updated
+    }
+
+    /// Re-fetch a single post from the server and replace it in
+    /// `posts` so the row picks up any server-side denormalised
+    /// counter movement (likes, replies, edits) we missed locally.
+    /// Used as a backstop after a reply lands, in case the
+    /// optimistic in-memory bump didn't propagate. Silent on
+    /// failure — a missed refresh just leaves the local copy as
+    /// the truth, and the next pull-to-refresh covers the gap.
+    func refreshPost(id: String) async {
+        guard posts.contains(where: { $0.id == id }) else { return }
+        do {
+            let fresh = try await service.fetchPost(id: id)
+            guard let idx = posts.firstIndex(where: { $0.id == id }) else { return }
+            posts[idx] = fresh
+        } catch {
+            // Swallow — keep whatever optimistic state we already had.
+        }
     }
 
     // MARK: - Helpers

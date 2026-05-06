@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 
 /// Public, read-only viewer for a published CuCu profile. Fetches the
@@ -26,12 +27,20 @@ struct PublishedProfileView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.cucuWidthClass) private var widthClass
     @Environment(AuthViewModel.self) private var auth
+    /// Used by the "Use this style" remix flow to insert a fresh
+    /// `ProfileDraft` and to look up the visitor's existing drafts so
+    /// the confirm dialog only fires when something would actually be
+    /// at risk. Read-only otherwise — the published viewer never
+    /// mutates the visitor's drafts itself.
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \ProfileDraft.updatedAt, order: .reverse) private var allDrafts: [ProfileDraft]
     /// Bound to the same `cucu.selected_tab` key `RootView` writes to,
     /// so the "Switch to Build" CTA on the self-not-found state can
     /// flip the user back to the editor without us plumbing a
     /// closure all the way down. SwiftUI keeps the two `@AppStorage`
     /// reads in lock-step.
     @AppStorage("cucu.selected_tab") private var selectedTabRaw: String = "build"
+    @AppStorage("cucu.pending_remix_quick_edit_draft_id") private var pendingRemixQuickEditDraftID: String = ""
     @State private var state: ViewState = .loading
     /// Process-wide chrome theme. Drives the toolbar colour and the
     /// Posts-section surface so the visitor's room flows through the
@@ -64,6 +73,20 @@ struct PublishedProfileView: View {
     @State private var isVoting = false
     @State private var voteMessage: String?
     @State private var showShareSheet = false
+    /// Holds the sanitized remix document while a confirm dialog is on
+    /// screen. The dialog only shows when the visitor already has
+    /// non-empty work that creating a new draft might compete with;
+    /// otherwise the remix lands directly. Cleared on confirm or
+    /// cancel so a stale document can never resurface accidentally.
+    @State private var pendingRemixDocument: ProfileDocument?
+    @State private var isShowingRemixConfirm = false
+    /// Optional toast surfaced after a successful remix so the user
+    /// understands the tab switch they're about to see ("Remix
+    /// added — switching to Build…"). Cleared automatically after
+    /// the tab change.
+    @State private var remixToast: String?
+    @State private var remixErrorMessage: String?
+    @State private var retryRemixProfile: PublishedProfile?
     /// Last 10 top-level posts authored by the profile owner. Hydrated
     /// by `loadUserPostsIfNeeded` once the visitor scrolls past the
     /// last canvas page; an empty array (the default) hides the
@@ -236,8 +259,12 @@ struct PublishedProfileView: View {
         .animation(.spring(response: 0.46, dampingFraction: 0.78), value: fullGalleryState)
         .animation(.spring(response: 0.46, dampingFraction: 0.78), value: noteContent)
         .navigationTitle("@\(username)")
+        .safeAreaInset(edge: .bottom) {
+            remixBottomCTA
+        }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                remixToolbarButton
                 shareToolbarButton
                 voteToolbarButton
             }
@@ -326,6 +353,45 @@ struct PublishedProfileView: View {
                     .presentationDragIndicator(.visible)
             }
         }
+        // Remix confirm — only fires when a remix would land alongside
+        // existing in-progress work the visitor already has. The
+        // document is captured ahead of time so a tab switch / state
+        // change between tap and confirm doesn't lose it.
+        .confirmationDialog(
+            "Remix this style?",
+            isPresented: Binding(
+                get: { isShowingRemixConfirm },
+                set: { isShowingRemixConfirm = $0 }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Create new draft") { applyPendingRemix() }
+            Button("Cancel", role: .cancel) {
+                isShowingRemixConfirm = false
+                pendingRemixDocument = nil
+            }
+        } message: {
+            Text("We'll copy the vibe, not their personal details. A new draft will be created and nothing you've made will be overwritten.")
+        }
+        .alert(
+            "Couldn't copy this style",
+            isPresented: Binding(
+                get: { remixErrorMessage != nil },
+                set: { if !$0 { remixErrorMessage = nil } }
+            )
+        ) {
+            if retryRemixProfile != nil || pendingRemixDocument != nil {
+                Button("Try Again") {
+                    retryRemix()
+                }
+            }
+            Button("OK", role: .cancel) {
+                remixErrorMessage = nil
+            }
+        } message: {
+            Text(remixErrorMessage ?? "Try again in a moment.")
+        }
+        .cucuToast(message: $remixToast)
     }
 
     private func closeLightbox() {
@@ -440,6 +506,170 @@ struct PublishedProfileView: View {
                 Image(systemName: "square.and.arrow.up")
             }
             .accessibilityLabel("Share profile")
+        }
+    }
+
+    /// "Use this style" — drives the remix growth loop. Hidden until
+    /// the document is actually loaded (no point offering a remix of
+    /// nothing) and on the visitor's own profile (remixing yourself
+    /// is just confusing — they should edit their existing draft).
+    @ViewBuilder
+    private var remixToolbarButton: some View {
+        if case .loaded(let profile) = state, !isViewingSelf(profile: profile) {
+            Button {
+                requestRemix(of: profile)
+            } label: {
+                Image(systemName: "paintbrush.pointed")
+            }
+            .accessibilityLabel("Remix this style")
+        }
+    }
+
+    @ViewBuilder
+    private var remixBottomCTA: some View {
+        if case .loaded(let profile) = state,
+           !isViewingSelf(profile: profile),
+           lightboxState == nil,
+           journalContent == nil,
+           fullGalleryState == nil,
+           noteContent == nil {
+            VStack(spacing: 8) {
+                Button {
+                    requestRemix(of: profile)
+                } label: {
+                    Label("Remix this style", systemImage: "wand.and.stars")
+                        .font(.cucuSans(15, weight: .bold))
+                        .foregroundStyle(Color.cucuPaper)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Capsule().fill(Color.cucuInk))
+                }
+                Text("We'll copy the vibe, not their personal details.")
+                    .font(.cucuSans(11, weight: .regular))
+                    .foregroundStyle(Color.cucuInkFaded)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+            .background(.regularMaterial)
+        }
+    }
+
+    /// True when the loaded profile belongs to the signed-in viewer.
+    /// The remix CTA hides on self-profiles because the visitor's own
+    /// draft is already the canonical place to edit that style.
+    private func isViewingSelf(profile: PublishedProfile) -> Bool {
+        guard let currentId = auth.currentUser?.id.lowercased() else { return false }
+        return profile.userId.lowercased() == currentId
+    }
+
+    /// Visitor tapped "Use this style". Decide whether to confirm
+    /// or apply directly:
+    ///   - signed-out visitor with no local drafts → apply directly
+    ///   - signed-in visitor whose drafts are all empty/pristine →
+    ///     apply directly (creating a new draft adds harmless extra
+    ///     stub work, but never overwrites)
+    ///   - any visitor with a non-empty draft → confirm first
+    /// In every case the remix lands as a *new* `ProfileDraft`; we
+    /// never overwrite the visitor's existing draft.
+    private func requestRemix(of profile: PublishedProfile) {
+        let sanitized = RemixTransformer.remix(from: profile.document)
+        if hasNonEmptyDraft() {
+            pendingRemixDocument = sanitized
+            isShowingRemixConfirm = true
+        } else {
+            if insertRemixDraft(document: sanitized, sourceUsername: profile.username) != nil {
+                switchToBuildAfterRemix()
+            } else {
+                retryRemixProfile = profile
+                remixErrorMessage = "We couldn't start the remix. Try again and we'll make a new draft without changing your current one."
+            }
+        }
+        CucuHaptics.soft()
+    }
+
+    /// Apply a remix the user already confirmed. Pulls the cached
+    /// document out of `pendingRemixDocument` rather than re-running
+    /// the transformer so a state change between tap and confirm
+    /// can't quietly produce a different result.
+    private func applyPendingRemix() {
+        guard let document = pendingRemixDocument else { return }
+        isShowingRemixConfirm = false
+        if insertRemixDraft(document: document, sourceUsername: username) != nil {
+            pendingRemixDocument = nil
+            switchToBuildAfterRemix()
+        } else {
+            remixErrorMessage = "We couldn't start the remix. Try again and we'll make a new draft without changing your current one."
+        }
+    }
+
+    /// Whether the visitor's local drafts contain any work worth
+    /// preserving. Mirrors the "pristine" definition `RootView` uses
+    /// — the auto-created empty draft (`fallbackJSON` + no publish
+    /// stamp) is treated as replaceable, anything else as
+    /// non-empty.
+    private func hasNonEmptyDraft() -> Bool {
+        let canonical = auth.currentUser?.id.lowercased()
+        for draft in allDrafts {
+            // Filter to drafts the current account would actually
+            // see in BuildTab — same predicate `BuildTab.visibleDrafts`
+            // applies. Without this, a draft that belongs to a
+            // different signed-in account on the same device would
+            // make us think the visitor has work, which would be
+            // wrong (they don't see that draft).
+            if let canonical {
+                if let owner = draft.ownerUserId, owner != canonical { continue }
+                if draft.ownerUserId == nil,
+                   let pubOwner = draft.publishedOwnerUserId,
+                   pubOwner != canonical {
+                    continue
+                }
+            }
+            let isPristine = draft.designJSON == CanvasDocumentCodec.fallbackJSON
+                && draft.publishedProfileId == nil
+            if !isPristine { return true }
+        }
+        return false
+    }
+
+    @discardableResult
+    private func insertRemixDraft(document: ProfileDocument, sourceUsername: String) -> ProfileDraft? {
+        let store = DraftStore(context: modelContext)
+        guard let draft = try? store.createCanvasDraft(title: "Inspired by @\(sourceUsername)") else {
+            return nil
+        }
+        // Stamp ownership before the design lands so the user-scoped
+        // BuildTab filter sees the new draft as theirs immediately.
+        draft.ownerUserId = auth.currentUser?.id.lowercased()
+        draft.remixSourceUsername = sourceUsername
+        store.updateDocument(draft, document: document)
+        pendingRemixQuickEditDraftID = ""
+        retryRemixProfile = nil
+        remixErrorMessage = nil
+        remixToast = "Style copied — make it yours."
+        return draft
+    }
+
+    private func retryRemix() {
+        remixErrorMessage = nil
+        if pendingRemixDocument != nil {
+            applyPendingRemix()
+            return
+        }
+        if let profile = retryRemixProfile {
+            retryRemixProfile = nil
+            requestRemix(of: profile)
+        }
+    }
+
+    private func switchToBuildAfterRemix() {
+        // Small delay so the toast lands first, then the user gets
+        // bounced to Build. The tab switch is non-blocking — if the
+        // user dismisses or backs out before the timer fires, the
+        // toast still surfaces.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            selectedTabRaw = "build"
         }
     }
 

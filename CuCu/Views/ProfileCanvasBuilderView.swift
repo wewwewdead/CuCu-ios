@@ -44,6 +44,15 @@ struct ProfileCanvasBuilderView: View {
     /// available so subsequent launches go straight to the .document
     /// path with stable UUIDs.
     @State private var didSeedOnInit: Bool
+    /// Per-device flag that records whether the user has already
+    /// crossed the template picker (either by choosing a template or
+    /// by tapping "Start from a blank page"). Lives in `@AppStorage`
+    /// rather than on the draft so a returning user with multiple
+    /// drafts isn't re-asked, and so signed-out users — who have no
+    /// owner stamp to scope the flag against — still benefit from
+    /// the one-shot contract.
+    @AppStorage("cucu.hasPickedTemplate") private var hasPickedTemplate: Bool = false
+    @AppStorage("cucu.pending_remix_quick_edit_draft_id") private var pendingRemixQuickEditDraftID: String = ""
     /// Toggle that arms the canvas's "tap a chip to edit" mode. Driven
     /// by the floating Edit/Done capsule in the top-left of the canvas;
     /// turning it off automatically clears `selectedID` so the inspector
@@ -458,13 +467,23 @@ struct ProfileCanvasBuilderView: View {
                 // inside the panel itself (link / icon / note).
                 .ignoresSafeArea(.keyboard, edges: .bottom)
 
-                // Empty-state overlay — fades on top of the (empty)
-                // canvas, fades out the moment the user adds the
-                // first node. Wrapped in `.allowsHitTesting` so taps
-                // on the CTAs land here, not on the canvas surface
-                // behind. Hit-testing flips to false once content
-                // exists, so the overlay never blocks edits.
-                if canvasIsEmpty {
+                // Onboarding precedes the regular empty-state overlay
+                // for first-run users. The picker is the *only* surface
+                // a fresh user should see — the bare empty CTAs (which
+                // jump straight into the power editor) are the wrong
+                // entry point per the template-first product direction.
+                // Once a user picks a template or skips, the flag
+                // sticks per-device and the regular empty state takes
+                // over for any future "user deleted everything"
+                // moments.
+                if showTemplatePicker {
+                    TemplatePickerView(
+                        onPick: { applyTemplate($0) },
+                        onSkip: { skipTemplatePicker() }
+                    )
+                    .transition(.opacity)
+                    .zIndex(2)
+                } else if canvasIsEmpty {
                     CanvasEmptyStateView(
                         onAddElement: { sheets.showAddSheet = true },
                         onPreview: { sheets.showPreview = true }
@@ -709,9 +728,19 @@ struct ProfileCanvasBuilderView: View {
                 store = DraftStore(context: context)
             }
             loadDraft()
+            showPendingRemixQuickEditIfNeeded()
         }
         .onDisappear {
             flushTitleSave()
+        }
+    }
+
+    private func showPendingRemixQuickEditIfNeeded() {
+        guard pendingRemixQuickEditDraftID == draft.id.uuidString else { return }
+        pendingRemixQuickEditDraftID = ""
+        guard !legacyDraft else { return }
+        DispatchQueue.main.async {
+            sheets.showQuickEditSheet = true
         }
     }
 
@@ -1113,6 +1142,17 @@ struct ProfileCanvasBuilderView: View {
         // two primary actions and need to be visible at all
         // times so they stay in the bar.
         ToolbarItemGroup(placement: .topBarTrailing) {
+            // Quick Edit comes first because the product direction
+            // demotes the canvas editor to "power mode" — most users
+            // should land on the cute identity card, not the
+            // inspector. Hidden on legacy drafts (the legacy banner
+            // owns the surface there).
+            Button { sheets.showQuickEditSheet = true } label: {
+                Image(systemName: "wand.and.stars")
+            }
+            .disabled(legacyDraft)
+            .accessibilityLabel("Quick Edit")
+
             Button { sheets.showAddSheet = true } label: {
                 Image(systemName: "plus.square")
             }
@@ -1241,6 +1281,53 @@ struct ProfileCanvasBuilderView: View {
         guard didSeedOnInit else { return }
         didSeedOnInit = false
         resolvedStore.updateDocument(draft, document: document)
+    }
+
+    // MARK: - Template-first onboarding
+
+    /// True when the user should see the template picker instead of
+    /// the canvas / regular empty state. Three guards: the legacy
+    /// branch has its own banner, the per-device flag locks the
+    /// picker after one trip, and the document must look untouched —
+    /// either fully empty or only carrying the system-owned hero
+    /// (the `structuredProfileBlank` shape) with the default copy.
+    /// Once the user has any non-system content (a section card, a
+    /// custom text node, an image), the picker stays out of their
+    /// way regardless of whether `hasPickedTemplate` is set.
+    private var showTemplatePicker: Bool {
+        if legacyDraft || hasPickedTemplate { return false }
+        if canvasIsEmpty { return true }
+        return document.nodes.values.allSatisfy { $0.isSystemOwnedProfileNode }
+    }
+
+    /// Apply a chosen template: swap the in-memory document for the
+    /// fully-seeded one, persist immediately so a relaunch lands on
+    /// the same canvas, and stamp the picker flag so subsequent
+    /// empty-state moments fall through to `CanvasEmptyStateView`
+    /// instead of re-asking. Animated so the page reads as "the
+    /// template fills in" rather than a hard cut.
+    private func applyTemplate(_ template: ProfileTemplate) {
+        let seeded = template.makeDocument()
+        captureSnapshot()
+        withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+            document = seeded
+            editingPageIndex = 0
+            selectedID = nil
+            hasPickedTemplate = true
+        }
+        resolvedStore.updateDocument(draft, document: document)
+        CucuHaptics.soft()
+    }
+
+    /// User chose to start blank. Keep the structured-profile hero
+    /// they were going to see anyway, just dismiss the picker so they
+    /// see the regular empty-state CTAs (or the default hero) instead.
+    /// Stamping the flag prevents the picker from re-appearing on the
+    /// next mount.
+    private func skipTemplatePicker() {
+        withAnimation(.easeOut(duration: 0.28)) {
+            hasPickedTemplate = true
+        }
     }
 
     private func persistedTitle(from value: String) -> String {

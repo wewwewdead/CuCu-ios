@@ -34,6 +34,12 @@ final class CanvasSheetCoordinator {
     var showLayersSheet = false
     var showThemePickerSheet = false
     var showContainerBackgroundEffectsSheet = false
+    /// "Cute identity card" surface for normal users — name / bio /
+    /// avatar / theme without touching the canvas. Lives alongside the
+    /// power editor rather than replacing it; the canvas stays
+    /// available behind a "Edit Canvas" button on the Quick Edit
+    /// sheet.
+    var showQuickEditSheet = false
 
     // Pending chain flags — set when the user requests a transition,
     // consumed by the next `onDismiss`.

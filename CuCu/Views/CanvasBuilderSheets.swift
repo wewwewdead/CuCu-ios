@@ -139,6 +139,35 @@ struct CanvasBuilderSheetsModifier: ViewModifier {
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
+            // Quick Edit lives on its own sheet so the canvas behind
+            // it stays unchanged — power users can resume editing on
+            // the canvas the moment Quick Edit dismisses, with all
+            // the same node IDs intact.
+            .sheet(
+                isPresented: $sheets.showQuickEditSheet,
+                onDismiss: {
+                    if sheets.pendingShowPublishSheet {
+                        sheets.pendingShowPublishSheet = false
+                        sheets.showPublishSheet = true
+                    }
+                }
+            ) {
+                QuickEditSheet(
+                    document: $document,
+                    draft: draft,
+                    store: mutator.store,
+                    onEditCanvas: {
+                        // Caller wants the canvas next. Quick Edit
+                        // already dismissed itself; the canvas is
+                        // always behind it, so no extra surface to
+                        // present.
+                    },
+                    onPublish: {
+                        sheets.pendingShowPublishSheet = true
+                    }
+                )
+                .presentationDragIndicator(.visible)
+            }
             .sheet(isPresented: $sheets.showBackgroundEffectsSheet) {
                 BackgroundEffectsSheet(
                     title: "Edit Page Image",

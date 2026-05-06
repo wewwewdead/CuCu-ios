@@ -20,6 +20,13 @@ nonisolated struct PublishedProfile: Sendable, Equatable, Codable {
     let createdAt: Date?
     let updatedAt: Date?
     let publishedAt: Date?
+    /// Optional vibe stamped at publish time. Decoded from the
+    /// `category` column added by `migration_add_profile_category.sql`.
+    /// Nil for rows from before the migration ran or rows the user
+    /// chose not to vibe-tag — the Explore feed treats nil as "no
+    /// category" and only filters when a chip other than "All" is
+    /// active.
+    let category: String?
 }
 
 /// Wire-level row decoded from `client.from("profiles").select(...)`.
@@ -35,6 +42,10 @@ nonisolated struct PublishedProfileRow: Decodable, Sendable {
     let created_at: String?
     let updated_at: String?
     let published_at: String?
+    /// Optional `category` column. Decoded via Codable's automatic
+    /// `decodeIfPresent` behavior for optionals — pre-migration
+    /// rows return nil and the model still constructs cleanly.
+    let category: String?
 
     func toModel() -> PublishedProfile {
         let formatter = ISO8601DateFormatter()
@@ -49,7 +60,8 @@ nonisolated struct PublishedProfileRow: Decodable, Sendable {
             isPublished: is_published,
             createdAt: created_at.flatMap { formatter.date(from: $0) },
             updatedAt: updated_at.flatMap { formatter.date(from: $0) },
-            publishedAt: published_at.flatMap { formatter.date(from: $0) }
+            publishedAt: published_at.flatMap { formatter.date(from: $0) },
+            category: category
         )
     }
 }
